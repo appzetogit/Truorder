@@ -27,6 +27,12 @@ export default apiClient;
 // Export API endpoints for convenience
 export { API_ENDPOINTS };
 
+// Referral API (public)
+export const referralAPI = {
+  verify: (code, type) =>
+    apiClient.post(API_ENDPOINTS.REFERRAL.VERIFY, { code, type }),
+};
+
 // Export helper functions for common operations
 export const api = {
   // GET request
@@ -329,6 +335,11 @@ export const restaurantAPI = {
     if (password != null) payload.password = password;
     return apiClient.post(API_ENDPOINTS.RESTAURANT.AUTH.VERIFY_OTP, payload);
   },
+  completeRegistrationWithReferral: (tempToken, referralCode) =>
+    apiClient.post("/restaurant/auth/complete-registration-with-referral", {
+      tempToken,
+      referralCode,
+    }),
 
   register: (
     name,
@@ -835,6 +846,11 @@ export const deliveryAPI = {
     }
     return apiClient.post(API_ENDPOINTS.DELIVERY.AUTH.VERIFY_OTP, payload);
   },
+  completeRegistrationWithReferral: (tempToken, referralCode) =>
+    apiClient.post("/delivery/auth/complete-registration-with-referral", {
+      tempToken,
+      referralCode,
+    }),
   refreshToken: () => {
     return apiClient.post(API_ENDPOINTS.DELIVERY.AUTH.REFRESH_TOKEN);
   },
@@ -1066,6 +1082,12 @@ export const deliveryAPI = {
       params: { latitude, longitude, radius },
     });
   },
+
+  // FCM Token management
+  registerFcmToken: (platform, fcmToken) =>
+    apiClient.post(API_ENDPOINTS.DELIVERY.AUTH.FCM_TOKEN, { platform, fcmToken }),
+  removeFcmToken: (platform) =>
+    apiClient.delete(API_ENDPOINTS.DELIVERY.AUTH.FCM_TOKEN, { data: { platform } }),
 };
 
 // Export admin API helper functions
@@ -1117,6 +1139,16 @@ export const adminAPI = {
   getDashboardStats: (params = {}) => {
     return apiClient.get(API_ENDPOINTS.ADMIN.DASHBOARD_STATS, { params });
   },
+
+  // Referral Code Management
+  createReferralCode: (data) =>
+    apiClient.post(API_ENDPOINTS.ADMIN_REFERRAL.CREATE, data),
+  getReferralCodes: (params = {}) =>
+    apiClient.get(API_ENDPOINTS.ADMIN_REFERRAL.LIST, { params }),
+  updateReferralCodeStatus: (id, status) =>
+    apiClient.put(API_ENDPOINTS.ADMIN_REFERRAL.STATUS, { id, status }),
+  deleteReferralCode: (id) =>
+    apiClient.delete(`${API_ENDPOINTS.ADMIN_REFERRAL.DELETE}/${id}`),
 
   // Send push notification
   sendPushNotification: (data) => {

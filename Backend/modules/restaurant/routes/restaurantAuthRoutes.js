@@ -2,6 +2,7 @@ import express from "express";
 import {
   sendOTP,
   verifyOTP,
+  completeRegistrationWithReferral,
   register,
   login,
   resetPassword,
@@ -72,9 +73,15 @@ const firebaseGoogleLoginSchema = Joi.object({
   idToken: Joi.string().required()
 });
 
+const completeRegistrationSchema = Joi.object({
+  tempToken: Joi.string().required(),
+  referralCode: Joi.string().trim().required(),
+});
+
 // Public routes
 router.post("/send-otp", validate(sendOTPSchema), sendOTP);
 router.post("/verify-otp", validate(verifyOTPSchema), verifyOTP);
+router.post("/complete-registration-with-referral", validate(completeRegistrationSchema), completeRegistrationWithReferral);
 router.post("/register", validate(registerSchema), register);
 router.post("/login", validate(loginSchema), login);
 router.post("/reset-password", validate(resetPasswordSchema), resetPassword);

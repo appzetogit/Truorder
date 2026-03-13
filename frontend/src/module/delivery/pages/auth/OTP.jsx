@@ -193,6 +193,16 @@ export default function DeliveryOTP() {
       const skipSignupForApproved =
         userStatus === "approved" || userStatus === "active"
 
+      // Check if referral code is required first (new partner registration)
+      if (data.needsReferralCode && data.tempToken) {
+        navigate("/delivery/referral-code", {
+          replace: true,
+          state: { tempToken: data.tempToken },
+        })
+        setIsLoading(false)
+        return
+      }
+
       // Check if user needs to complete signup (but never force it
       // for already approved/active riders).
       if (data.needsSignup && !skipSignupForApproved) {
@@ -216,7 +226,7 @@ export default function DeliveryOTP() {
           return
         }
 
-        // Dispatch custom event
+        localStorage.setItem("delivery_needsSignup", "true")
         window.dispatchEvent(new Event("deliveryAuthChanged"))
 
         // Redirect to signup step 1 after token is stored
@@ -237,6 +247,7 @@ export default function DeliveryOTP() {
 
       // Clear auth data from sessionStorage
       sessionStorage.removeItem("deliveryAuthData")
+      localStorage.removeItem("delivery_needsSignup")
 
       // Store auth data using utility function to ensure proper role handling
       // The setAuthData function includes error handling and verification

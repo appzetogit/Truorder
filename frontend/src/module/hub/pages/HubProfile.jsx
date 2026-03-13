@@ -1,14 +1,24 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { adminAPI } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Loader2, LogOut } from "lucide-react";
 import { toast } from "sonner";
 
 export default function HubProfile() {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [hub, setHub] = useState(null);
+
+  const handleLogout = () => {
+    localStorage.removeItem("hub_accessToken");
+    localStorage.removeItem("hub_authenticated");
+    localStorage.removeItem("hub_user");
+    navigate("/hub/login", { replace: true });
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -100,6 +110,17 @@ export default function HubProfile() {
           </div>
         </CardContent>
       </Card>
+
+      <div className="flex justify-end">
+        <Button
+          variant="destructive"
+          onClick={handleLogout}
+          className="flex items-center gap-2"
+        >
+          <LogOut className="w-4 h-4" />
+          Logout
+        </Button>
+      </div>
     </div>
   );
 }

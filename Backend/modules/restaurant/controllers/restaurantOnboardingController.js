@@ -4,6 +4,8 @@ import {
   errorResponse,
 } from "../../../shared/utils/response.js";
 import { createRestaurantFromOnboarding } from "./restaurantController.js";
+import { incrementReferralUsage } from "../../referral/services/referralService.js";
+import { registerTrulifeAffiliate } from "../../referral/services/trulifeService.js";
 
 // Get current restaurant's onboarding data
 export const getOnboarding = async (req, res) => {
@@ -269,7 +271,35 @@ export const upsertOnboarding = async (req, res) => {
         console.error("Error sending onboarding emails:", emailError);
       }
 
-      // Return success response with restaurant info
+      if (completeRestaurant.referralCodeId && !completeRestaurant.referralCounted) {
+        try {
+          await incrementReferralUsage(completeRestaurant.referralCodeId);
+          await Restaurant.findByIdAndUpdate(restaurantId, { $set: { referralCounted: true } });
+        } catch (referralError) {
+          console.error(`Failed to increment referral usage: ${referralError.message}`);
+        }
+      }
+
+      if (completeRestaurant.referralCode && !completeRestaurant.trulifeAffiliateRegistered) {
+        try {
+          const step1Data = completeRestaurant.onboarding?.step1 || {};
+          const affiliateResult = await registerTrulifeAffiliate({
+            referralCode: completeRestaurant.referralCode,
+            fullName: completeRestaurant.ownerName || step1Data.ownerName || completeRestaurant.name,
+            email: completeRestaurant.ownerEmail || step1Data.ownerEmail || completeRestaurant.email || "",
+            mobileNo: completeRestaurant.ownerPhone || step1Data.ownerPhone || completeRestaurant.phone || "",
+            state: completeRestaurant.location?.state || step1Data.location?.state || "",
+            city: completeRestaurant.location?.city || step1Data.location?.city || "",
+            role: "restaurant",
+          });
+          if (affiliateResult.success) {
+            await Restaurant.findByIdAndUpdate(restaurantId, { $set: { trulifeAffiliateRegistered: true } });
+          }
+        } catch (affiliateError) {
+          console.error(`Trulife affiliate registration failed: ${affiliateError.message}`);
+        }
+      }
+
       return successResponse(
         res,
         200,

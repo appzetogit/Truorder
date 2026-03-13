@@ -2,6 +2,7 @@ import Order from '../models/Order.js';
 import Payment from '../../payment/models/Payment.js';
 import Restaurant from '../../restaurant/models/Restaurant.js';
 import mongoose from 'mongoose';
+import { sendPushToEntity } from '../../../shared/services/fcmPushService.js';
 
 // Dynamic import to avoid circular dependency
 let getIO = null;
@@ -183,6 +184,12 @@ export async function notifyRestaurantNewOrder(order, restaurantId, paymentMetho
         message: `Restaurant ${normalizedRestaurantId} (${order.restaurantName}) is not connected. Order notification not sent.`
       };
     }
+
+    // FCM push (fire-and-forget, never blocks)
+    sendPushToEntity("restaurant", normalizedRestaurantId, {
+      title: "New Order!",
+      body: `Order #${order.orderId} received. Tap to view.`,
+    }).catch(() => {});
 
     return {
       success: true,

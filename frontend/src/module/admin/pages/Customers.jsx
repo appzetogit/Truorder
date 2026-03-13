@@ -6,7 +6,7 @@ import { adminAPI } from "@/lib/api"
 import { toast } from "sonner"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
-export default function Customers() {
+export default function Customers({ isHub = false }) {
   const [searchQuery, setSearchQuery] = useState("")
   const [customers, setCustomers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -422,18 +422,26 @@ export default function Customers() {
                         <span className="text-sm text-slate-700">{customer.joiningDate}</span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <button
-                          onClick={() => handleToggleStatus(customer.id || customer.sl)}
-                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                            customer.status ? "bg-blue-600" : "bg-slate-300"
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                              customer.status ? "translate-x-6" : "translate-x-1"
+                        {isHub ? (
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            customer.status ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
+                          }`}>
+                            {customer.status ? "Active" : "Inactive"}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleToggleStatus(customer.id || customer.sl)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                              customer.status ? "bg-blue-600" : "bg-slate-300"
                             }`}
-                          />
-                        </button>
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                customer.status ? "translate-x-6" : "translate-x-1"
+                              }`}
+                            />
+                          </button>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-center">
                         <button 

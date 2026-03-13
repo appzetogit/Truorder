@@ -40,6 +40,7 @@ const RestaurantSignup = lazy(() => import("@/module/restaurant/pages/auth/Signu
 const RestaurantSignupEmail = lazy(() => import("@/module/restaurant/pages/auth/SignupEmail"))
 const RestaurantForgotPassword = lazy(() => import("@/module/restaurant/pages/auth/ForgotPassword"))
 const RestaurantOTP = lazy(() => import("@/module/restaurant/pages/auth/OTP"))
+const RestaurantReferralCode = lazy(() => import("@/module/restaurant/pages/auth/ReferralCode"))
 const RestaurantGoogleCallback = lazy(() => import("@/module/restaurant/pages/auth/GoogleCallback"))
 const RestaurantWelcome = lazy(() => import("@/module/restaurant/pages/auth/Welcome"))
 
@@ -123,6 +124,7 @@ const DeliveryRouter = lazy(() => import("@/module/delivery/components/DeliveryR
 const DeliverySignIn = lazy(() => import("@/module/delivery/pages/auth/SignIn"))
 const DeliverySignup = lazy(() => import("@/module/delivery/pages/auth/Signup"))
 const DeliveryOTP = lazy(() => import("@/module/delivery/pages/auth/OTP"))
+const DeliveryReferralCode = lazy(() => import("@/module/delivery/pages/auth/ReferralCode"))
 const DeliveryTermsAndConditions = lazy(() => import("@/module/delivery/pages/TermsAndConditions"))
 const DeliveryPrivacyPolicy = lazy(() => import("@/module/delivery/pages/PrivacyPolicy"))
 const DeliverySignupStep1 = lazy(() => import("@/module/delivery/pages/auth/SignupStep1"))
@@ -152,6 +154,7 @@ export default function App() {
         <Route path="/restaurant/signup-email" element={<AuthRedirect module="restaurant"><RestaurantSignupEmail /></AuthRedirect>} />
         <Route path="/restaurant/forgot-password" element={<AuthRedirect module="restaurant"><RestaurantForgotPassword /></AuthRedirect>} />
         <Route path="/restaurant/otp" element={<AuthRedirect module="restaurant"><RestaurantOTP /></AuthRedirect>} />
+        <Route path="/restaurant/referral-code" element={<RestaurantReferralCode />} />
         <Route path="/restaurant/auth/google-callback" element={<AuthRedirect module="restaurant"><RestaurantGoogleCallback /></AuthRedirect>} />
 
         {/* Restaurant Protected Routes */}
@@ -798,6 +801,7 @@ export default function App() {
         <Route path="/delivery/sign-in" element={<AuthRedirect module="delivery"><DeliverySignIn /></AuthRedirect>} />
         <Route path="/delivery/signup" element={<DeliverySignup />} />
         <Route path="/delivery/otp" element={<DeliveryOTP />} />
+        <Route path="/delivery/referral-code" element={<DeliveryReferralCode />} />
         <Route path="/delivery/terms" element={<DeliveryTermsAndConditions />} />
         <Route path="/delivery/privacy" element={<DeliveryPrivacyPolicy />} />
         <Route path="/delivery/welcome" element={<AuthRedirect module="delivery"><DeliveryWelcome /></AuthRedirect>} />

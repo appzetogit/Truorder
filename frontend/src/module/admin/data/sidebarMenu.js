@@ -101,6 +101,18 @@ export const sidebarMenuData = [
 
   {
     type: "section",
+    label: "REFERRAL CODE MANAGEMENT",
+    items: [
+      {
+        type: "link",
+        label: "Referral Codes",
+        path: "/admin/referral-codes",
+        icon: "Link",
+      },
+    ],
+  },
+  {
+    type: "section",
     label: "ORDER MANAGEMENT",
     hubManagerAllowed: true,
     items: [

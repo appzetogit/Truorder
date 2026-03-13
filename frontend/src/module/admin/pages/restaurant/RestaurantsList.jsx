@@ -11,7 +11,7 @@ import locationIcon from "../../assets/Dashboard-icons/image1.png"
 import restaurantIcon from "../../assets/Dashboard-icons/image2.png"
 import inactiveIcon from "../../assets/Dashboard-icons/image3.png"
 
-export default function RestaurantsList() {
+export default function RestaurantsList({ isHub = false }) {
   const navigate = useNavigate()
   const [searchQuery, setSearchQuery] = useState("")
   const [restaurants, setRestaurants] = useState([])
@@ -490,7 +490,7 @@ export default function RestaurantsList() {
 
             <div className="flex items-center gap-3">
               <button
-                onClick={() => navigate("/admin/restaurants/add")}
+                onClick={() => navigate(isHub ? "/hub/restaurants/add" : "/admin/restaurants/add")}
                 className="px-4 py-2.5 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2 transition-all"
               >
                 <Plus className="w-4 h-4" />
@@ -740,30 +740,44 @@ export default function RestaurantsList() {
                                 </button>
                               </div>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => setEditingDiningCommission({ id: restaurant.id, value: restaurant.diningCommissionPercentage ?? 0 })}
-                                className="text-sm text-slate-700 hover:text-blue-600 hover:underline"
-                              >
-                                {restaurant.diningCommissionPercentage ?? 0}%
-                              </button>
+                              isHub ? (
+                                <span className="text-sm text-slate-700">
+                                  {restaurant.diningCommissionPercentage ?? 0}%
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingDiningCommission({ id: restaurant.id, value: restaurant.diningCommissionPercentage ?? 0 })}
+                                  className="text-sm text-slate-700 hover:text-blue-600 hover:underline"
+                                >
+                                  {restaurant.diningCommissionPercentage ?? 0}%
+                                </button>
+                              )
                             )}
                           </td>
                         )}
                         {visibleColumns.status && (
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <button
-                              onClick={() => handleToggleStatus(restaurant.id)}
-                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                                restaurant.status ? "bg-blue-600" : "bg-slate-300"
-                              }`}
-                            >
-                              <span
-                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                                  restaurant.status ? "translate-x-6" : "translate-x-1"
+                            {isHub ? (
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                restaurant.status ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
+                              }`}>
+                                {restaurant.status ? "Active" : "Inactive"}
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleToggleStatus(restaurant.id)}
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                                  restaurant.status ? "bg-blue-600" : "bg-slate-300"
                                 }`}
-                              />
-                            </button>
+                              >
+                                <span
+                                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                    restaurant.status ? "translate-x-6" : "translate-x-1"
+                                  }`}
+                                />
+                              </button>
+                            )}
                           </td>
                         )}
                         {visibleColumns.action && (
@@ -776,24 +790,28 @@ export default function RestaurantsList() {
                             >
                               <Eye className="w-4 h-4" />
                             </button>
-                            <button
-                              onClick={() => handleBanRestaurant(restaurant)}
-                              className={`p-1.5 rounded transition-colors ${
-                                !restaurant.status
-                                  ? "text-green-600 hover:bg-green-50"
-                                  : "text-red-600 hover:bg-red-50"
-                              }`}
-                              title={!restaurant.status ? "Unban Restaurant" : "Ban Restaurant"}
-                            >
-                              <ShieldX className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteRestaurant(restaurant)}
-                              className="p-1.5 rounded text-red-600 hover:bg-red-50 transition-colors"
-                              title="Delete Restaurant"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            {!isHub && (
+                              <>
+                                <button
+                                  onClick={() => handleBanRestaurant(restaurant)}
+                                  className={`p-1.5 rounded transition-colors ${
+                                    !restaurant.status
+                                      ? "text-green-600 hover:bg-green-50"
+                                      : "text-red-600 hover:bg-red-50"
+                                  }`}
+                                  title={!restaurant.status ? "Unban Restaurant" : "Ban Restaurant"}
+                                >
+                                  <ShieldX className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteRestaurant(restaurant)}
+                                  className="p-1.5 rounded text-red-600 hover:bg-red-50 transition-colors"
+                                  title="Delete Restaurant"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </>
+                            )}
                           </div>
                         </td>
                         )}

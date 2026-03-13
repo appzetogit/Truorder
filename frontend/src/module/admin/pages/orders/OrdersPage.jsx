@@ -27,7 +27,7 @@ const statusConfig = {
   "offline-payments": { title: "Offline Payments", color: "slate", icon: Package },
 }
 
-export default function OrdersPage({ statusKey = "all" }) {
+export default function OrdersPage({ statusKey = "all", isHub = false }) {
   const config = statusConfig[statusKey] || statusConfig["all"]
   const [orders, setOrders] = useState([])
   const [isLoading, setIsLoading] = useState(true)
@@ -319,7 +319,7 @@ export default function OrdersPage({ statusKey = "all" }) {
         visibleColumns={visibleColumns}
         onViewOrder={handleViewOrder}
         onPrintOrder={handlePrintOrder}
-        onRefund={handleRefund}
+        onRefund={isHub ? null : handleRefund}
       />
     </div>
   )

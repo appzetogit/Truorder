@@ -1,6 +1,7 @@
 import Delivery from "../models/Delivery.js";
 import otpService from "../../auth/services/otpService.js";
 import jwtService from "../../auth/services/jwtService.js";
+import { verifyTrulifeReferral } from "../../referral/services/trulifeService.js";
 import {
   successResponse,
   errorResponse,
@@ -69,8 +70,7 @@ export const verifyOTP = asyncHandler(async (req, res) => {
     const identifier = phone;
 
     if (purpose === "register") {
-      // Registration flow
-      // Check if delivery boy already exists
+      // Registration flow - requires referral code
       delivery = await Delivery.findOne({ phone });
 
       if (delivery) {
@@ -81,86 +81,41 @@ export const verifyOTP = asyncHandler(async (req, res) => {
         );
       }
 
-      // Name is mandatory for explicit registration
       if (!normalizedName) {
         return errorResponse(res, 400, "Name is required for registration");
       }
 
-      // Verify OTP before creating delivery boy
       await otpService.verifyOTP(phone, otp, purpose, null);
 
-      const deliveryData = {
-        name: normalizedName,
+      // Don't create delivery yet - require referral code first
+      const tempToken = jwtService.generateReferralTempToken({
         phone,
-        phoneVerified: true,
-        signupMethod: "phone",
-        status: "pending", // New delivery boys start as pending approval
-        isActive: true, // Allow login to see verification message
-      };
+        name: normalizedName,
+        type: "delivery_partner",
+      });
 
-      try {
-        delivery = await Delivery.create(deliveryData);
-        logger.info(`New delivery boy registered: ${delivery._id}`, {
-          phone,
-          deliveryId: delivery._id,
-          deliveryIdField: delivery.deliveryId,
-        });
-      } catch (createError) {
-        // Handle duplicate key error
-        if (createError.code === 11000) {
-          delivery = await Delivery.findOne({ phone });
-          if (!delivery) {
-            throw createError;
-          }
-          return errorResponse(
-            res,
-            400,
-            "Delivery boy already exists with this phone number. Please login.",
-          );
-        } else {
-          throw createError;
-        }
-      }
+      return successResponse(res, 200, "OTP verified. Enter referral code to continue.", {
+        needsReferralCode: true,
+        tempToken,
+      });
     } else {
       // Login (with optional auto-registration)
       delivery = await Delivery.findOne({ phone });
 
-      // Verify OTP first (before creating user)
       await otpService.verifyOTP(phone, otp, purpose, null);
 
       if (!delivery) {
-        // New user - create minimal record for signup flow
-        // Use provided name or placeholder
-        const deliveryData = {
-          name: normalizedName || "Delivery Partner", // Placeholder if not provided
+        // New user - require referral code before creating record
+        const tempToken = jwtService.generateReferralTempToken({
           phone,
-          phoneVerified: true,
-          signupMethod: "phone",
-          status: "pending", // New delivery boys start as pending approval
-          isActive: true, // Allow login to see verification message
-        };
+          name: normalizedName || "Delivery Partner",
+          type: "delivery_partner",
+        });
 
-        try {
-          delivery = await Delivery.create(deliveryData);
-          logger.info(`New delivery boy created for signup: ${delivery._id}`, {
-            phone,
-            deliveryId: delivery._id,
-            deliveryIdField: delivery.deliveryId,
-            hasName: !!normalizedName,
-          });
-        } catch (createError) {
-          if (createError.code === 11000) {
-            delivery = await Delivery.findOne({ phone });
-            if (!delivery) {
-              throw createError;
-            }
-            logger.info(
-              `Delivery boy found after duplicate key error: ${delivery._id}`,
-            );
-          } else {
-            throw createError;
-          }
-        }
+        return successResponse(res, 200, "OTP verified. Enter referral code to continue.", {
+          needsReferralCode: true,
+          tempToken,
+        });
       } else {
         // Existing delivery boy login - update verification status if needed
         if (!delivery.phoneVerified) {
@@ -288,6 +243,105 @@ export const verifyOTP = asyncHandler(async (req, res) => {
     logger.error(`Error verifying OTP: ${error.message}`);
     return errorResponse(res, 400, error.message);
   }
+});
+
+/**
+ * Complete registration with referral code (after OTP verified)
+ * POST /api/delivery/auth/complete-registration-with-referral
+ */
+export const completeRegistrationWithReferral = asyncHandler(async (req, res) => {
+  const { tempToken, referralCode } = req.body;
+
+  if (!tempToken || !referralCode) {
+    return errorResponse(res, 400, "Temp token and referral code are required");
+  }
+
+  let decoded;
+  try {
+    decoded = jwtService.verifyReferralTempToken(tempToken);
+  } catch (err) {
+    return errorResponse(res, 400, err.message || "Invalid or expired session");
+  }
+
+  if (decoded.registrationType && decoded.registrationType !== "delivery_partner") {
+    return errorResponse(res, 400, "Invalid token type");
+  }
+
+  const { phone, name } = decoded;
+
+  const normalizedRefCode = referralCode.trim().toUpperCase();
+
+  const trulifeResult = await verifyTrulifeReferral(normalizedRefCode);
+  if (!trulifeResult.valid) {
+    return errorResponse(res, 400, trulifeResult.message || "Invalid Referral Code");
+  }
+
+  const existingDelivery = await Delivery.findOne({ phone });
+  if (existingDelivery) {
+    return errorResponse(
+      res,
+      400,
+      "Delivery partner already exists with this phone number. Please login."
+    );
+  }
+
+  const deliveryData = {
+    name: name || "Delivery Partner",
+    phone,
+    phoneVerified: true,
+    signupMethod: "phone",
+    referralCode: normalizedRefCode,
+    status: "pending",
+    isActive: true,
+  };
+
+  let delivery;
+  try {
+    delivery = await Delivery.create(deliveryData);
+  } catch (createError) {
+    if (createError.code === 11000) {
+      delivery = await Delivery.findOne({ phone });
+      if (!delivery) throw createError;
+      return errorResponse(
+        res,
+        400,
+        "Delivery partner already exists. Please login."
+      );
+    }
+    throw createError;
+  }
+
+  const tokens = jwtService.generateTokens({
+    userId: delivery._id.toString(),
+    role: "delivery",
+    email: delivery.email || delivery.phone || delivery.deliveryId,
+  });
+
+  delivery.refreshToken = tokens.refreshToken;
+  await delivery.save();
+
+  res.cookie("refreshToken", tokens.refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  return successResponse(res, 200, "Registration complete. Please complete your profile.", {
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    user: {
+      id: delivery._id,
+      name: delivery.name,
+      phone: delivery.phone,
+      email: delivery.email,
+      deliveryId: delivery.deliveryId,
+      status: delivery.status,
+      rejectionReason: delivery.rejectionReason || null,
+    },
+    sponsorName: trulifeResult.sponsorName || null,
+    needsSignup: true,
+  });
 });
 
 /**

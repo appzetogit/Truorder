@@ -69,19 +69,36 @@ async function sendToToken(token, payload) {
     const message = {
       token,
       notification: {
-        title: title || "Notification",
+        title: title || "TruOrder",
         body: body || "",
         ...(image && { image }),
       },
       webpush: {
+        notification: {
+          title: title || "TruOrder",
+          body: body || "",
+          icon: "/notification-icon.png",
+          badge: "/notification-icon.png",
+          ...(image && { image }),
+          requireInteraction: false,
+          vibrate: [200, 100, 200],
+          actions: [
+            { action: "open", title: "View" },
+            { action: "dismiss", title: "Dismiss" },
+          ],
+        },
         fcmOptions: {
           link: "/",
         },
       },
       android: {
         notification: {
-          title: title || "Notification",
+          title: title || "TruOrder",
           body: body || "",
+          color: "#FF6B35",
+          icon: "ic_notification",
+          sound: "default",
+          channelId: "truorder_orders",
           ...(image && { imageUrl: image }),
         },
       },
@@ -89,10 +106,11 @@ async function sendToToken(token, payload) {
         payload: {
           aps: {
             alert: {
-              title: title || "Notification",
+              title: title || "TruOrder",
               body: body || "",
             },
             sound: "default",
+            badge: 1,
           },
         },
         fcmOptions: {
@@ -114,6 +132,45 @@ async function sendToToken(token, payload) {
     }
     return { success: false, error: errMsg };
   }
+}
+
+/**
+ * Send FCM push to a single entity (user/restaurant/delivery) by ID.
+ * Silently returns on any failure so it never blocks the caller.
+ * @param {"user"|"restaurant"|"delivery"} role
+ * @param {string} entityId - MongoDB _id
+ * @param {{ title: string, body: string, image?: string, data?: object }} payload
+ * @returns {Promise<{ sent: number, failed: number }>}
+ */
+export async function sendPushToEntity(role, entityId, { title, body, image, data } = {}) {
+  const result = { sent: 0, failed: 0 };
+  try {
+    if (!admin.apps.length || !entityId) return result;
+
+    const select = "fcmTokenWeb fcmTokenAndroid fcmTokenIos";
+    let entity;
+    if (role === "user") {
+      entity = await User.findById(entityId).select(select).lean();
+    } else if (role === "restaurant") {
+      entity = await Restaurant.findById(entityId).select(select).lean();
+    } else if (role === "delivery") {
+      entity = await Delivery.findById(entityId).select(select).lean();
+    }
+    if (!entity) return result;
+
+    const tokens = [entity.fcmTokenWeb, entity.fcmTokenAndroid, entity.fcmTokenIos].filter(Boolean);
+    if (tokens.length === 0) return result;
+
+    const msg = { title: title || "Notification", body: body || "", image: image || undefined };
+    for (const token of tokens) {
+      const res = await sendToToken(token, msg);
+      if (res.success) result.sent++;
+      else result.failed++;
+    }
+  } catch (err) {
+    console.error(`[FCM] sendPushToEntity(${role}, ${entityId}) error:`, err.message);
+  }
+  return result;
 }
 
 /**

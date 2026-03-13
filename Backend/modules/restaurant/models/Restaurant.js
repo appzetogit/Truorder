@@ -79,6 +79,24 @@ const restaurantSchema = new mongoose.Schema(
       enum: ["google", "phone", "email"],
       default: null,
     },
+    referralCode: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    referralCodeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ReferralCode",
+      default: null,
+    },
+    referralCounted: {
+      type: Boolean,
+      default: false,
+    },
+    trulifeAffiliateRegistered: {
+      type: Boolean,
+      default: false,
+    },
     // Owner information (now stored directly in restaurant)
     ownerName: {
       type: String,
@@ -410,12 +428,12 @@ restaurantSchema.pre("save", async function (next) {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
 
-    // Ensure slug is not empty
     if (!baseSlug) {
-      baseSlug = `restaurant-${this.restaurantId}`;
+      baseSlug = "restaurant";
     }
 
-    this.slug = baseSlug;
+    const suffix = this.restaurantId || this._id?.toString().slice(-6) || Math.random().toString(36).slice(2, 8);
+    this.slug = `${baseSlug}-${suffix}`;
   }
 
   // CRITICAL: For phone signups, ensure email field is completely unset (not null/undefined)

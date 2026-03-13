@@ -234,6 +234,7 @@ import {
 import { getDiningEarnings } from "../controllers/diningEarningsController.js";
 import zoneRoutes from "./zoneRoutes.js";
 import hubRoutes from "./hubRoutes.js";
+import referralCodeRoutes from "./referralCodeRoutes.js";
 import { authenticateAdmin } from "../middleware/adminAuth.js";
 import { uploadMiddleware } from "../../../shared/utils/cloudinaryService.js";
 
@@ -430,6 +431,9 @@ router.use("/zones", zoneRoutes);
 
 // Hub Management (Super Admin only)
 router.use("/hubs", hubRoutes);
+
+// Referral Code Management
+router.use("/referral", referralCodeRoutes);
 
 // Hub self-profile (Hub Manager)
 import {

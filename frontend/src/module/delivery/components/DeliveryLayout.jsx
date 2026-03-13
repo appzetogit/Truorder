@@ -1,7 +1,8 @@
 import { useLocation } from "react-router-dom"
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import BottomNavigation from "./BottomNavigation"
 import { getUnreadDeliveryNotificationCount } from "../utils/deliveryNotifications"
+import { registerFcmTokenForDelivery, setupForegroundNotifications } from "@/lib/notifications/fcmWeb"
 
 export default function DeliveryLayout({
   children,
@@ -11,9 +12,18 @@ export default function DeliveryLayout({
   onGigClick
 }) {
   const location = useLocation()
+  const fcmRegistered = useRef(false)
   const [requestBadgeCount, setRequestBadgeCount] = useState(() =>
     getUnreadDeliveryNotificationCount()
   )
+
+  useEffect(() => {
+    if (!fcmRegistered.current) {
+      fcmRegistered.current = true
+      registerFcmTokenForDelivery()
+      setupForegroundNotifications()
+    }
+  }, [])
 
   // Update badge count when location changes
   useEffect(() => {

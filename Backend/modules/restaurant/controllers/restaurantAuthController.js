@@ -2,6 +2,7 @@ import Restaurant from "../models/Restaurant.js";
 import otpService from "../../auth/services/otpService.js";
 import jwtService from "../../auth/services/jwtService.js";
 import firebaseAuthService from "../../auth/services/firebaseAuthService.js";
+import { verifyTrulifeReferral } from "../../referral/services/trulifeService.js";
 import {
   successResponse,
   errorResponse,
@@ -125,9 +126,7 @@ export const verifyOTP = asyncHandler(async (req, res) => {
     const identifierType = normalizedPhone ? "phone" : "email";
 
     if (purpose === "register") {
-      // Registration flow
-      // Check if restaurant already exists with normalized phone
-      // For phone, search in both formats (with and without country code) to handle old data
+      // Registration flow - requires referral code
       const findQuery = normalizedPhone
         ? buildPhoneQuery(normalizedPhone)
         : { email: email?.toLowerCase().trim() };
@@ -141,7 +140,6 @@ export const verifyOTP = asyncHandler(async (req, res) => {
         );
       }
 
-      // Name is mandatory for explicit registration
       if (!name) {
         return errorResponse(
           res,
@@ -150,222 +148,21 @@ export const verifyOTP = asyncHandler(async (req, res) => {
         );
       }
 
-      // Verify OTP (phone or email) before creating restaurant
       await otpService.verifyOTP(phone || null, otp, purpose, email || null);
 
-      const restaurantData = {
+      // Don't create restaurant yet - require referral code first
+      const tempToken = jwtService.generateReferralTempToken({
+        phone: normalizedPhone,
+        email: email?.toLowerCase().trim() || null,
         name,
-        signupMethod: normalizedPhone ? "phone" : "email",
-      };
+        password: password || null,
+        type: "restaurant",
+      });
 
-      if (normalizedPhone) {
-        restaurantData.phone = normalizedPhone;
-        restaurantData.phoneVerified = true;
-        restaurantData.ownerPhone = normalizedPhone;
-        // For phone signup, set ownerEmail to empty string or phone-based email
-        restaurantData.ownerEmail =
-          email || `${normalizedPhone}@restaurant.appzeto.com`;
-        // CRITICAL: Do NOT set email field for phone signups to avoid null duplicate key error
-        // Email field should be completely omitted, not set to null or undefined
-      }
-      if (email) {
-        restaurantData.email = email.toLowerCase().trim();
-        restaurantData.ownerEmail = email.toLowerCase().trim();
-      }
-      // Ensure email is not set to null or undefined
-      if (!email && !phone) {
-        // This shouldn't happen due to validation, but just in case
-        throw new Error("Either phone or email must be provided");
-      }
-
-      // If password provided (email/password registration), set it
-      if (password && !phone) {
-        restaurantData.password = password;
-      }
-
-      // Set owner name from restaurant name if not provided separately
-      restaurantData.ownerName = name;
-
-      // Set isActive to false - restaurant needs admin approval before becoming active
-      // Auto-approve in development
-      restaurantData.isActive = process.env.NODE_ENV === "development";
-
-      try {
-        // For phone signups, use $unset to ensure email field is not saved
-        if (phone && !email) {
-          // Use collection.insertOne directly to have full control over the document
-          const docToInsert = { ...restaurantData };
-          // Explicitly remove email field
-          delete docToInsert.email;
-          restaurant = await Restaurant.create(docToInsert);
-        } else {
-          restaurant = await Restaurant.create(restaurantData);
-        }
-        logger.info(`New restaurant registered: ${restaurant._id}`, {
-          [identifierType]: identifier,
-          restaurantId: restaurant._id,
-        });
-      } catch (createError) {
-        logger.error(`Error creating restaurant: ${createError.message}`, {
-          code: createError.code,
-          keyPattern: createError.keyPattern,
-          phone,
-          email,
-          restaurantData: { ...restaurantData, password: "***" },
-        });
-
-        // Handle duplicate key error (email, phone, or slug)
-        if (createError.code === 11000) {
-          // Check if it's an email null duplicate key error (common with phone signups)
-          if (
-            createError.keyPattern &&
-            createError.keyPattern.email &&
-            phone &&
-            !email
-          ) {
-            logger.warn(
-              `Email null duplicate key error for phone signup: ${phone}`,
-              {
-                error: createError.message,
-                keyPattern: createError.keyPattern,
-              },
-            );
-            // Try to find existing restaurant by phone
-            restaurant = await Restaurant.findOne({ phone });
-            if (restaurant) {
-              return errorResponse(
-                res,
-                400,
-                `Restaurant already exists with this phone number. Please login.`,
-              );
-            }
-            // If not found, this is likely a database index issue - ensure email is completely removed
-            // Create a fresh restaurantData object without email field
-            const retryRestaurantData = {
-              name: restaurantData.name,
-              signupMethod: restaurantData.signupMethod,
-              phone: restaurantData.phone,
-              phoneVerified: restaurantData.phoneVerified,
-              ownerPhone: restaurantData.ownerPhone,
-              ownerEmail: restaurantData.ownerEmail,
-              ownerName: restaurantData.ownerName,
-              isActive: restaurantData.isActive,
-            };
-            // Explicitly do NOT include email field
-            if (restaurantData.password) {
-              retryRestaurantData.password = restaurantData.password;
-            }
-            try {
-              restaurant = await Restaurant.create(retryRestaurantData);
-              logger.info(
-                `New restaurant registered (fixed email null issue): ${restaurant._id}`,
-                {
-                  [identifierType]: identifier,
-                  restaurantId: restaurant._id,
-                },
-              );
-            } catch (retryError) {
-              logger.error(
-                `Failed to create restaurant after email null fix: ${retryError.message}`,
-                {
-                  code: retryError.code,
-                  keyPattern: retryError.keyPattern,
-                  error: retryError,
-                },
-              );
-              // Check if it's still a duplicate key error
-              if (retryError.code === 11000) {
-                // Try to find restaurant again (search in both formats)
-                const phoneQuery = buildPhoneQuery(normalizedPhone) || {
-                  phone: normalizedPhone,
-                };
-                restaurant = await Restaurant.findOne(phoneQuery);
-                if (restaurant) {
-                  return errorResponse(
-                    res,
-                    400,
-                    `Restaurant already exists with this phone number. Please login.`,
-                  );
-                }
-              }
-              throw new Error(
-                `Failed to create restaurant: ${retryError.message}. Please contact support.`,
-              );
-            }
-          } else if (createError.keyPattern && createError.keyPattern.phone) {
-            // Phone duplicate key error - search in both formats
-            const phoneQuery = buildPhoneQuery(normalizedPhone) || {
-              phone: normalizedPhone,
-            };
-            restaurant = await Restaurant.findOne(phoneQuery);
-            if (restaurant) {
-              return errorResponse(
-                res,
-                400,
-                `Restaurant already exists with this phone number. Please login.`,
-              );
-            }
-            throw new Error(
-              `Phone number already exists: ${createError.message}`,
-            );
-          } else if (createError.keyPattern && createError.keyPattern.slug) {
-            // Check if it's a slug conflict
-            // Retry with unique slug
-            const baseSlug = restaurantData.name
-              .toLowerCase()
-              .replace(/[^a-z0-9]+/g, "-")
-              .replace(/(^-|-$)/g, "");
-            let counter = 1;
-            let uniqueSlug = `${baseSlug}-${counter}`;
-            while (await Restaurant.findOne({ slug: uniqueSlug })) {
-              counter++;
-              uniqueSlug = `${baseSlug}-${counter}`;
-            }
-            restaurantData.slug = uniqueSlug;
-            try {
-              restaurant = await Restaurant.create(restaurantData);
-              logger.info(
-                `New restaurant registered with unique slug: ${restaurant._id}`,
-                {
-                  [identifierType]: identifier,
-                  restaurantId: restaurant._id,
-                  slug: uniqueSlug,
-                },
-              );
-            } catch (retryError) {
-              // If still fails, check if restaurant exists
-              const findQuery = normalizedPhone
-                ? { phone: normalizedPhone }
-                : { email: email?.toLowerCase().trim() };
-              restaurant = await Restaurant.findOne(findQuery);
-              if (!restaurant) {
-                throw retryError;
-              }
-              return errorResponse(
-                res,
-                400,
-                `Restaurant already exists with this ${identifierType}. Please login.`,
-              );
-            }
-          } else {
-            // Other duplicate key errors (email, phone)
-            const findQuery = normalizedPhone
-              ? { phone: normalizedPhone }
-              : { email: email?.toLowerCase().trim() };
-            restaurant = await Restaurant.findOne(findQuery);
-            if (!restaurant) {
-              throw createError;
-            }
-            return errorResponse(
-              res,
-              400,
-              `Restaurant already exists with this ${identifierType}. Please login.`,
-            );
-          }
-        } else {
-          throw createError;
-        }
-      }
+      return successResponse(res, 200, "OTP verified. Enter referral code to continue.", {
+        needsReferralCode: true,
+        tempToken,
+      });
     } else {
       // Login (with optional auto-registration)
       // For phone, search in both formats (with and without country code) to handle old data
@@ -439,212 +236,19 @@ export const verifyOTP = asyncHandler(async (req, res) => {
       await otpService.verifyOTP(phone || null, otp, purpose, email || null);
 
       if (!restaurant) {
-        // Auto-register new restaurant after OTP verification
-        const restaurantData = {
-          name,
-          signupMethod: normalizedPhone ? "phone" : "email",
-        };
+        // New user - require referral code before creating restaurant
+        const tempToken = jwtService.generateReferralTempToken({
+          phone: normalizedPhone,
+          email: email?.toLowerCase().trim() || null,
+          name: name || "Restaurant",
+          password: password || null,
+          type: "restaurant",
+        });
 
-        if (normalizedPhone) {
-          restaurantData.phone = normalizedPhone;
-          restaurantData.phoneVerified = true;
-          restaurantData.ownerPhone = normalizedPhone;
-          // For phone signup, set ownerEmail to empty string or phone-based email
-          restaurantData.ownerEmail =
-            email || `${normalizedPhone}@restaurant.appzeto.com`;
-          // Explicitly don't set email field for phone signups to avoid null duplicate key error
-        }
-        if (email) {
-          restaurantData.email = email.toLowerCase().trim();
-          restaurantData.ownerEmail = email.toLowerCase().trim();
-        }
-        // Ensure email is not set to null or undefined
-        if (!email && !phone) {
-          // This shouldn't happen due to validation, but just in case
-          throw new Error("Either phone or email must be provided");
-        }
-
-        if (password && !phone) {
-          restaurantData.password = password;
-        }
-
-        restaurantData.ownerName = name;
-
-        // Set isActive to false - restaurant needs admin approval before becoming active
-        // Auto-approve in development
-        restaurantData.isActive = process.env.NODE_ENV === "development";
-
-        try {
-          // For phone signups, ensure email field is not included
-          if (phone && !email) {
-            const docToInsert = { ...restaurantData };
-            // Explicitly remove email field
-            delete docToInsert.email;
-            restaurant = await Restaurant.create(docToInsert);
-          } else {
-            restaurant = await Restaurant.create(restaurantData);
-          }
-          logger.info(`New restaurant auto-registered: ${restaurant._id}`, {
-            [identifierType]: identifier,
-            restaurantId: restaurant._id,
-          });
-        } catch (createError) {
-          logger.error(
-            `Error creating restaurant (auto-register): ${createError.message}`,
-            {
-              code: createError.code,
-              keyPattern: createError.keyPattern,
-              phone,
-              email,
-              restaurantData: { ...restaurantData, password: "***" },
-            },
-          );
-
-          if (createError.code === 11000) {
-            // Check if it's an email null duplicate key error (common with phone signups)
-            if (
-              createError.keyPattern &&
-              createError.keyPattern.email &&
-              phone &&
-              !email
-            ) {
-              logger.warn(
-                `Email null duplicate key error for phone signup: ${phone}`,
-                {
-                  error: createError.message,
-                  keyPattern: createError.keyPattern,
-                },
-              );
-              // Try to find existing restaurant by phone (search in both formats)
-              const phoneQuery = buildPhoneQuery(normalizedPhone) || { phone };
-              restaurant = await Restaurant.findOne(phoneQuery);
-              if (restaurant) {
-                logger.info(
-                  `Restaurant found after email null duplicate key error: ${restaurant._id}`,
-                );
-                // Continue with login flow
-              } else {
-                // If not found, this is likely a database index issue - ensure email is completely removed
-                // Create a fresh restaurantData object without email field
-                const retryRestaurantData = {
-                  name: restaurantData.name,
-                  signupMethod: restaurantData.signupMethod,
-                  phone: restaurantData.phone,
-                  phoneVerified: restaurantData.phoneVerified,
-                  ownerPhone: restaurantData.ownerPhone,
-                  ownerEmail: restaurantData.ownerEmail,
-                  ownerName: restaurantData.ownerName,
-                  isActive: restaurantData.isActive,
-                };
-                // Explicitly do NOT include email field
-                if (restaurantData.password) {
-                  retryRestaurantData.password = restaurantData.password;
-                }
-                try {
-                  restaurant = await Restaurant.create(retryRestaurantData);
-                  logger.info(
-                    `New restaurant auto-registered (fixed email null issue): ${restaurant._id}`,
-                    {
-                      [identifierType]: identifier,
-                      restaurantId: restaurant._id,
-                    },
-                  );
-                } catch (retryError) {
-                  logger.error(
-                    `Failed to create restaurant after email null fix: ${retryError.message}`,
-                    {
-                      code: retryError.code,
-                      keyPattern: retryError.keyPattern,
-                      error: retryError,
-                    },
-                  );
-                  // Check if it's still a duplicate key error
-                  if (retryError.code === 11000) {
-                    // Try to find restaurant again (search in both formats)
-                    const phoneQuery = buildPhoneQuery(normalizedPhone) || {
-                      phone,
-                    };
-                    restaurant = await Restaurant.findOne(phoneQuery);
-                    if (restaurant) {
-                      logger.info(
-                        `Restaurant found after retry error: ${restaurant._id}`,
-                      );
-                      // Continue with login flow
-                    } else {
-                      throw new Error(
-                        `Failed to create restaurant: ${retryError.message}. Please contact support.`,
-                      );
-                    }
-                  } else {
-                    throw new Error(
-                      `Failed to create restaurant: ${retryError.message}. Please contact support.`,
-                    );
-                  }
-                }
-              }
-            } else if (createError.keyPattern && createError.keyPattern.phone) {
-              // Phone duplicate key error
-              restaurant = await Restaurant.findOne({ phone });
-              if (restaurant) {
-                logger.info(
-                  `Restaurant found after phone duplicate key error: ${restaurant._id}`,
-                );
-                // Continue with login flow
-              } else {
-                throw new Error(
-                  `Phone number already exists: ${createError.message}`,
-                );
-              }
-            } else if (createError.keyPattern && createError.keyPattern.slug) {
-              // Check if it's a slug conflict
-              // Retry with unique slug
-              const baseSlug = restaurantData.name
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, "-")
-                .replace(/(^-|-$)/g, "");
-              let counter = 1;
-              let uniqueSlug = `${baseSlug}-${counter}`;
-              while (await Restaurant.findOne({ slug: uniqueSlug })) {
-                counter++;
-                uniqueSlug = `${baseSlug}-${counter}`;
-              }
-              restaurantData.slug = uniqueSlug;
-              try {
-                restaurant = await Restaurant.create(restaurantData);
-                logger.info(
-                  `New restaurant auto-registered with unique slug: ${restaurant._id}`,
-                  {
-                    [identifierType]: identifier,
-                    restaurantId: restaurant._id,
-                    slug: uniqueSlug,
-                  },
-                );
-              } catch (retryError) {
-                // If still fails, check if restaurant exists
-                const findQuery = phone ? { phone } : { email };
-                restaurant = await Restaurant.findOne(findQuery);
-                if (!restaurant) {
-                  throw retryError;
-                }
-                logger.info(
-                  `Restaurant found after duplicate key error: ${restaurant._id}`,
-                );
-              }
-            } else {
-              // Other duplicate key errors (email, phone)
-              const findQuery = phone ? { phone } : { email };
-              restaurant = await Restaurant.findOne(findQuery);
-              if (!restaurant) {
-                throw createError;
-              }
-              logger.info(
-                `Restaurant found after duplicate key error: ${restaurant._id}`,
-              );
-            }
-          } else {
-            throw createError;
-          }
-        }
+        return successResponse(res, 200, "OTP verified. Enter referral code to continue.", {
+          needsReferralCode: true,
+          tempToken,
+        });
       } else {
         // Existing restaurant login - update verification status if needed
         if (phone && !restaurant.phoneVerified) {
@@ -689,6 +293,137 @@ export const verifyOTP = asyncHandler(async (req, res) => {
     logger.error(`Error verifying OTP: ${error.message}`);
     return errorResponse(res, 400, error.message);
   }
+});
+
+/**
+ * Complete restaurant registration with referral code (after OTP verified)
+ * POST /api/restaurant/auth/complete-registration-with-referral
+ */
+export const completeRegistrationWithReferral = asyncHandler(async (req, res) => {
+  const { tempToken, referralCode } = req.body;
+
+  if (!tempToken || !referralCode) {
+    return errorResponse(res, 400, "Temp token and referral code are required");
+  }
+
+  let decoded;
+  try {
+    decoded = jwtService.verifyReferralTempToken(tempToken);
+  } catch (err) {
+    return errorResponse(res, 400, err.message || "Invalid or expired session");
+  }
+
+  if (decoded.registrationType && decoded.registrationType !== "restaurant") {
+    return errorResponse(res, 400, "Invalid token type");
+  }
+
+  const { phone, email, name, password } = decoded;
+  const normalizedPhone = phone || null;
+
+  const normalizedRefCode = referralCode.trim().toUpperCase();
+
+  const trulifeResult = await verifyTrulifeReferral(normalizedRefCode);
+  if (!trulifeResult.valid) {
+    return errorResponse(res, 400, trulifeResult.message || "Invalid Referral Code");
+  }
+
+  const findQuery = normalizedPhone
+    ? buildPhoneQuery(normalizedPhone)
+    : { email: email?.toLowerCase().trim() };
+  const existingRestaurant = await Restaurant.findOne(findQuery);
+  if (existingRestaurant) {
+    return errorResponse(
+      res,
+      400,
+      "Restaurant already exists with this contact. Please login."
+    );
+  }
+
+  const restaurantData = {
+    name: name || "Restaurant",
+    signupMethod: normalizedPhone ? "phone" : "email",
+    referralCode: normalizedRefCode,
+    ownerName: name || "Restaurant",
+    isActive: process.env.NODE_ENV === "development",
+  };
+
+  if (normalizedPhone) {
+    restaurantData.phone = normalizedPhone;
+    restaurantData.phoneVerified = true;
+    restaurantData.ownerPhone = normalizedPhone;
+    restaurantData.ownerEmail = email || `${normalizedPhone}@restaurant.appzeto.com`;
+  }
+  if (email) {
+    restaurantData.email = email.toLowerCase().trim();
+    restaurantData.ownerEmail = email.toLowerCase().trim();
+  }
+  if (password && !normalizedPhone) {
+    restaurantData.password = password;
+  }
+
+  let restaurant;
+  const createDoc = () => {
+    if (normalizedPhone && !email) {
+      const docToInsert = { ...restaurantData };
+      delete docToInsert.email;
+      return Restaurant.create(docToInsert);
+    }
+    return Restaurant.create(restaurantData);
+  };
+
+  try {
+    restaurant = await createDoc();
+  } catch (createError) {
+    if (createError.code === 11000) {
+      const keyPattern = createError.keyPattern || {};
+      if (keyPattern.slug) {
+        restaurantData.slug = `${(restaurantData.name || "restaurant").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now().toString(36)}`;
+        try {
+          restaurant = await createDoc();
+        } catch (retryError) {
+          throw retryError;
+        }
+      } else {
+        const existing = await Restaurant.findOne(findQuery);
+        if (existing) {
+          return errorResponse(res, 400, "Restaurant already exists. Please login.");
+        }
+        throw createError;
+      }
+    } else {
+      throw createError;
+    }
+  }
+
+  const tokens = jwtService.generateTokens({
+    userId: restaurant._id.toString(),
+    role: "restaurant",
+    email: restaurant.email || restaurant.phone || restaurant.restaurantId,
+  });
+
+  res.cookie("refreshToken", tokens.refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  return successResponse(res, 200, "Registration complete. Please complete onboarding.", {
+    accessToken: tokens.accessToken,
+    restaurant: {
+      id: restaurant._id,
+      restaurantId: restaurant.restaurantId,
+      name: restaurant.name,
+      email: restaurant.email,
+      phone: restaurant.phone,
+      phoneVerified: restaurant.phoneVerified,
+      signupMethod: restaurant.signupMethod,
+      profileImage: restaurant.profileImage,
+      isActive: restaurant.isActive,
+      onboarding: restaurant.onboarding,
+    },
+    sponsorName: trulifeResult.sponsorName || null,
+  });
 });
 
 /**

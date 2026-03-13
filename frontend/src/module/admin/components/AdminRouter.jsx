@@ -126,6 +126,7 @@ const DiningEarnings = lazy(() => import("../pages/dining/DiningEarnings"));
 // Hub Management
 const HubList = lazy(() => import("../pages/hub/HubList"));
 const CreateHub = lazy(() => import("../pages/hub/CreateHub"));
+const ReferralCodeList = lazy(() => import("../pages/referral/ReferralCodeList"));
 
 export default function AdminRouter() {
   return (
@@ -194,6 +195,9 @@ export default function AdminRouter() {
           <Route path="hubs" element={<HubList />} />
           <Route path="hubs/create" element={<CreateHub />} />
           <Route path="hubs/edit/:id" element={<CreateHub />} />
+
+          {/* REFERRAL CODE MANAGEMENT */}
+          <Route path="referral-codes" element={<ReferralCodeList />} />
 
           {/* FOOD MANAGEMENT */}
           {/* Categories */}

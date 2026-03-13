@@ -242,6 +242,7 @@ export const API_ENDPOINTS = {
       REFRESH_TOKEN: "/delivery/auth/refresh-token",
       LOGOUT: "/delivery/auth/logout",
       ME: "/delivery/auth/me",
+      FCM_TOKEN: "/delivery/auth/fcm-token",
     },
     SIGNUP: {
       DETAILS: "/delivery/signup/details",
@@ -279,6 +280,17 @@ export const API_ENDPOINTS = {
     EMERGENCY_HELP: "/delivery/emergency-help",
     SUPPORT_TICKETS: "/delivery/support-tickets",
     SUPPORT_TICKET_BY_ID: "/delivery/support-tickets/:id",
+  },
+  // Referral endpoints (public verify)
+  REFERRAL: {
+    VERIFY: "/referral/verify",
+  },
+  // Admin referral endpoints
+  ADMIN_REFERRAL: {
+    CREATE: "/admin/referral/create",
+    LIST: "/admin/referral/list",
+    STATUS: "/admin/referral/status",
+    DELETE: "/admin/referral",
   },
   // Admin endpoints
   ADMIN: {

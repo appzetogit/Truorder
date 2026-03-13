@@ -7,6 +7,7 @@ import { notifyRestaurantOrderUpdate } from '../../order/services/restaurantNoti
 import { assignOrderToDeliveryBoy, findNearestDeliveryBoys, findNearestDeliveryBoy } from '../../order/services/deliveryAssignmentService.js';
 import { notifyDeliveryBoyNewOrder, notifyMultipleDeliveryBoys, broadcastNewOrderToAllDeliveryBoys } from '../../order/services/deliveryNotificationService.js';
 import mongoose from 'mongoose';
+import { sendPushToEntity } from '../../../shared/services/fcmPushService.js';
 
 /**
  * Get all orders for restaurant
@@ -276,6 +277,12 @@ export const acceptOrder = asyncHandler(async (req, res) => {
       console.error('Error sending notification:', notifError);
     }
 
+    // Push to customer: order accepted
+    sendPushToEntity("user", order.userId, {
+      title: "Order Accepted!",
+      body: `Your order #${order.orderId} is being prepared.`,
+    }).catch(() => {});
+
     // Delivery boys receive the order only when restaurant marks it as "Ready" (PATCH /ready), not on accept.
     return successResponse(res, 200, 'Order accepted successfully', {
       order
@@ -378,6 +385,11 @@ export const rejectOrder = asyncHandler(async (req, res) => {
     } catch (notifError) {
       console.error('Error sending notification:', notifError);
     }
+
+    sendPushToEntity("user", order.userId, {
+      title: "Order Cancelled",
+      body: `Your order #${order.orderId} was cancelled by the restaurant.`,
+    }).catch(() => {});
 
     return successResponse(res, 200, 'Order rejected successfully', {
       order
@@ -589,6 +601,20 @@ export const markOrderReady = asyncHandler(async (req, res) => {
       } catch (deliveryNotifError) {
         console.error('Error sending specific delivery boy notification at READY stage:', deliveryNotifError);
       }
+    }
+
+    // Push to customer: order ready
+    sendPushToEntity("user", order.userId, {
+      title: "Order Ready!",
+      body: `Your order #${order.orderId} is ready for pickup.`,
+    }).catch(() => {});
+
+    // Push to assigned delivery partner if exists
+    if (order.deliveryPartnerId) {
+      sendPushToEntity("delivery", order.deliveryPartnerId, {
+        title: "Order Ready for Pickup",
+        body: `Order #${order.orderId} is ready. Head to the restaurant.`,
+      }).catch(() => {});
     }
 
     return successResponse(res, 200, 'Order marked as ready', {

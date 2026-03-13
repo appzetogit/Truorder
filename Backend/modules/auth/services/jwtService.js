@@ -110,6 +110,45 @@ class JWTService {
   verifyRefreshToken(token) {
     return this.verifyToken(token, 'refresh');
   }
+
+  /**
+   * Generate short-lived referral temp token (for OTP-verified, referral-pending state)
+   * @param {Object} payload - { phone, name?, type: 'delivery_partner'|'restaurant', email? }
+   * @param {string} expiry - e.g. '10m'
+   * @returns {string} - JWT token
+   */
+  generateReferralTempToken(payload, expiry = '10m') {
+    const { type: registrationType, ...rest } = payload;
+    return jwt.sign(
+      {
+        ...rest,
+        registrationType,
+        type: 'referral_temp',
+      },
+      this.secret,
+      { expiresIn: expiry },
+    );
+  }
+
+  /**
+   * Verify referral temp token
+   * @param {string} token - Referral temp JWT
+   * @returns {Object} - Decoded payload
+   */
+  verifyReferralTempToken(token) {
+    try {
+      const decoded = jwt.verify(token, this.secret);
+      if (decoded.type !== 'referral_temp') {
+        throw new Error('Invalid token type');
+      }
+      return decoded;
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        throw new Error('Referral session expired. Please verify OTP again.');
+      }
+      throw error;
+    }
+  }
 }
 
 export default new JWTService();

@@ -2,6 +2,7 @@ import express from "express";
 import {
   sendOTP,
   verifyOTP,
+  completeRegistrationWithReferral,
   refreshToken,
   logout,
   getCurrentDelivery,
@@ -39,9 +40,15 @@ const verifyOTPSchema = Joi.object({
   name: Joi.string().allow(null, "").optional(),
 });
 
+const completeRegistrationSchema = Joi.object({
+  tempToken: Joi.string().required(),
+  referralCode: Joi.string().trim().required(),
+});
+
 // Public routes
 router.post("/send-otp", validate(sendOTPSchema), sendOTP);
 router.post("/verify-otp", validate(verifyOTPSchema), verifyOTP);
+router.post("/complete-registration-with-referral", validate(completeRegistrationSchema), completeRegistrationWithReferral);
 router.post("/refresh-token", refreshToken);
 
 // Protected routes (require authentication)

@@ -20,6 +20,7 @@ import {
 import { encodePolyline } from "../../../shared/utils/polylineEncoder.js";
 import mongoose from "mongoose";
 import winston from "winston";
+import { sendPushToEntity } from "../../../shared/services/fcmPushService.js";
 
 const logger = winston.createLogger({
   level: "info",
@@ -822,6 +823,18 @@ export const acceptOrder = asyncHandler(async (req, res) => {
       console.error("Error emitting order_accepted:", emitErr);
     }
 
+    // Push to customer + restaurant: delivery partner assigned
+    sendPushToEntity("user", order.userId, {
+      title: "Delivery Partner Assigned",
+      body: `A delivery partner is on the way for order #${order.orderId}.`,
+    }).catch(() => {});
+    if (order.restaurantId) {
+      sendPushToEntity("restaurant", order.restaurantId, {
+        title: "Delivery Partner Assigned",
+        body: `Delivery partner assigned for order #${order.orderId}.`,
+      }).catch(() => {});
+    }
+
     return successResponse(res, 200, "Order accepted successfully", {
       order: orderWithPayment,
       route: {
@@ -1360,6 +1373,12 @@ export const confirmOrderId = asyncHandler(async (req, res) => {
         method: routeData.method,
       },
     };
+
+    // Push to customer: out for delivery
+    sendPushToEntity("user", order.userId, {
+      title: "Out for Delivery",
+      body: `Your order #${order.orderId} is on its way!`,
+    }).catch(() => {});
 
     const response = successResponse(
       res,
@@ -2273,6 +2292,18 @@ export const completeDelivery = asyncHandler(async (req, res) => {
         : null,
       message: "Delivery completed successfully",
     };
+
+    // Push to customer + restaurant: delivered
+    sendPushToEntity("user", order.userId, {
+      title: "Order Delivered!",
+      body: `Your order #${order.orderId || orderIdForLog} has been delivered. Enjoy!`,
+    }).catch(() => {});
+    if (order.restaurantId) {
+      sendPushToEntity("restaurant", order.restaurantId, {
+        title: "Order Delivered",
+        body: `Order #${order.orderId || orderIdForLog} has been delivered.`,
+      }).catch(() => {});
+    }
 
     // Send response immediately
     const response = successResponse(

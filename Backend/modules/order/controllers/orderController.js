@@ -19,6 +19,7 @@ import etaCalculationService from "../services/etaCalculationService.js";
 import etaWebSocketService from "../services/etaWebSocketService.js";
 import OrderEvent from "../models/OrderEvent.js";
 import UserWallet from "../../user/models/UserWallet.js";
+import { sendPushToEntity } from "../../../shared/services/fcmPushService.js";
 
 const logger = winston.createLogger({
   level: "info",
@@ -1268,6 +1269,20 @@ export const cancelOrder = async (req, res) => {
       }
     } else if (actualPaymentMethod === "cash") {
       refundMessage = " No refund required as payment was not made.";
+    }
+
+    // Push to restaurant + delivery partner about cancellation
+    if (order.restaurantId) {
+      sendPushToEntity("restaurant", order.restaurantId, {
+        title: "Order Cancelled",
+        body: `Order #${order.orderId} has been cancelled by the customer.`,
+      }).catch(() => {});
+    }
+    if (order.deliveryPartnerId) {
+      sendPushToEntity("delivery", order.deliveryPartnerId, {
+        title: "Order Cancelled",
+        body: `Order #${order.orderId} has been cancelled.`,
+      }).catch(() => {});
     }
 
     res.json({

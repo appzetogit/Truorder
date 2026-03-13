@@ -1,6 +1,7 @@
-import { getMessaging, getToken, isSupported } from "firebase/messaging";
+import { getMessaging, getToken, onMessage, isSupported } from "firebase/messaging";
 import { ensureFirebaseInitialized, getFirebaseVapidKey } from "@/lib/firebase";
-import { authAPI, restaurantAPI } from "@/lib/api";
+import { authAPI, restaurantAPI, deliveryAPI } from "@/lib/api";
+import { toast } from "sonner";
 
 const FCM_SW_PATH = "/firebase-messaging-sw.js";
 const FCM_SW_SCOPE = "/firebase-cloud-messaging-push-scope/";
@@ -131,6 +132,75 @@ export async function removeFcmTokenForRestaurant() {
     await restaurantAPI.removeFcmToken("web");
   } catch (error) {
     console.error("[FCM][Restaurant] Error removing FCM token for web:", error);
+  }
+}
+
+export async function registerFcmTokenForDelivery() {
+  try {
+    const token = await getBrowserFcmToken();
+    if (!token) return;
+
+    console.log("[FCM][Delivery] Token to send:", token.substring(0, 30) + "...");
+    const res = await deliveryAPI.registerFcmToken("web", token);
+    const saved = res?.data?.data?.fcmTokenWeb ?? res?.data?.data?.fcmtokenWeb;
+    console.log(
+      "[FCM][Delivery] Backend saved fcmTokenWeb:",
+      saved ? saved.substring(0, 30) + "..." : "null",
+    );
+  } catch (error) {
+    console.error("[FCM][Delivery] Error during web FCM registration:", error?.message || error);
+  }
+}
+
+export async function removeFcmTokenForDelivery() {
+  try {
+    await deliveryAPI.removeFcmToken("web");
+  } catch (error) {
+    console.error("[FCM][Delivery] Error removing FCM token for web:", error);
+  }
+}
+
+let foregroundUnsubscribe = null;
+
+/**
+ * Listen for FCM messages while the app tab is in the foreground.
+ * Shows an in-app toast via sonner. Call once per layout mount.
+ * Returns an unsubscribe function.
+ */
+export async function setupForegroundNotifications() {
+  try {
+    if (foregroundUnsubscribe) return foregroundUnsubscribe;
+
+    const app = await ensureFirebaseInitialized();
+    if (!app) return () => {};
+
+    const supported = await isSupported();
+    if (!supported) return () => {};
+
+    const messaging = getMessaging(app);
+    foregroundUnsubscribe = onMessage(messaging, (payload) => {
+      console.log("[FCM] Foreground message received:", payload);
+      const title = payload?.notification?.title || "TruOrder";
+      const body = payload?.notification?.body || "";
+      toast.success(title, {
+        description: body,
+        duration: 6000,
+        position: "top-right",
+        style: {
+          background: "#1a1a2e",
+          color: "#ffffff",
+          border: "1px solid #FF6B35",
+          borderRadius: "12px",
+          padding: "16px",
+          boxShadow: "0 8px 32px rgba(255, 107, 53, 0.25)",
+        },
+      });
+    });
+
+    return foregroundUnsubscribe;
+  } catch (err) {
+    console.warn("[FCM] Could not set up foreground handler:", err?.message || err);
+    return () => {};
   }
 }
 

@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { exportDeliverymenToExcel, exportDeliverymenToPDF } from "../../components/deliveryman/deliverymanExportUtils"
 
-export default function DeliverymanList() {
+export default function DeliverymanList({ isHub = false }) {
   const [searchQuery, setSearchQuery] = useState("")
   const [deliverymen, setDeliverymen] = useState([])
   const [loading, setLoading] = useState(true)
@@ -197,7 +197,7 @@ export default function DeliverymanList() {
 
             <div className="flex items-center gap-3 flex-wrap">
               <Link
-                to="/admin/delivery-partners/add"
+                to={isHub ? "/hub/delivery-partners/add" : "/admin/delivery-partners/add"}
                 className="px-4 py-2.5 text-sm font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-md"
               >
                 <UserPlus className="w-4 h-4" />
@@ -403,14 +403,16 @@ export default function DeliverymanList() {
                               >
                                 <Eye className="w-4 h-4" />
                               </button>
-                              <button
-                                onClick={() => handleDelete(dm)}
-                                disabled={processing}
-                                className="p-1.5 rounded text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
+                              {!isHub && (
+                                <button
+                                  onClick={() => handleDelete(dm)}
+                                  disabled={processing}
+                                  className="p-1.5 rounded text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
                             </div>
                           </td>
                         )}

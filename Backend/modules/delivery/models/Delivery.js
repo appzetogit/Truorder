@@ -200,6 +200,24 @@ const deliverySchema = new mongoose.Schema(
       enum: ["google", "phone", "email"],
       default: "phone",
     },
+    referralCode: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    referralCodeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ReferralCode",
+      default: null,
+    },
+    referralCounted: {
+      type: Boolean,
+      default: false,
+    },
+    trulifeAffiliateRegistered: {
+      type: Boolean,
+      default: false,
+    },
     // Basic information
     name: {
       type: String,

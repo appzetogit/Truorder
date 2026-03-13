@@ -4,10 +4,9 @@ import {
   FileText,
   UtensilsCrossed,
   Truck,
-  Wallet,
   AlertTriangle,
-  Users,
   User,
+  UserCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -33,14 +32,9 @@ const menuItems = [
     path: "/hub/delivery-partners",
   },
   {
-    label: "Payout Requests",
-    icon: Wallet,
-    path: "/hub/payouts",
-  },
-  {
-    label: "Employees",
-    icon: Users,
-    path: "/hub/employees",
+    label: "Customers",
+    icon: UserCircle,
+    path: "/hub/customers",
   },
   {
     label: "Profile",

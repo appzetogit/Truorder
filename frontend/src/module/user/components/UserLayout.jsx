@@ -5,7 +5,7 @@ import LocationPrompt from "./LocationPrompt"
 import { CartProvider } from "../context/CartContext"
 import { OrdersProvider } from "../context/OrdersContext"
 import { isModuleAuthenticated } from "@/lib/utils/auth"
-import { registerFcmTokenForLoggedInUser } from "@/lib/notifications/fcmWeb"
+import { registerFcmTokenForLoggedInUser, setupForegroundNotifications } from "@/lib/notifications/fcmWeb"
 // Lazy load overlays to reduce initial bundle size
 const SearchOverlay = lazy(() => import("./SearchOverlay"))
 const LocationSelectorOverlay = lazy(() => import("./LocationSelectorOverlay"))
@@ -127,6 +127,7 @@ export default function UserLayout() {
       // Short delay so storage is committed before the FCM API request reads the token
       timeoutId = setTimeout(() => {
         registerFcmTokenForLoggedInUser().catch(() => {})
+        setupForegroundNotifications().catch(() => {})
         timeoutId = null
       }, 300)
     }

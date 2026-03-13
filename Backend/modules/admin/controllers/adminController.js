@@ -934,6 +934,20 @@ export const getUsers = asyncHandler(async (req, res) => {
     // Build query
     const query = { role: "user" }; // Only get users, not restaurants/delivery/admins
 
+    // Hub Manager: restrict to users who placed orders in assigned zones
+    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
+      const zoneUserIds = await Order.distinct("userId", {
+        "assignmentInfo.zoneId": { $in: req.user.assignedZoneIds },
+      });
+      if (zoneUserIds.length === 0) {
+        return successResponse(res, 200, "Users retrieved successfully", {
+          users: [],
+          total: 0,
+        });
+      }
+      query._id = { $in: zoneUserIds };
+    }
+
     // Search filter
     if (search) {
       query.$or = [
