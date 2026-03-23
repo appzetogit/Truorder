@@ -1234,7 +1234,7 @@ export default function Home() {
       <div className="relative w-full">
         {/* Navbar */}
         <motion.div
-          className="relative z-20 pt-2 sm:pt-3 lg:pt-4"
+          className="relative z-20 pt-2 sm:pt-3 lg:pt-4 xl:pt-5"
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: "easeOut" }}
@@ -1242,19 +1242,19 @@ export default function Home() {
           <PageNavbar textColor="black" zIndex={20} />
         </motion.div>
 
-        <section className="relative z-20 w-full pt-2 pb-3 sm:pt-3 sm:pb-4 lg:pt-4 lg:pb-6">
-          <div className="relative z-20 max-w-2xl lg:max-w-4xl xl:max-w-5xl mx-auto px-3 sm:px-6 lg:px-8 space-y-3 sm:space-y-4">
+        <section className="relative z-20 w-full pt-2 pb-3 sm:pt-3 sm:pb-4 lg:pt-5 lg:pb-8 xl:pb-10">
+          <div className="relative z-20 max-w-2xl lg:max-w-7xl xl:max-w-[1420px] mx-auto px-3 sm:px-6 lg:px-8 xl:px-10 space-y-3 sm:space-y-4 lg:space-y-5">
             {/* Search + veg mode row */}
             <motion.div
-              className={`flex items-center gap-2.5 sm:gap-3 ${isSearchOpen ? "pointer-events-none opacity-0" : ""}`}
+              className={`flex items-center gap-2.5 sm:gap-3 lg:gap-4 ${isSearchOpen ? "pointer-events-none opacity-0" : ""}`}
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.45, delay: 0.12, ease: "easeOut" }}
             >
               <div className="flex-1 relative">
-                <div className="relative bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-sm border border-gray-200 dark:border-gray-800 px-2 py-1">
-                  <div className="flex items-center gap-2.5">
-                    <Search className="h-4 w-4 text-gray-500 flex-shrink-0 ml-2" strokeWidth={2.5} />
+                <div className="relative bg-white dark:bg-[#1a1a1a] rounded-2xl lg:rounded-3xl shadow-sm lg:shadow-md border border-gray-200 dark:border-gray-800 px-2 py-1 lg:px-3 lg:py-2">
+                  <div className="flex items-center gap-2.5 lg:gap-3">
+                    <Search className="h-4 w-4 lg:h-5 lg:w-5 text-gray-500 flex-shrink-0 ml-2 lg:ml-3" strokeWidth={2.5} />
                     <div className="flex-1 relative">
                       <div className="relative w-full">
                         <Input
@@ -1269,7 +1269,7 @@ export default function Home() {
                             }
                           }}
                           aria-label="Search restaurants and food"
-                          className="pl-0 pr-1 h-8 sm:h-9 w-full bg-white dark:bg-[#1a1a1a] border-0 text-sm font-semibold text-gray-700 dark:text-white focus-visible:ring-0 focus-visible:ring-offset-0 rounded-full placeholder:text-gray-500 dark:placeholder:text-gray-400"
+                          className="pl-0 pr-1 h-8 sm:h-9 lg:h-11 w-full bg-white dark:bg-[#1a1a1a] border-0 text-sm lg:text-base font-semibold text-gray-700 dark:text-white focus-visible:ring-0 focus-visible:ring-offset-0 rounded-full placeholder:text-gray-500 dark:placeholder:text-gray-400"
                         />
                         {!heroSearch && (
                           <div className="absolute left-0 top-1/2 -translate-y-1/2 pointer-events-none h-5 overflow-hidden">
@@ -1280,7 +1280,7 @@ export default function Home() {
                                 animate={{ y: 0, opacity: 1 }}
                                 exit={{ y: -16, opacity: 0 }}
                                 transition={{ duration: 0.3 }}
-                                className="text-sm font-semibold text-gray-500 dark:text-gray-400 inline-block"
+                                className="text-sm lg:text-base font-semibold text-gray-500 dark:text-gray-400 inline-block"
                               >
                                 {placeholders[placeholderIndex]}
                               </motion.span>
@@ -1293,9 +1293,9 @@ export default function Home() {
                       type="button"
                       aria-label="Voice Search"
                       onClick={handleSearchFocus}
-                      className="flex-shrink-0 mr-2 p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
+                      className="flex-shrink-0 mr-2 lg:mr-3 p-1 lg:p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
                     >
-                      <Mic className="h-4 w-4 text-gray-500 dark:text-gray-400" strokeWidth={2.5} />
+                      <Mic className="h-4 w-4 lg:h-5 lg:w-5 text-gray-500 dark:text-gray-400" strokeWidth={2.5} />
                     </button>
                   </div>
                 </div>
@@ -1303,28 +1303,28 @@ export default function Home() {
 
               <motion.div
                 ref={vegModeToggleRef}
-                className="flex flex-col items-center gap-1 flex-shrink-0"
+                className="flex flex-col items-center gap-1 lg:gap-1.5 flex-shrink-0"
                 initial={{ opacity: 0, scale: 0.86 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ duration: 0.42, delay: 0.2, ease: "easeOut" }}
               >
                 <div className="flex flex-col items-center">
-                  <span className="text-[#0f766e] text-[12px] sm:text-[11px] font-black leading-none">VEG</span>
-                  <span className="text-[#0f766e] text-[10px] sm:text-[10px] font-black leading-none">MODE</span>
+                  <span className="text-[#0f766e] text-[12px] sm:text-[11px] lg:text-[13px] font-black leading-none">VEG</span>
+                  <span className="text-[#0f766e] text-[10px] sm:text-[10px] lg:text-[11px] font-black leading-none">MODE</span>
                 </div>
                 <Switch
                   checked={vegMode}
                   onCheckedChange={handleVegModeChange}
                   aria-label="Toggle Veg Mode"
-                  className="data-[state=checked]:bg-cyan-500 data-[state=unchecked]:bg-gray-300 w-10 h-5 shadow-sm [&_[data-slot=switch-thumb]]:bg-white [&_[data-slot=switch-thumb]]:h-4 [&_[data-slot=switch-thumb]]:w-4 [&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-5 [&_[data-slot=switch-thumb]]:data-[state=unchecked]:translate-x-0"
+                  className="data-[state=checked]:bg-cyan-500 data-[state=unchecked]:bg-gray-300 w-10 h-5 lg:w-12 lg:h-6 shadow-sm lg:shadow-md [&_[data-slot=switch-thumb]]:bg-white [&_[data-slot=switch-thumb]]:h-4 [&_[data-slot=switch-thumb]]:w-4 lg:[&_[data-slot=switch-thumb]]:h-5 lg:[&_[data-slot=switch-thumb]]:w-5 [&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-5 lg:[&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-6 [&_[data-slot=switch-thumb]]:data-[state=unchecked]:translate-x-0"
                 />
               </motion.div>
             </motion.div>
 
             {/* Hero banner card */}
-            <div className="rounded-2xl overflow-hidden">
+            <div className="rounded-2xl lg:rounded-3xl overflow-hidden shadow-none lg:shadow-xl ring-0 lg:ring-1 lg:ring-black/5">
               {loadingBanners ? (
-                <div className="h-[190px] sm:h-[220px] lg:h-[260px] bg-gradient-to-br from-cyan-300 to-cyan-500 flex items-center justify-center">
+                <div className="h-[190px] sm:h-[220px] lg:h-[320px] xl:h-[360px] bg-gradient-to-br from-cyan-300 to-cyan-500 flex items-center justify-center">
                   <div className="text-white text-center">
                     <Loader2 className="w-7 h-7 animate-spin mx-auto mb-1.5" />
                     <p className="text-sm">Loading banners...</p>
@@ -1332,7 +1332,7 @@ export default function Home() {
                 </div>
               ) : heroBannerImages.length > 0 ? (
                 <div
-                  className="cursor-grab active:cursor-grabbing overflow-hidden h-[190px] sm:h-[220px] lg:h-[260px]"
+                  className="cursor-grab active:cursor-grabbing overflow-hidden h-[190px] sm:h-[220px] lg:h-[320px] xl:h-[360px]"
                   onTouchStart={handleTouchStart}
                   onTouchMove={handleTouchMove}
                   onTouchEnd={handleTouchEnd}
@@ -1380,7 +1380,7 @@ export default function Home() {
                   </motion.div>
                 </div>
               ) : (
-                <div className="h-[190px] sm:h-[220px] lg:h-[260px] bg-gradient-to-br from-cyan-300 to-cyan-500" />
+                <div className="h-[190px] sm:h-[220px] lg:h-[320px] xl:h-[360px] bg-gradient-to-br from-cyan-300 to-cyan-500" />
               )}
             </div>
           </div>
@@ -1389,7 +1389,7 @@ export default function Home() {
 
       {/* Rest of Content - Container Width with Unified Background */}
       <motion.div
-        className="relative max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8 xl:px-12 space-y-0 pt-4 sm:pt-5 lg:pt-8"
+        className="relative max-w-7xl xl:max-w-[1420px] mx-auto px-3 sm:px-4 md:px-6 lg:px-8 xl:px-10 space-y-0 pt-4 sm:pt-5 lg:pt-8 xl:pt-10"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.6, delay: 0.4 }}

@@ -161,6 +161,7 @@ export async function removeFcmTokenForDelivery() {
 }
 
 let foregroundUnsubscribe = null;
+let foregroundInitialized = false;
 
 /**
  * Listen for FCM messages while the app tab is in the foreground.
@@ -169,7 +170,7 @@ let foregroundUnsubscribe = null;
  */
 export async function setupForegroundNotifications() {
   try {
-    if (foregroundUnsubscribe) return foregroundUnsubscribe;
+    if (foregroundInitialized && foregroundUnsubscribe) return foregroundUnsubscribe;
 
     const app = await ensureFirebaseInitialized();
     if (!app) return () => {};
@@ -180,8 +181,30 @@ export async function setupForegroundNotifications() {
     const messaging = getMessaging(app);
     foregroundUnsubscribe = onMessage(messaging, (payload) => {
       console.log("[FCM] Foreground message received:", payload);
-      const title = payload?.notification?.title || "TruOrder";
-      const body = payload?.notification?.body || "";
+      const title = payload?.notification?.title || payload?.data?.title || "TruOrder";
+      const body = payload?.notification?.body || payload?.data?.body || "";
+      const icon = payload?.notification?.icon || payload?.data?.icon || "/favicon.ico";
+      const tag = payload?.data?.tag || payload?.data?.orderId || title;
+
+      // Cross-tab dedupe to avoid duplicate OS notifications.
+      const debounceKey = `fcm_notif_shown_${tag}`;
+      const lastShown = localStorage.getItem(debounceKey);
+      if (!lastShown || Date.now() - parseInt(lastShown, 10) >= 5000) {
+        localStorage.setItem(debounceKey, Date.now().toString());
+        try {
+          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+            new Notification(title, {
+              body,
+              icon,
+              tag,
+              data: payload?.data || {},
+            });
+          }
+        } catch {
+          // Ignore browser notification failures.
+        }
+      }
+
       toast.success(title, {
         description: body,
         duration: 6000,
@@ -196,11 +219,21 @@ export async function setupForegroundNotifications() {
         },
       });
     });
+    foregroundInitialized = true;
 
     return foregroundUnsubscribe;
   } catch (err) {
     console.warn("[FCM] Could not set up foreground handler:", err?.message || err);
     return () => {};
+  }
+}
+
+// App-level initializer (bakalacart-style): set up SW + single foreground listener.
+export async function initializePushNotifications() {
+  try {
+    await setupForegroundNotifications();
+  } catch {
+    // Non-critical: do not block app startup.
   }
 }
 

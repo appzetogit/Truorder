@@ -36,6 +36,7 @@ function hasValidConfig() {
 }
 
 let firebaseInitialized = false;
+let backgroundHandlerAttached = false;
 
 async function initFirebase() {
   if (firebaseInitialized) return;
@@ -71,26 +72,33 @@ async function initFirebase() {
       firebaseInitialized = true;
       console.log("[FCM-SW] Firebase initialized. projectId:", firebaseConfig.projectId);
 
-      const messaging = firebase.messaging();
-      messaging.onBackgroundMessage((payload) => {
-        console.log("[FCM-SW] onBackgroundMessage:", payload);
-        const title = payload.notification?.title || "TruOrder";
-        const options = {
-          body: payload.notification?.body || "",
-          icon: "/notification-icon.png",
-          badge: "/notification-icon.png",
-          image: payload.notification?.image || undefined,
-          vibrate: [200, 100, 200],
-          tag: "truorder-" + Date.now(),
-          requireInteraction: false,
-          actions: [
-            { action: "open", title: "View" },
-            { action: "dismiss", title: "Dismiss" },
-          ],
-          data: payload.data || {},
-        };
-        return self.registration.showNotification(title, options);
-      });
+      if (!backgroundHandlerAttached) {
+        const messaging = firebase.messaging();
+        messaging.onBackgroundMessage((payload) => {
+          console.log("[FCM-SW] onBackgroundMessage:", payload);
+
+          // If FCM includes notification payload, browser can handle display.
+          if (payload?.notification) return;
+
+          const title = payload?.data?.title || "TruOrder";
+          const options = {
+            body: payload?.data?.body || "You have a new notification",
+            icon: "/notification-icon.png",
+            badge: "/notification-icon.png",
+            image: payload?.data?.image || undefined,
+            vibrate: [200, 100, 200],
+            tag: payload?.data?.tag || payload?.data?.orderId || ("truorder-" + Date.now()),
+            requireInteraction: false,
+            actions: [
+              { action: "open", title: "View" },
+              { action: "dismiss", title: "Dismiss" },
+            ],
+            data: payload?.data || {},
+          };
+          return self.registration.showNotification(title, options);
+        });
+        backgroundHandlerAttached = true;
+      }
     } catch (e) {
       console.error("[FCM-SW] Firebase init error:", e.message);
     }
@@ -102,25 +110,25 @@ async function initFirebase() {
 // Generic push event handler as safety net
 // If Firebase SDK doesn't handle the push, this catches it
 self.addEventListener("push", (event) => {
-  console.log("[FCM-SW] Push event received:", event);
+  // Keep this as a fallback for non-FCM SDK delivery paths.
   if (!event.data) return;
 
   try {
     const payload = event.data.json();
-    if (!payload.notification) {
-      const title = payload.data?.title || "TruOrder";
-      const body = payload.data?.body || "You have a new notification";
-      event.waitUntil(
-        self.registration.showNotification(title, {
-          body,
-          icon: "/notification-icon.png",
-          badge: "/notification-icon.png",
-          vibrate: [200, 100, 200],
-          tag: "truorder-" + Date.now(),
-          data: payload.data || {},
-        })
-      );
-    }
+    if (payload?.notification) return;
+
+    const title = payload?.data?.title || "TruOrder";
+    const body = payload?.data?.body || "You have a new notification";
+    event.waitUntil(
+      self.registration.showNotification(title, {
+        body,
+        icon: "/notification-icon.png",
+        badge: "/notification-icon.png",
+        vibrate: [200, 100, 200],
+        tag: payload?.data?.tag || payload?.data?.orderId || ("truorder-" + Date.now()),
+        data: payload?.data || {},
+      })
+    );
   } catch (e) {
     console.warn("[FCM-SW] Error handling push event:", e);
   }
