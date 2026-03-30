@@ -15,6 +15,7 @@ import {
 import { authAPI } from "@/lib/api"
 import { firebaseAuth, googleProvider, ensureFirebaseInitialized } from "@/lib/firebase"
 import { setAuthData } from "@/lib/utils/auth"
+import { signInWithGoogleBridge } from "@/lib/utils/googleSignInBridge"
 import { registerFcmTokenForLoggedInUser } from "@/lib/notifications/fcmWeb"
 import loginBanner from "@/assets/loginbanner.jpg"
 import truorderLogo from "@/assets/truorder-login.png"
@@ -406,13 +407,14 @@ export default function SignIn() {
         throw new Error("Firebase Auth is not initialized. Please check your Firebase configuration.")
       }
 
-      const { signInWithPopup } = await import("firebase/auth")
-
       // Log current origin for debugging
       console.log("🚀 Starting Google sign-in popup...")
 
-      // Use popup for better UX and error handling
-      const result = await signInWithPopup(firebaseAuth, googleProvider)
+      // Use Flutter bridge inside the app and popup in normal browsers
+      const result = await signInWithGoogleBridge({
+        firebaseAuth,
+        googleProvider,
+      })
 
       console.log("✅ Popup sign-in successful:", {
         user: result?.user?.email,

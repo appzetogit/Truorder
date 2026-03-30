@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { restaurantAPI } from "@/lib/api"
 import { firebaseAuth, googleProvider, ensureFirebaseInitialized } from "@/lib/firebase"
+import { signInWithGoogleBridge } from "@/lib/utils/googleSignInBridge"
 import { useCompanyName } from "@/lib/hooks/useCompanyName"
 
 // Common country codes
@@ -339,12 +340,14 @@ export default function RestaurantLogin() {
     try {
       // Ensure Firebase Auth + Google provider are initialized
       await ensureFirebaseInitialized()
-      const { signInWithPopup } = await import("firebase/auth")
       if (!firebaseAuth || !googleProvider) {
         throw new Error("Firebase is not configured correctly for Google login")
       }
 
-      const result = await signInWithPopup(firebaseAuth, googleProvider)
+      const result = await signInWithGoogleBridge({
+        firebaseAuth,
+        googleProvider,
+      })
       if (result?.user) {
         await processSignedInUser(result.user, "popup-result")
       }
@@ -613,4 +616,3 @@ export default function RestaurantLogin() {
     </div>
   )
 }
-
