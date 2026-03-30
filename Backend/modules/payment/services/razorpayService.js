@@ -15,6 +15,7 @@ const logger = winston.createLogger({
 
 // Initialize Razorpay instance
 let razorpayInstance = null;
+let missingCredentialsLogged = false;
 
 const initializeRazorpay = async () => {
   try {
@@ -22,18 +23,11 @@ const initializeRazorpay = async () => {
     const keyId = credentials.keyId;
     const keySecret = credentials.keySecret;
 
-    logger.info('Razorpay credentials check:', {
-      hasKeyId: !!keyId,
-      hasKeySecret: !!keySecret,
-      keyIdLength: keyId?.length || 0,
-      keySecretLength: keySecret?.length || 0
-    });
-
     if (!keyId || !keySecret) {
-      logger.warn('Razorpay credentials not found. Payment gateway will not work.', {
-        keyId: keyId ? 'present' : 'missing',
-        keySecret: keySecret ? 'present' : 'missing'
-      });
+      if (!missingCredentialsLogged) {
+        logger.warn('Razorpay credentials not found. Payment gateway will remain disabled until they are configured.');
+        missingCredentialsLogged = true;
+      }
       return null;
     }
 
@@ -239,4 +233,3 @@ export {
   fetchPayment,
   createRefund
 };
-

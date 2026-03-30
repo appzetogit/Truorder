@@ -4,6 +4,25 @@ import { getModuleToken } from "@/lib/utils/auth"
 
 const ProfileContext = createContext(null)
 
+const normalizeDefaultAddresses = (addresses, activeId = null) => {
+  let defaultFound = false
+
+  return addresses.map((addr, index) => {
+    const shouldBeDefault = activeId
+      ? addr.id === activeId
+      : !defaultFound && (addr.isDefault || index === 0)
+
+    if (shouldBeDefault) {
+      defaultFound = true
+    }
+
+    return {
+      ...addr,
+      isDefault: shouldBeDefault,
+    }
+  })
+}
+
 export function ProfileProvider({ children }) {
   const [userProfile, setUserProfile] = useState(() => {
     // user_user may be in localStorage (Remember me) or sessionStorage (session only)
@@ -210,7 +229,10 @@ export function ProfileProvider({ children }) {
 
       if (newAddress) {
         setAddresses((prev) => {
-          const updated = [...prev, newAddress]
+          const updated = normalizeDefaultAddresses(
+            [...prev, newAddress],
+            newAddress.isDefault ? newAddress.id : null
+          )
           localStorage.setItem("userAddresses", JSON.stringify(updated))
           return updated
         })
@@ -229,7 +251,13 @@ export function ProfileProvider({ children }) {
 
       if (updatedAddr) {
         setAddresses((prev) => {
-          const updated = prev.map((addr) => (addr.id === id ? { ...updatedAddr, id } : addr))
+          const nextAddresses = prev.map((addr) =>
+            addr.id === id ? { ...updatedAddr, id } : addr
+          )
+          const updated = normalizeDefaultAddresses(
+            nextAddresses,
+            updatedAddr.isDefault ? id : null
+          )
           localStorage.setItem("userAddresses", JSON.stringify(updated))
           return updated
         })
@@ -255,13 +283,18 @@ export function ProfileProvider({ children }) {
     }
   }, [])
 
-  const setDefaultAddress = useCallback((id) => {
-    setAddresses((prev) =>
-      prev.map((addr) => ({
-        ...addr,
-        isDefault: addr.id === id,
-      }))
-    )
+  const setDefaultAddress = useCallback(async (id) => {
+    try {
+      await userAPI.updateAddress(id, { isDefault: true })
+      setAddresses((prev) => {
+        const updated = normalizeDefaultAddresses(prev, id)
+        localStorage.setItem("userAddresses", JSON.stringify(updated))
+        return updated
+      })
+    } catch (error) {
+      console.error("Error setting default address:", error)
+      throw error
+    }
   }, [])
 
   const getDefaultAddress = useCallback(() => {
@@ -538,4 +571,3 @@ export function useProfile() {
   }
   return context
 }
-

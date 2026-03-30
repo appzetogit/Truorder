@@ -5,8 +5,7 @@ const adminCommissionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
     required: true,
-    unique: true,
-    index: true
+    unique: true
   },
   orderAmount: {
     type: Number,
@@ -100,4 +99,3 @@ adminCommissionSchema.statics.getCommissionByDateRange = async function(startDat
 const AdminCommission = mongoose.model('AdminCommission', adminCommissionSchema);
 
 export default AdminCommission;
-

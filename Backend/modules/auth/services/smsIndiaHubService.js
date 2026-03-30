@@ -14,6 +14,7 @@ class SMSIndiaHubService {
     // Credentials will be loaded from database dynamically
     this.apiKey = null;
     this.senderId = null;
+    this.loggedMissingConfig = false;
     this.baseUrl = "https://cloud.smsindiahub.in/vendorsms/pushsms.aspx";
     this.initializeCredentials();
   }

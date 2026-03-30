@@ -107,6 +107,85 @@ function getRestaurantZoneId(restaurantLat, restaurantLng, activeZones) {
   return null;
 }
 
+function getEntityCoordinates(location = {}) {
+  if (
+    Array.isArray(location.coordinates) &&
+    location.coordinates.length >= 2 &&
+    location.coordinates[0] != null &&
+    location.coordinates[1] != null
+  ) {
+    return {
+      longitude: Number(location.coordinates[0]),
+      latitude: Number(location.coordinates[1]),
+    };
+  }
+
+  if (location.longitude != null && location.latitude != null) {
+    return {
+      longitude: Number(location.longitude),
+      latitude: Number(location.latitude),
+    };
+  }
+
+  return { longitude: null, latitude: null };
+}
+
+async function resolveRequestedZone({ zoneId, latitude, longitude }) {
+  if (zoneId) {
+    const zone = await Zone.findById(zoneId).lean();
+    if (!zone || !zone.isActive) {
+      const error = new Error(
+        "Invalid or inactive zone. Please detect your zone again.",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+    return zone;
+  }
+
+  if (latitude == null || longitude == null) {
+    return null;
+  }
+
+  const latNum = Number(latitude);
+  const lngNum = Number(longitude);
+
+  if (Number.isNaN(latNum) || Number.isNaN(lngNum)) {
+    const error = new Error("Invalid latitude or longitude");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const activeZones = await Zone.find({ isActive: true })
+    .select("_id coordinates zoneName")
+    .lean();
+
+  const matchedZone = activeZones.find((zone) =>
+    isPointInZone(latNum, lngNum, zone.coordinates),
+  );
+
+  return matchedZone || null;
+}
+
+function filterRestaurantsByZone(restaurants, zone, shouldFilter = false) {
+  if (!shouldFilter) {
+    return restaurants;
+  }
+
+  if (!zone) {
+    return [];
+  }
+
+  return restaurants.filter((restaurant) => {
+    const { latitude, longitude } = getEntityCoordinates(restaurant.location);
+    if (latitude == null || longitude == null) {
+      return false;
+    }
+
+    return isPointInZone(latitude, longitude, zone.coordinates);
+  });
+}
+
 // Get all restaurants (for user module)
 export const getRestaurants = async (req, res) => {
   try {
@@ -121,22 +200,18 @@ export const getRestaurants = async (req, res) => {
       maxPrice,
       hasOffers,
       zoneId, // User's zone ID (optional - if provided, filters by zone)
+      latitude,
+      longitude,
       diningCategory, // Dining category slug (optional)
     } = req.query;
 
-    // Optional: Zone-based filtering - if zoneId is provided, validate and filter by zone
-    let userZone = null;
-    if (zoneId) {
-      // Validate zone exists and is active
-      userZone = await Zone.findById(zoneId).lean();
-      if (!userZone || !userZone.isActive) {
-        return errorResponse(
-          res,
-          400,
-          "Invalid or inactive zone. Please detect your zone again.",
-        );
-      }
-    }
+    const shouldFilterByLocation =
+      !!zoneId || (latitude != null && longitude != null);
+    const requestedZone = await resolveRequestedZone({
+      zoneId,
+      latitude,
+      longitude,
+    });
 
     // Build query
     const query = { isActive: true };
@@ -255,7 +330,6 @@ export const getRestaurants = async (req, res) => {
       }
     }
 
-    // Fetch restaurants - Show ALL restaurants regardless of zone
     let restaurants = await Restaurant.find(query)
       .select("-owner -createdAt -updatedAt -password")
       .sort(sortObj)
@@ -263,8 +337,11 @@ export const getRestaurants = async (req, res) => {
       .skip(parseInt(offset))
       .lean();
 
-    // Note: We show all restaurants regardless of zone. Zone-based filtering is removed.
-    // Users in any zone will see all restaurants.
+    restaurants = filterRestaurantsByZone(
+      restaurants,
+      requestedZone,
+      shouldFilterByLocation,
+    );
 
     // Apply string-based filters that can't be done in MongoDB query
     if (maxDeliveryTime) {
@@ -300,11 +377,16 @@ export const getRestaurants = async (req, res) => {
         maxDistance,
         maxPrice,
         hasOffers,
+        zoneId: requestedZone?._id?.toString() || null,
       },
     });
   } catch (error) {
     console.error("Error fetching restaurants:", error);
-    return errorResponse(res, 500, "Failed to fetch restaurants");
+    return errorResponse(
+      res,
+      error.statusCode || 500,
+      error.message || "Failed to fetch restaurants",
+    );
   }
 };
 
@@ -900,21 +982,14 @@ export const deleteRestaurantAccount = asyncHandler(async (req, res) => {
 // Get restaurants with dishes under ₹250
 export const getRestaurantsWithDishesUnder250 = async (req, res) => {
   try {
-    const { zoneId } = req.query; // User's zone ID (optional - if provided, filters by zone)
-
-    // Optional: Zone-based filtering - if zoneId is provided, validate and filter by zone
-    let userZone = null;
-    if (zoneId) {
-      // Validate zone exists and is active
-      userZone = await Zone.findById(zoneId).lean();
-      if (!userZone || !userZone.isActive) {
-        return errorResponse(
-          res,
-          400,
-          "Invalid or inactive zone. Please detect your zone again.",
-        );
-      }
-    }
+    const { zoneId, latitude, longitude } = req.query;
+    const shouldFilterByLocation =
+      !!zoneId || (latitude != null && longitude != null);
+    const requestedZone = await resolveRequestedZone({
+      zoneId,
+      latitude,
+      longitude,
+    });
 
     const MAX_PRICE = 250;
 
@@ -1042,14 +1117,16 @@ export const getRestaurantsWithDishesUnder250 = async (req, res) => {
       }
     };
 
-    // Get all active restaurants - Show ALL restaurants regardless of zone
     let restaurants = await Restaurant.find({ isActive: true })
       .select("-owner -createdAt -updatedAt")
       .lean()
       .limit(100); // Limit to first 100 restaurants for performance
 
-    // Note: We show all restaurants regardless of zone. Zone-based filtering is removed.
-    // Users in any zone will see all restaurants.
+    restaurants = filterRestaurantsByZone(
+      restaurants,
+      requestedZone,
+      shouldFilterByLocation,
+    );
 
     // Process restaurants in parallel (batch processing for better performance)
     const batchSize = 10; // Process 10 restaurants at a time
@@ -1082,8 +1159,8 @@ export const getRestaurantsWithDishesUnder250 = async (req, res) => {
     console.error("Error fetching restaurants with dishes under ₹250:", error);
     return errorResponse(
       res,
-      500,
-      "Failed to fetch restaurants with dishes under ₹250",
+      error.statusCode || 500,
+      error.message || "Failed to fetch restaurants with dishes under ₹250",
     );
   }
 };

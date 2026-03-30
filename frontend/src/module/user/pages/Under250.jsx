@@ -191,7 +191,7 @@ export default function Under250() {
     }
 
     fetchRestaurantsUnder250()
-  }, [zoneId, isOutOfService])
+  }, [zoneId, isOutOfService, location?.latitude, location?.longitude])
 
   // Fetch categories from admin API
   useEffect(() => {

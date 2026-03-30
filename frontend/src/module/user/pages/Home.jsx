@@ -888,7 +888,7 @@ export default function Home() {
       setLoadingRestaurants(false)
       console.log('Restaurant loading completed. restaurantsData length:', restaurantsData.length)
     }
-  }, [zoneId])
+  }, [zoneId, location?.latitude, location?.longitude])
 
   // Fetch restaurants when appliedFilters change
   useEffect(() => {

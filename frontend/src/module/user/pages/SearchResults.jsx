@@ -397,7 +397,7 @@ export default function SearchResults() {
     }
 
     fetchRestaurants()
-  }, [zoneId, isOutOfService])
+  }, [zoneId, isOutOfService, location?.latitude, location?.longitude])
 
   // Update search query when URL changes
   useEffect(() => {

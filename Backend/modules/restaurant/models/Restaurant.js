@@ -48,6 +48,7 @@ const restaurantSchema = new mongoose.Schema(
       required: function () {
         return !this.phone && !this.googleId;
       },
+      unique: true,
       lowercase: true,
       trim: true,
       sparse: true, // Allow multiple null values in unique index
@@ -57,6 +58,8 @@ const restaurantSchema = new mongoose.Schema(
       required: function () {
         return !this.email && !this.googleId;
       },
+      unique: true,
+      sparse: true,
       trim: true,
     },
     phoneVerified: {
@@ -69,6 +72,8 @@ const restaurantSchema = new mongoose.Schema(
     },
     googleId: {
       type: String,
+      unique: true,
+      sparse: true,
     },
     googleEmail: {
       type: String,
@@ -381,13 +386,7 @@ const restaurantSchema = new mongoose.Schema(
   },
 );
 
-// Indexes for authentication
-restaurantSchema.index({ email: 1 }, { unique: true, sparse: true });
-restaurantSchema.index({ phone: 1 }, { unique: true, sparse: true });
-restaurantSchema.index({ googleId: 1 }, { unique: true, sparse: true });
-// Geospatial index for nearby restaurant search
-restaurantSchema.index({ "location.coordinates": "2dsphere" });
-
+// Indexes for authentication and geo search
 // Hash password before saving
 restaurantSchema.pre("save", async function (next) {
   // Generate restaurantId FIRST (before any validation)

@@ -75,7 +75,6 @@ const adminSchema = new mongoose.Schema({
 });
 
 // Indexes
-adminSchema.index({ email: 1 }, { unique: true });
 adminSchema.index({ role: 1 });
 adminSchema.index({ isActive: 1 });
 
@@ -111,4 +110,3 @@ adminSchema.methods.updateLastLogin = async function() {
 const Admin = mongoose.model('Admin', adminSchema);
 
 export default Admin;
-

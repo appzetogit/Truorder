@@ -46,7 +46,7 @@ export default function LocationSelectorOverlay({ isOpen, onClose }) {
   const addressFormSearchRef = useRef(null) // Search input in "Select delivery location" form - for focus and Places Autocomplete
   const [searchValue, setSearchValue] = useState("")
   const { location, loading, requestLocation } = useGeoLocation()
-  const { addresses = [], addAddress, updateAddress, userProfile } = useProfile()
+  const { addresses = [], addAddress, updateAddress, setDefaultAddress, userProfile } = useProfile()
   const [showAddressForm, setShowAddressForm] = useState(false)
   const [mapPosition, setMapPosition] = useState([22.7196, 75.8577]) // Default Indore coordinates [lat, lng]
   const [addressFormData, setAddressFormData] = useState({
@@ -79,6 +79,38 @@ export default function LocationSelectorOverlay({ isOpen, onClose }) {
   const [currentAddress, setCurrentAddress] = useState("")
   const [selectedPlaceAddress, setSelectedPlaceAddress] = useState("") // Full address from dropdown selection (shown in Delivery details)
   const [GOOGLE_MAPS_API_KEY, setGOOGLE_MAPS_API_KEY] = useState(null)
+
+  const buildLocationPayloadFromAddress = (address, fallbackLatitude, fallbackLongitude) => {
+    const coordinates = address?.location?.coordinates || []
+    const longitude = coordinates[0] ?? fallbackLongitude ?? null
+    const latitude = coordinates[1] ?? fallbackLatitude ?? null
+    const formattedAddress = [
+      address?.additionalDetails,
+      address?.street,
+      address?.city,
+      address?.state,
+      address?.zipCode,
+    ]
+      .map((part) => (typeof part === "string" ? part.trim() : part))
+      .filter(Boolean)
+      .join(", ")
+
+    const compactAddress = [address?.street, address?.city]
+      .map((part) => (typeof part === "string" ? part.trim() : part))
+      .filter(Boolean)
+      .join(", ")
+
+    return {
+      city: address?.city || "",
+      state: address?.state || "",
+      address: compactAddress || formattedAddress || "",
+      area: address?.additionalDetails || "",
+      zipCode: address?.zipCode || "",
+      latitude,
+      longitude,
+      formattedAddress: formattedAddress || compactAddress || "",
+    }
+  }
 
   // Decide where to send user after closing this overlay.
   // If a page (like Cart) stored a custom return path in localStorage,
@@ -2195,7 +2227,44 @@ export default function LocationSelectorOverlay({ isOpen, onClose }) {
         zipCode: (addressFormData.zipCode || "").trim(),
         latitude: mapPosition[0], // latitude from mapPosition[0]
         longitude: mapPosition[1], // longitude from mapPosition[1]
+        isDefault: true,
       }
+
+      const savedAddress = await addAddress(addressToSave)
+      const locationData = buildLocationPayloadFromAddress(
+        savedAddress || addressToSave,
+        mapPosition[0],
+        mapPosition[1]
+      )
+
+      await userAPI.updateLocation({
+        latitude: locationData.latitude,
+        longitude: locationData.longitude,
+        address: locationData.address,
+        city: locationData.city,
+        state: locationData.state,
+        area: locationData.area,
+        formattedAddress: locationData.formattedAddress
+      })
+
+      localStorage.setItem("userLocation", JSON.stringify(locationData))
+      window.dispatchEvent(new CustomEvent("userLocationUpdated", { detail: locationData }))
+      toast.success(`Address saved as ${normalizedLabel}!`)
+
+      setAddressFormData({
+        street: "",
+        city: "",
+        state: "",
+        zipCode: "",
+        additionalDetails: "",
+        label: "Home",
+        phone: "",
+      })
+      setShowAddressForm(false)
+      setLoadingAddress(false)
+      onClose()
+      navigateAfterClose("/")
+      return
 
       // Check if an address with the same label already exists
       const existingAddressWithSameLabel = addresses.find(addr => addr.label === normalizedLabel)
@@ -2273,6 +2342,49 @@ export default function LocationSelectorOverlay({ isOpen, onClose }) {
       const longitude = coordinates[0]
       const latitude = coordinates[1]
 
+      if (!latitude || !longitude) {
+        toast.error("Saved address is missing map coordinates. Please edit or re-add it.")
+        return
+      }
+
+      await setDefaultAddress(address.id)
+      const locationData = buildLocationPayloadFromAddress(address, latitude, longitude)
+
+      await userAPI.updateLocation({
+        latitude,
+        longitude,
+        address: locationData.address,
+        city: locationData.city,
+        state: locationData.state,
+        area: locationData.area,
+        formattedAddress: locationData.formattedAddress
+      })
+
+      localStorage.setItem("userLocation", JSON.stringify(locationData))
+
+      try {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("userLocationUpdated", { detail: locationData }))
+        }
+      } catch {
+        // ignore cross-window errors
+      }
+
+      setMapPosition([latitude, longitude])
+      setAddressFormData({
+        street: address.street || "",
+        city: address.city || "",
+        state: address.state || "",
+        zipCode: address.zipCode || "",
+        additionalDetails: address.additionalDetails || "",
+        label: address.label || "Home",
+        phone: address.phone || "",
+      })
+
+      onClose()
+      toast.success("Location updated!", { id: "saved-address" })
+      return
+
       if (latitude && longitude) {
         // Update location in backend
         await userAPI.updateLocation({
@@ -2287,7 +2399,7 @@ export default function LocationSelectorOverlay({ isOpen, onClose }) {
       }
 
       // Update the location in localStorage with this address
-      const locationData = {
+      const legacyLocationData = {
         city: address.city,
         state: address.state,
         address: `${address.street}, ${address.city}`,
@@ -2297,12 +2409,12 @@ export default function LocationSelectorOverlay({ isOpen, onClose }) {
         longitude,
         formattedAddress: `${address.street}, ${address.city}, ${address.state}`
       }
-      localStorage.setItem("userLocation", JSON.stringify(locationData))
+      localStorage.setItem("userLocation", JSON.stringify(legacyLocationData))
 
       // Broadcast updated location so Navbar and other components update immediately
       try {
         if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("userLocationUpdated", { detail: locationData }))
+          window.dispatchEvent(new CustomEvent("userLocationUpdated", { detail: legacyLocationData }))
         }
       } catch {
         // ignore cross-window errors
@@ -2873,6 +2985,3 @@ export default function LocationSelectorOverlay({ isOpen, onClose }) {
     </div>
   )
 }
-
-
-

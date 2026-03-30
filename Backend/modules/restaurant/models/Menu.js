@@ -96,7 +96,6 @@ const menuSchema = new mongoose.Schema({
     ref: 'Restaurant',
     required: true,
     unique: true,
-    index: true,
   },
   sections: { type: [menuSectionSchema], default: [] },
   addons: { type: [addonSchema], default: [] }, // Add-ons array
@@ -106,7 +105,6 @@ const menuSchema = new mongoose.Schema({
 });
 
 // Index for faster queries
-menuSchema.index({ restaurant: 1, isActive: 1 });
+menuSchema.index({ isActive: 1 });
 
 export default mongoose.model('Menu', menuSchema);
-

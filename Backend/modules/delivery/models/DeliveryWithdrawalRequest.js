@@ -56,7 +56,6 @@ const deliveryWithdrawalRequestSchema = new mongoose.Schema({
   timestamps: true
 });
 
-deliveryWithdrawalRequestSchema.index({ deliveryId: 1, status: 1 });
 deliveryWithdrawalRequestSchema.index({ status: 1, createdAt: -1 });
 deliveryWithdrawalRequestSchema.index({ createdAt: -1 });
 

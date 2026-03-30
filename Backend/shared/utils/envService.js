@@ -1,6 +1,6 @@
 import EnvironmentVariable from "../../modules/admin/models/EnvironmentVariable.js";
-import { decrypt, isEncrypted } from "./encryption.js";
 import winston from "winston";
+import mongoose from "mongoose";
 
 const logger = winston.createLogger({
   level: "info",
@@ -20,25 +20,20 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 /**
  * Get environment variable value from database
  * Falls back to process.env if not found in database
- * Automatically decrypts encrypted values
+ * Prefers plain process.env values, then database values
  * @param {string} key - Environment variable key
  * @param {string} defaultValue - Default value if not found
- * @returns {Promise<string>} Environment variable value (decrypted)
+ * @returns {Promise<string>} Environment variable value
  */
 export async function getEnvVar(key, defaultValue = "") {
   try {
-    const envVars = await getAllEnvVars();
-    let value = envVars[key] || process.env[key] || defaultValue;
-
-    // Decrypt if encrypted (for direct access, toEnvObject already decrypts, but this is a safety check)
-    if (value && isEncrypted(value)) {
-      try {
-        value = decrypt(value);
-      } catch (error) {
-        logger.warn(`Error decrypting ${key}: ${error.message}`);
-        return defaultValue;
-      }
+    const directEnvValue = process.env[key];
+    if (directEnvValue !== undefined && directEnvValue !== "") {
+      return directEnvValue;
     }
+
+    const envVars = await getAllEnvVars();
+    let value = envVars[key] || defaultValue;
 
     return value;
   } catch (error) {
@@ -57,6 +52,11 @@ export async function getEnvVar(key, defaultValue = "") {
  */
 export async function getAllEnvVars() {
   try {
+    // Avoid Mongoose buffering errors during early startup before Mongo connects.
+    if (mongoose.connection.readyState !== 1) {
+      return {};
+    }
+
     // Check cache
     const now = Date.now();
     if (envCache && cacheTimestamp && now - cacheTimestamp < CACHE_DURATION) {
@@ -106,11 +106,18 @@ export async function getAllEnvVars() {
       envData = envVars.toEnvObject();
     }
 
-    // Update cache
-    envCache = envData;
+    // Update cache with direct env values taking precedence over DB values.
+    envCache = {
+      ...envData,
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([, value]) => value !== undefined && value !== "",
+        ),
+      ),
+    };
     cacheTimestamp = now;
 
-    return envData;
+    return envCache;
   } catch (error) {
     logger.error(
       `Error fetching environment variables from database: ${error.message}`,
@@ -172,6 +179,7 @@ export async function getFirebaseCredentials() {
     projectId: await getEnvVar("FIREBASE_PROJECT_ID"),
     clientEmail: await getEnvVar("FIREBASE_CLIENT_EMAIL"),
     privateKey: await getEnvVar("FIREBASE_PRIVATE_KEY"),
+    databaseURL: await getEnvVar("FIREBASE_DATABASE_URL"),
   };
 }
 

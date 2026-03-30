@@ -402,7 +402,7 @@ export default function CategoryPage() {
     }
 
     fetchRestaurants()
-  }, [zoneId, isOutOfService])
+  }, [zoneId, isOutOfService, location?.latitude, location?.longitude])
 
   // Update selected category when URL changes
   useEffect(() => {

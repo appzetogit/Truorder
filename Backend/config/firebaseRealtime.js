@@ -1,42 +1,65 @@
 /**
  * Firebase Realtime Database (Backend)
  * Used for: active_orders, delivery_boys, route_cache, live tracking.
- * Must be initialized at server startup before any routes or Socket.IO use getDb().
  *
- * Setup:
- * 1. Firebase Console → Project Settings → Service Accounts → Generate new private key
- * 2. Save the JSON as Backend/config/serviceAccountKey.json (or Backend/firebaseconfig.json)
- * 3. Add to .gitignore: serviceAccountKey.json, firebaseconfig.json
- * 4. Set in .env (optional): FIREBASE_DATABASE_URL (default: tastizoo Asia Southeast 1)
+ * Primary source of truth: environment variables stored in MongoDB.
+ * Fallbacks: process.env -> local service account files.
  */
 
 import admin from "firebase-admin";
 import fs from "fs";
 import path from "path";
+import mongoose from "mongoose";
+import { getFirebaseCredentials } from "../shared/utils/envService.js";
 
 const DEFAULT_DATABASE_URL =
   "https://tastizoo-default-rtdb.asia-southeast1.firebasedatabase.app";
 
 let db = null;
 let initialized = false;
+let initPromise = null;
 
-/**
- * Load Firebase credentials synchronously from env or service account file.
- * Tries: process.env → config/serviceAccountKey.json → config/...-firebase-adminsdk-*.json → firebaseconfig.json
- */
-function getCredentialsSync() {
-  let projectId = process.env.FIREBASE_PROJECT_ID;
-  let clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  let privateKey = process.env.FIREBASE_PRIVATE_KEY;
-
-  if (privateKey && privateKey.includes("\\n")) {
-    privateKey = privateKey.replace(/\\n/g, "\n");
+function waitForMongoConnection(timeoutMs = 15000) {
+  if (mongoose.connection.readyState === 1) {
+    return Promise.resolve();
   }
 
-  if (projectId && clientEmail && privateKey) {
-    return { projectId, clientEmail, privateKey };
-  }
+  return new Promise((resolve) => {
+    let resolved = false;
 
+    const cleanup = () => {
+      mongoose.connection.off("connected", handleConnected);
+      mongoose.connection.off("error", handleDone);
+      mongoose.connection.off("disconnected", handleDone);
+    };
+
+    const handleDone = () => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve();
+    };
+
+    const handleConnected = () => {
+      handleDone();
+    };
+
+    mongoose.connection.once("connected", handleConnected);
+    mongoose.connection.once("error", handleDone);
+    mongoose.connection.once("disconnected", handleDone);
+
+    setTimeout(handleDone, timeoutMs);
+  });
+}
+
+function normalizePrivateKey(privateKey) {
+  if (!privateKey || typeof privateKey !== "string") return "";
+  return privateKey.includes("\\n")
+    ? privateKey.replace(/\\n/g, "\n")
+    : privateKey;
+}
+
+function getCredentialsFromFiles() {
   const cwd = process.cwd();
   const pathsToTry = [
     path.resolve(cwd, "config", "serviceAccountKey.json"),
@@ -51,97 +74,150 @@ function getCredentialsSync() {
 
   for (const filePath of pathsToTry) {
     try {
-      if (fs.existsSync(filePath)) {
-        const raw = fs.readFileSync(filePath, "utf-8");
-        const json = JSON.parse(raw);
-        projectId = projectId || json.project_id;
-        clientEmail = clientEmail || json.client_email;
-        privateKey = privateKey || json.private_key;
-        if (privateKey && privateKey.includes("\\n")) {
-          privateKey = privateKey.replace(/\\n/g, "\n");
-        }
-        if (projectId && clientEmail && privateKey) {
-          return { projectId, clientEmail, privateKey };
-        }
+      if (!fs.existsSync(filePath)) continue;
+
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const json = JSON.parse(raw);
+
+      const projectId = json.project_id || "";
+      const clientEmail = json.client_email || "";
+      const privateKey = normalizePrivateKey(json.private_key || "");
+
+      if (projectId && clientEmail && privateKey) {
+        return { projectId, clientEmail, privateKey };
       }
-    } catch (err) {
-      // skip
+    } catch {
+      // skip invalid fallback file
     }
   }
 
   return null;
 }
 
-/**
- * Initialize Firebase Realtime Database.
- * Call this at the VERY TOP of server.js (before Express routes and Socket.IO).
- * Uses same credential as Firebase Auth (service account or env).
- */
-export function initializeFirebaseRealtime() {
+async function getCredentials() {
+  try {
+    await waitForMongoConnection();
+    const dbCredentials = await getFirebaseCredentials();
+    const projectId = dbCredentials.projectId || process.env.FIREBASE_PROJECT_ID;
+    const clientEmail =
+      dbCredentials.clientEmail || process.env.FIREBASE_CLIENT_EMAIL;
+    const privateKey = normalizePrivateKey(
+      dbCredentials.privateKey || process.env.FIREBASE_PRIVATE_KEY || "",
+    );
+    const databaseURL =
+      dbCredentials.databaseURL ||
+      process.env.FIREBASE_DATABASE_URL ||
+      DEFAULT_DATABASE_URL;
+
+    if (projectId && clientEmail && privateKey) {
+      return { projectId, clientEmail, privateKey, databaseURL, source: "db" };
+    }
+  } catch (error) {
+    console.warn(
+      "Failed to read Firebase credentials from DB, trying file/env fallback:",
+      error.message,
+    );
+  }
+
+  const fileCredentials = getCredentialsFromFiles();
+  if (fileCredentials) {
+    return {
+      ...fileCredentials,
+      databaseURL:
+        process.env.FIREBASE_DATABASE_URL || DEFAULT_DATABASE_URL,
+      source: "file",
+    };
+  }
+
+  const envProjectId = process.env.FIREBASE_PROJECT_ID || "";
+  const envClientEmail = process.env.FIREBASE_CLIENT_EMAIL || "";
+  const envPrivateKey = normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY || "");
+  if (envProjectId && envClientEmail && envPrivateKey) {
+    return {
+      projectId: envProjectId,
+      clientEmail: envClientEmail,
+      privateKey: envPrivateKey,
+      databaseURL:
+        process.env.FIREBASE_DATABASE_URL || DEFAULT_DATABASE_URL,
+      source: "env",
+    };
+  }
+
+  return null;
+}
+
+export async function initializeFirebaseRealtime() {
   if (initialized && db) {
     return db;
   }
 
-  const databaseURL =
-    process.env.FIREBASE_DATABASE_URL || DEFAULT_DATABASE_URL;
-  const creds = getCredentialsSync();
-
-  if (!creds) {
-    console.warn(
-      "⚠️ Firebase Realtime Database not initialized: missing credentials. " +
-        "Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY in .env " +
-        "or place serviceAccountKey.json in Backend/config/ (see config/firebaseRealtime.js)."
-    );
-    return null;
+  if (initPromise) {
+    return initPromise;
   }
 
-  try {
-    if (!admin.apps.length) {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: creds.projectId,
-          clientEmail: creds.clientEmail,
-          privateKey: creds.privateKey,
-        }),
-        databaseURL,
-      });
+  initPromise = (async () => {
+    const creds = await getCredentials();
+
+    if (!creds) {
+      if (mongoose.connection.readyState !== 1) {
+        console.info(
+          "Firebase Realtime Database initialization deferred until MongoDB-backed credentials are available.",
+        );
+        return null;
+      }
+
+      console.warn(
+        "Firebase Realtime Database not initialized: missing credentials in DB/env/file.",
+      );
+      return null;
     }
-    // If app already exists (e.g. from firebaseAuthService), use database with URL
-    const app = admin.app();
-    db = databaseURL ? app.database(databaseURL) : app.database();
-    initialized = true;
-    return db;
-  } catch (error) {
-    if (error?.code === "app/duplicate-app") {
+
+    try {
+      if (!admin.apps.length) {
+        admin.initializeApp({
+          credential: admin.credential.cert({
+            projectId: creds.projectId,
+            clientEmail: creds.clientEmail,
+            privateKey: creds.privateKey,
+          }),
+          databaseURL: creds.databaseURL,
+        });
+      }
+
       const app = admin.app();
-      db = databaseURL ? app.database(databaseURL) : app.database();
+      db = creds.databaseURL ? app.database(creds.databaseURL) : app.database();
       initialized = true;
+      console.log(
+        `Firebase Realtime Database initialized using ${creds.source} credentials.`,
+      );
       return db;
+    } catch (error) {
+      if (error?.code === "app/duplicate-app") {
+        const app = admin.app();
+        db = creds.databaseURL ? app.database(creds.databaseURL) : app.database();
+        initialized = true;
+        return db;
+      }
+
+      console.error("Firebase Realtime Database init failed:", error.message);
+      return null;
+    } finally {
+      initPromise = null;
     }
-    console.error("❌ Firebase Realtime Database init failed:", error.message);
-    return null;
-  }
+  })();
+
+  return initPromise;
 }
 
-/**
- * Get the Firebase Realtime Database instance.
- * Throws if initializeFirebaseRealtime() was not called or failed.
- */
 export function getDb() {
   if (!db || !initialized) {
-    console.warn(
-      "⚠️ Firebase Realtime Database not initialized. Call initializeFirebaseRealtime() first."
-    );
     throw new Error(
-      "Firebase Realtime Database not available. Call initializeFirebaseRealtime() first."
+      "Firebase Realtime Database not available. Call initializeFirebaseRealtime() first.",
     );
   }
   return db;
 }
 
-/**
- * Check if Firebase Realtime Database is available (for optional features).
- */
 export function isFirebaseRealtimeAvailable() {
   return initialized && db !== null;
 }

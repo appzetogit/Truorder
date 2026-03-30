@@ -27,7 +27,6 @@ const inventorySchema = new mongoose.Schema({
     ref: 'Restaurant',
     required: true,
     unique: true,
-    index: true,
   },
   categories: { type: [inventoryCategorySchema], default: [] },
   isActive: { type: Boolean, default: true },
@@ -36,7 +35,6 @@ const inventorySchema = new mongoose.Schema({
 });
 
 // Index for faster queries
-inventorySchema.index({ restaurant: 1, isActive: 1 });
+inventorySchema.index({ isActive: 1 });
 
 export default mongoose.model('Inventory', inventorySchema);
-

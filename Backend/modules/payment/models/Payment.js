@@ -135,7 +135,6 @@ const paymentSchema = new mongoose.Schema({
 
 // Indexes for better query performance
 paymentSchema.index({ userId: 1, createdAt: -1 });
-paymentSchema.index({ orderId: 1 });
 paymentSchema.index({ status: 1, createdAt: -1 });
 paymentSchema.index({ 'razorpay.orderId': 1 });
 paymentSchema.index({ 'razorpay.paymentId': 1 });
@@ -170,4 +169,3 @@ paymentSchema.pre('save', function(next) {
 });
 
 export default mongoose.model('Payment', paymentSchema);
-

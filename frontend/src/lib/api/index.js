@@ -307,6 +307,39 @@ export const zoneAPI = {
   },
 };
 
+const getUserLocationAwareParams = (params = {}) => {
+  const nextParams = { ...params };
+
+  if (typeof window === "undefined") return nextParams;
+
+  const pathname = window.location?.pathname || "";
+  const isUserFacingRoute =
+    !pathname.startsWith("/admin") &&
+    !pathname.startsWith("/restaurant") &&
+    !pathname.startsWith("/delivery");
+
+  if (!isUserFacingRoute) return nextParams;
+  if (nextParams.latitude != null && nextParams.longitude != null) return nextParams;
+
+  try {
+    const storedLocation = localStorage.getItem("userLocation");
+    if (!storedLocation) return nextParams;
+
+    const parsedLocation = JSON.parse(storedLocation);
+    if (
+      parsedLocation?.latitude != null &&
+      parsedLocation?.longitude != null
+    ) {
+      nextParams.latitude = parsedLocation.latitude;
+      nextParams.longitude = parsedLocation.longitude;
+    }
+  } catch (error) {
+    console.warn("Failed to read active user location for restaurant API", error);
+  }
+
+  return nextParams;
+};
+
 // Export restaurant API helper functions
 export const restaurantAPI = {
   // Restaurant Authentication
@@ -652,12 +685,14 @@ export const restaurantAPI = {
 
   // Get all restaurants (for user module)
   getRestaurants: (params = {}) => {
-    return apiClient.get(API_ENDPOINTS.RESTAURANT.LIST, { params });
+    return apiClient.get(API_ENDPOINTS.RESTAURANT.LIST, {
+      params: getUserLocationAwareParams(params),
+    });
   },
 
   // Get restaurants with dishes under ₹250
   getRestaurantsUnder250: (zoneId) => {
-    const params = zoneId ? { zoneId } : {};
+    const params = getUserLocationAwareParams(zoneId ? { zoneId } : {});
     return apiClient.get(API_ENDPOINTS.RESTAURANT.UNDER_250, { params });
   },
 

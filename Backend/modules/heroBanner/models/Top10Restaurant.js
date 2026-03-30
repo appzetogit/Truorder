@@ -5,8 +5,7 @@ const top10RestaurantSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Restaurant',
     required: true,
-    unique: true,
-    index: true
+    unique: true
   },
   rank: {
     type: Number,
@@ -61,4 +60,3 @@ top10RestaurantSchema.pre('save', async function(next) {
 });
 
 export default mongoose.model('Top10Restaurant', top10RestaurantSchema);
-

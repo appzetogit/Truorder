@@ -191,7 +191,7 @@ export const updateUserLocation = asyncHandler(async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!latitude || !longitude) {
+    if (latitude === undefined || longitude === undefined) {
       return errorResponse(res, 400, 'Latitude and longitude are required');
     }
 
@@ -358,7 +358,7 @@ export const addUserAddress = asyncHandler(async (req, res) => {
     };
 
     // Add location coordinates if provided
-    if (latitude && longitude) {
+    if (latitude !== undefined && longitude !== undefined) {
       const latNum = parseFloat(latitude);
       const lngNum = parseFloat(longitude);
       if (!isNaN(latNum) && !isNaN(lngNum)) {
@@ -515,4 +515,3 @@ export const deleteUserAddress = asyncHandler(async (req, res) => {
     return errorResponse(res, 500, 'Failed to delete address');
   }
 });
-

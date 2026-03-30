@@ -45,7 +45,6 @@ const hubSchema = new mongoose.Schema(
   }
 );
 
-hubSchema.index({ email: 1 }, { unique: true });
 hubSchema.index({ status: 1 });
 hubSchema.index({ createdBy: 1 });
 

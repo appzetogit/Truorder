@@ -21,6 +21,7 @@ class EmailService {
   constructor() {
     // Initialize transporter based on environment
     this.transporter = null;
+    this.loggedMissingConfig = false;
     // Initialize asynchronously (don't await in constructor)
     this.initializeTransporter().catch((err) => {
       logger.warn(`Error initializing email transporter: ${err.message}`);
@@ -56,32 +57,45 @@ class EmailService {
           },
         });
       } else {
-        try {
-          logger.info(
-            "No SMTP configuration found. Creating auto-generated Ethereal test account...",
-          );
-          const testAccount = await nodemailer.createTestAccount();
-          this.transporter = nodemailer.createTransport({
-            host: "smtp.ethereal.email",
-            port: 587,
-            secure: false,
-            auth: {
-              user: testAccount.user,
-              pass: testAccount.pass,
-            },
-          });
-          logger.info(
-            `Ethereal Test Account Created: ${testAccount.user}. Check console for email preview links.`,
-          );
-        } catch (err) {
-          logger.warn(
-            `Failed to create Ethereal test account: ${err.message}. Email OTP will not work.`,
-          );
+        if (process.env.ENABLE_ETHEREAL_EMAIL === "true") {
+          try {
+            logger.info(
+              "No SMTP configuration found. Creating auto-generated Ethereal test account...",
+            );
+            const testAccount = await nodemailer.createTestAccount();
+            this.transporter = nodemailer.createTransport({
+              host: "smtp.ethereal.email",
+              port: 587,
+              secure: false,
+              auth: {
+                user: testAccount.user,
+                pass: testAccount.pass,
+              },
+            });
+            logger.info(
+              `Ethereal Test Account Created: ${testAccount.user}. Check console for email preview links.`,
+            );
+          } catch (err) {
+            logger.warn(
+              `Failed to create Ethereal test account: ${err.message}. Email OTP will not work.`,
+            );
+            return;
+          }
+        } else {
+          if (!this.loggedMissingConfig) {
+            logger.warn(
+              "SMTP configuration missing. Email OTP is disabled in development until SMTP or Ethereal credentials are configured.",
+            );
+            this.loggedMissingConfig = true;
+          }
           return;
         }
       }
     } else if (!hasSMTPConfig) {
-      logger.warn("SMTP configuration missing. Email OTP will not work.");
+      if (!this.loggedMissingConfig) {
+        logger.warn("SMTP configuration missing. Email OTP will not work.");
+        this.loggedMissingConfig = true;
+      }
       return;
     } else {
       // Production SMTP configuration (use database values, fallback to env)

@@ -298,6 +298,13 @@ connectDB().then(() => {
   initializeCloudinary().catch((err) =>
     console.error("Failed to initialize Cloudinary:", err),
   );
+
+  initializeFirebaseRealtime().catch((err) =>
+    console.error(
+      "Firebase Realtime Database initialization failed after DB connection:",
+      err.message,
+    ),
+  );
 });
 
 // Redis connection is optional - only connects if REDIS_ENABLED=true
