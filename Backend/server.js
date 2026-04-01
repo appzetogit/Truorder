@@ -125,6 +125,8 @@ const httpServer = createServer(app);
 // Initialize Socket.IO with proper CORS configuration
 const allowedSocketOrigins = [
   process.env.CORS_ORIGIN,
+  "https://truorder.in",
+  "http://truorder.in",
   "https://tastizo.com",
   "http://tastizo.com",
   "https://www.tastizo.com",
@@ -318,6 +320,8 @@ app.use(helmet());
 // CORS configuration - allow multiple origins
 const allowedOrigins = [
   process.env.CORS_ORIGIN,
+  "https://truorder.in",
+  "http://truorder.in",
   "https://tastizo.com",
   "http://tastizo.com",
   "https://www.tastizo.com",
