@@ -45,6 +45,16 @@ const completeRegistrationSchema = Joi.object({
   referralCode: Joi.string().trim().required(),
 });
 
+const fcmTokenSchema = Joi.object({
+  platform: Joi.string().valid("web", "android", "ios", "app", "mobile", "windows").required(),
+  fcmToken: Joi.string().optional(),
+  token: Joi.string().optional(),
+}).or("fcmToken", "token");
+
+const fcmTokenDeleteSchema = Joi.object({
+  platform: Joi.string().valid("web", "android", "ios", "app", "mobile", "windows").required(),
+});
+
 // Public routes
 router.post("/send-otp", validate(sendOTPSchema), sendOTP);
 router.post("/verify-otp", validate(verifyOTPSchema), verifyOTP);
@@ -54,7 +64,7 @@ router.post("/refresh-token", refreshToken);
 // Protected routes (require authentication)
 router.post("/logout", authenticate, logout);
 router.get("/me", authenticate, getCurrentDelivery);
-router.post("/fcm-token", authenticate, registerFcmToken);
-router.delete("/fcm-token", authenticate, removeFcmToken);
+router.post("/fcm-token", authenticate, validate(fcmTokenSchema), registerFcmToken);
+router.delete("/fcm-token", authenticate, validate(fcmTokenDeleteSchema), removeFcmToken);
 
 export default router;

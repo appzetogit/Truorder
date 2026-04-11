@@ -47,7 +47,7 @@ export async function getEnvVar(key, defaultValue = "") {
 /**
  * Get all environment variables from database
  * Uses caching to reduce database queries
- * Also performs "injection": if a variable is in process.env but not in DB, it saves it to DB
+ * Merges database values with process.env for reads only
  * @returns {Promise<Object>} Object containing all environment variables
  */
 export async function getAllEnvVars() {
@@ -65,46 +65,7 @@ export async function getAllEnvVars() {
 
     // Fetch from database
     const envVars = await EnvironmentVariable.getOrCreate();
-    let envData = envVars.toEnvObject();
-
-    // Injection logic: Check if any fields in the schema are empty in DB but exist in process.env
-    let hasNewInjections = false;
-    const schemaPaths = Object.keys(EnvironmentVariable.schema.paths);
-
-    for (const key of schemaPaths) {
-      // Skip internal mongoose fields
-      if (
-        [
-          "_id",
-          "__v",
-          "createdAt",
-          "updatedAt",
-          "lastUpdatedAt",
-          "lastUpdatedBy",
-        ].includes(key)
-      ) {
-        continue;
-      }
-
-      // If DB value is empty, check process.env
-      if (!envData[key] || envData[key] === "") {
-        // Check both direct key and VITE_ prefixed key
-        const envValue = process.env[key] || process.env[`VITE_${key}`];
-
-        if (envValue && envValue.trim() !== "") {
-          envVars[key] = envValue;
-          envVars.markModified(key);
-          hasNewInjections = true;
-          logger.info(`Injected missing DB variable ${key} from process.env`);
-        }
-      }
-    }
-
-    if (hasNewInjections) {
-      await envVars.save();
-      // Refresh envData after save
-      envData = envVars.toEnvObject();
-    }
+    const envData = envVars.toEnvObject();
 
     // Update cache with direct env values taking precedence over DB values.
     envCache = {

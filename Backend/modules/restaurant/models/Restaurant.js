@@ -202,6 +202,10 @@ const restaurantSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    fcmTokenWindows: {
+      type: String,
+      default: null,
+    },
     // Onboarding fields (merged from RestaurantOnboarding)
     onboarding: {
       step1: {

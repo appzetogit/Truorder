@@ -159,6 +159,10 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    fcmTokenWindows: {
+      type: String,
+      default: null,
+    },
     goldMembership: {
       isActive: {
         type: Boolean,

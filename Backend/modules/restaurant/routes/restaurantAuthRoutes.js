@@ -78,6 +78,16 @@ const completeRegistrationSchema = Joi.object({
   referralCode: Joi.string().trim().required(),
 });
 
+const fcmTokenSchema = Joi.object({
+  platform: Joi.string().valid("web", "android", "ios", "app", "mobile", "windows").required(),
+  fcmToken: Joi.string().optional(),
+  token: Joi.string().optional(),
+}).or("fcmToken", "token");
+
+const fcmTokenDeleteSchema = Joi.object({
+  platform: Joi.string().valid("web", "android", "ios", "app", "mobile", "windows").required(),
+});
+
 // Public routes
 router.post("/send-otp", validate(sendOTPSchema), sendOTP);
 router.post("/verify-otp", validate(verifyOTPSchema), verifyOTP);
@@ -99,11 +109,13 @@ router.post("/reverify", authenticate, reverifyRestaurant);
 router.post(
   "/fcm-token",
   authenticate,
+  validate(fcmTokenSchema),
   registerRestaurantFcmToken,
 );
 router.delete(
   "/fcm-token",
   authenticate,
+  validate(fcmTokenDeleteSchema),
   removeRestaurantFcmToken,
 );
 

@@ -456,7 +456,7 @@ export const getCurrentDelivery = asyncHandler(async (req, res) => {
 export const registerFcmToken = asyncHandler(async (req, res) => {
   const deliveryId = req.delivery?._id;
   const { platform, fcmToken, token } = req.body;
-  const normalizedPlatform = platform === "app" ? "android" : platform;
+  const normalizedPlatform = (platform === "app" || platform === "mobile") ? "android" : platform;
   const normalizedToken = fcmToken || token;
 
   if (!normalizedPlatform || !normalizedToken) {
@@ -467,34 +467,32 @@ export const registerFcmToken = asyncHandler(async (req, res) => {
     );
   }
 
-  const validPlatforms = ["web", "android", "ios"];
+  const validPlatforms = ["web", "android", "ios", "windows"];
   if (!validPlatforms.includes(normalizedPlatform)) {
     return errorResponse(
       res,
       400,
-      "Invalid platform. Allowed values: web, android, ios, app",
+      "Invalid platform. Allowed values: web, android, ios, app, mobile, windows",
     );
-  }
-
-  const delivery = await Delivery.findById(deliveryId);
-  if (!delivery) {
-    return errorResponse(res, 404, "Delivery partner not found");
   }
 
   // Update specific platform token
   if (normalizedPlatform === "web") {
-    delivery.fcmTokenWeb = normalizedToken;
+    req.delivery.fcmTokenWeb = normalizedToken;
   } else if (normalizedPlatform === "android") {
-    delivery.fcmTokenAndroid = normalizedToken;
+    req.delivery.fcmTokenAndroid = normalizedToken;
   } else if (normalizedPlatform === "ios") {
-    delivery.fcmTokenIos = normalizedToken;
+    req.delivery.fcmTokenIos = normalizedToken;
+  } else if (normalizedPlatform === "windows") {
+    req.delivery.fcmTokenWindows = normalizedToken;
   }
 
-  await delivery.save();
+  await req.delivery.save();
   return successResponse(res, 200, "FCM token registered successfully", {
-    fcmTokenWeb: delivery.fcmTokenWeb,
-    fcmTokenAndroid: delivery.fcmTokenAndroid,
-    fcmTokenIos: delivery.fcmTokenIos,
+    fcmTokenWeb: req.delivery.fcmTokenWeb,
+    fcmTokenAndroid: req.delivery.fcmTokenAndroid,
+    fcmTokenIos: req.delivery.fcmTokenIos,
+    fcmTokenWindows: req.delivery.fcmTokenWindows,
   });
 });
 
@@ -504,37 +502,33 @@ export const registerFcmToken = asyncHandler(async (req, res) => {
  * Body: { platform: 'web' | 'android' | 'ios' }
  */
 export const removeFcmToken = asyncHandler(async (req, res) => {
-  const deliveryId = req.delivery?._id;
   const { platform } = req.body;
-  const normalizedPlatform = platform === "app" ? "android" : platform;
+  const normalizedPlatform = (platform === "app" || platform === "mobile") ? "android" : platform;
 
   if (!normalizedPlatform) {
     return errorResponse(res, 400, "platform is required");
   }
 
-  const validPlatforms = ["web", "android", "ios"];
+  const validPlatforms = ["web", "android", "ios", "windows"];
   if (!validPlatforms.includes(normalizedPlatform)) {
     return errorResponse(
       res,
       400,
-      "Invalid platform. Allowed values: web, android, ios, app",
+      "Invalid platform. Allowed values: web, android, ios, app, mobile, windows",
     );
   }
 
-  const delivery = await Delivery.findById(deliveryId);
-  if (!delivery) {
-    return errorResponse(res, 404, "Delivery partner not found");
-  }
-
   if (normalizedPlatform === "web") {
-    delivery.fcmTokenWeb = null;
+    req.delivery.fcmTokenWeb = null;
   } else if (normalizedPlatform === "android") {
-    delivery.fcmTokenAndroid = null;
+    req.delivery.fcmTokenAndroid = null;
   } else if (normalizedPlatform === "ios") {
-    delivery.fcmTokenIos = null;
+    req.delivery.fcmTokenIos = null;
+  } else if (normalizedPlatform === "windows") {
+    req.delivery.fcmTokenWindows = null;
   }
 
-  await delivery.save();
+  await req.delivery.save();
 
   return successResponse(res, 200, "FCM token removed successfully");
 });

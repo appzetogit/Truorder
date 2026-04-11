@@ -306,6 +306,10 @@ const deliverySchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    fcmTokenWindows: {
+      type: String,
+      default: null,
+    },
   },
   {
     timestamps: true,

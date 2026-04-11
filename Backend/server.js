@@ -127,6 +127,8 @@ const allowedSocketOrigins = [
   process.env.CORS_ORIGIN,
   "https://truorder.in",
   "http://truorder.in",
+  "https://api.truorder.in",
+  "http://api.truorder.in",
   "https://tastizo.com",
   "http://tastizo.com",
   "https://www.tastizo.com",
@@ -135,8 +137,10 @@ const allowedSocketOrigins = [
   "http://foozeto.tastizo.com",
   "http://localhost:5173",
   "http://localhost:3000",
+  "http://localhost:5174",
   "http://127.0.0.1:5173",
   "http://127.0.0.1:3000",
+  "http://127.0.0.1:5174",
 ].filter(Boolean); // Remove undefined values
 
 const io = new Server(httpServer, {
@@ -322,6 +326,8 @@ const allowedOrigins = [
   process.env.CORS_ORIGIN,
   "https://truorder.in",
   "http://truorder.in",
+  "https://api.truorder.in",
+  "http://api.truorder.in",
   "https://tastizo.com",
   "http://tastizo.com",
   "https://www.tastizo.com",
@@ -598,6 +604,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+  });
+
+  // Handle connection errors
+  socket.on("error", (error) => {
+    console.error("🚴 Delivery socket error:", error);
   });
 });
 
