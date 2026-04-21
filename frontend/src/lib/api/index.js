@@ -27,12 +27,6 @@ export default apiClient;
 // Export API endpoints for convenience
 export { API_ENDPOINTS };
 
-// Referral API (public)
-export const referralAPI = {
-  verify: (code, type) =>
-    apiClient.post(API_ENDPOINTS.REFERRAL.VERIFY, { code, type }),
-};
-
 // Export helper functions for common operations
 export const api = {
   // GET request
@@ -257,6 +251,31 @@ export const userAPI = {
     return apiClient.get(API_ENDPOINTS.USER.ORDERS, { params });
   },
 
+  getNotifications: (params = {}) => {
+    return apiClient.get(API_ENDPOINTS.USER.NOTIFICATIONS, { params });
+  },
+
+  getUnreadNotificationCount: () => {
+    return apiClient.get(API_ENDPOINTS.USER.NOTIFICATIONS_UNREAD_COUNT);
+  },
+
+  markNotificationRead: (notificationId) => {
+    return apiClient.patch(
+      API_ENDPOINTS.USER.NOTIFICATION_READ.replace(
+        ":notificationId",
+        notificationId,
+      ),
+    );
+  },
+
+  markAllNotificationsRead: () => {
+    return apiClient.patch(API_ENDPOINTS.USER.NOTIFICATIONS_READ_ALL);
+  },
+
+  deleteAllNotifications: () => {
+    return apiClient.delete(API_ENDPOINTS.USER.NOTIFICATIONS_DELETE_ALL);
+  },
+
   // Order chat (Track Order live chat with delivery partner)
   getOrderChat: (orderId) => {
     return apiClient.get(
@@ -281,12 +300,29 @@ export const userAPI = {
   },
 };
 
+export const cartAPI = {
+  getCart: () => {
+    return apiClient.get(API_ENDPOINTS.CART.ROOT);
+  },
+
+  replaceCart: (cart) => {
+    return apiClient.put(API_ENDPOINTS.CART.ROOT, cart);
+  },
+
+  mergeGuestCart: ({ guestSessionId, guestCart }) => {
+    return apiClient.post(API_ENDPOINTS.CART.MERGE_GUEST, {
+      guestSessionId,
+      guestCart,
+    });
+  },
+};
+
 // Export location API helper functions
 export const locationAPI = {
   // Reverse geocode coordinates to address
-  reverseGeocode: (lat, lng) => {
+  reverseGeocode: (lat, lng, options = {}) => {
     return apiClient.get(API_ENDPOINTS.LOCATION.REVERSE_GEOCODE, {
-      params: { lat, lng },
+      params: { lat, lng, ...(options || {}) },
     });
   },
   // Get nearby locations
@@ -299,6 +335,9 @@ export const locationAPI = {
 
 // Export zone API helper functions
 export const zoneAPI = {
+  getActiveZones: () => {
+    return apiClient.get(API_ENDPOINTS.ZONE.ACTIVE);
+  },
   // Detect user's zone based on location
   detectZone: (lat, lng) => {
     return apiClient.get(API_ENDPOINTS.ZONE.DETECT, {
@@ -307,37 +346,9 @@ export const zoneAPI = {
   },
 };
 
-const getUserLocationAwareParams = (params = {}) => {
-  const nextParams = { ...params };
-
-  if (typeof window === "undefined") return nextParams;
-
-  const pathname = window.location?.pathname || "";
-  const isUserFacingRoute =
-    !pathname.startsWith("/admin") &&
-    !pathname.startsWith("/restaurant") &&
-    !pathname.startsWith("/delivery");
-
-  if (!isUserFacingRoute) return nextParams;
-  if (nextParams.latitude != null && nextParams.longitude != null) return nextParams;
-
-  try {
-    const storedLocation = localStorage.getItem("userLocation");
-    if (!storedLocation) return nextParams;
-
-    const parsedLocation = JSON.parse(storedLocation);
-    if (
-      parsedLocation?.latitude != null &&
-      parsedLocation?.longitude != null
-    ) {
-      nextParams.latitude = parsedLocation.latitude;
-      nextParams.longitude = parsedLocation.longitude;
-    }
-  } catch (error) {
-    console.warn("Failed to read active user location for restaurant API", error);
-  }
-
-  return nextParams;
+export const referralAPI = {
+  verify: (code, type) =>
+    apiClient.post(API_ENDPOINTS.REFERRAL.VERIFY, { code, type }),
 };
 
 // Export restaurant API helper functions
@@ -368,11 +379,6 @@ export const restaurantAPI = {
     if (password != null) payload.password = password;
     return apiClient.post(API_ENDPOINTS.RESTAURANT.AUTH.VERIFY_OTP, payload);
   },
-  completeRegistrationWithReferral: (tempToken, referralCode) =>
-    apiClient.post("/restaurant/auth/complete-registration-with-referral", {
-      tempToken,
-      referralCode,
-    }),
 
   register: (
     name,
@@ -399,6 +405,16 @@ export const restaurantAPI = {
       email,
       password,
     });
+  },
+
+  completeRegistrationWithReferral: (tempToken, referralCode) => {
+    return apiClient.post(
+      API_ENDPOINTS.RESTAURANT.AUTH.COMPLETE_REGISTRATION_WITH_REFERRAL,
+      {
+        tempToken,
+        referralCode,
+      },
+    );
   },
 
   firebaseGoogleLogin: (idToken) => {
@@ -586,12 +602,13 @@ export const restaurantAPI = {
       item,
     });
   },
-  getMenuByRestaurantId: (restaurantId) => {
+  getMenuByRestaurantId: (restaurantId, params = {}) => {
     return apiClient.get(
       API_ENDPOINTS.RESTAURANT.MENU_BY_RESTAURANT_ID.replace(
         ":id",
         restaurantId,
       ),
+      { params },
     );
   },
 
@@ -678,6 +695,24 @@ export const restaurantAPI = {
     });
   },
 
+  getNotifications: (params = {}) => {
+    return apiClient.get(API_ENDPOINTS.RESTAURANT.NOTIFICATIONS, { params });
+  },
+  getUnreadNotificationCount: () => {
+    return apiClient.get(API_ENDPOINTS.RESTAURANT.NOTIFICATIONS_UNREAD_COUNT);
+  },
+  markNotificationRead: (notificationId) => {
+    return apiClient.patch(
+      API_ENDPOINTS.RESTAURANT.NOTIFICATION_READ.replace(
+        ":notificationId",
+        notificationId,
+      ),
+    );
+  },
+  markAllNotificationsRead: () => {
+    return apiClient.patch(API_ENDPOINTS.RESTAURANT.NOTIFICATIONS_READ_ALL);
+  },
+
   // Get analytics
   getAnalytics: (params = {}) => {
     return apiClient.get(API_ENDPOINTS.RESTAURANT.ANALYTICS, { params });
@@ -685,20 +720,19 @@ export const restaurantAPI = {
 
   // Get all restaurants (for user module)
   getRestaurants: (params = {}) => {
-    return apiClient.get(API_ENDPOINTS.RESTAURANT.LIST, {
-      params: getUserLocationAwareParams(params),
-    });
+    return apiClient.get(API_ENDPOINTS.RESTAURANT.LIST, { params });
   },
 
   // Get restaurants with dishes under ₹250
-  getRestaurantsUnder250: (zoneId) => {
-    const params = getUserLocationAwareParams(zoneId ? { zoneId } : {});
+  getRestaurantsUnder250: (params = {}) => {
     return apiClient.get(API_ENDPOINTS.RESTAURANT.UNDER_250, { params });
   },
 
   // Get restaurant by ID or slug
-  getRestaurantById: (id) => {
-    return apiClient.get(API_ENDPOINTS.RESTAURANT.BY_ID.replace(":id", id));
+  getRestaurantById: (id, params = {}) => {
+    return apiClient.get(API_ENDPOINTS.RESTAURANT.BY_ID.replace(":id", id), {
+      params,
+    });
   },
   // Get coupons for item (public - for user cart)
   getCouponsByItemIdPublic: (restaurantId, itemId) => {
@@ -881,11 +915,15 @@ export const deliveryAPI = {
     }
     return apiClient.post(API_ENDPOINTS.DELIVERY.AUTH.VERIFY_OTP, payload);
   },
-  completeRegistrationWithReferral: (tempToken, referralCode) =>
-    apiClient.post("/delivery/auth/complete-registration-with-referral", {
-      tempToken,
-      referralCode,
-    }),
+  completeRegistrationWithReferral: (tempToken, referralCode) => {
+    return apiClient.post(
+      API_ENDPOINTS.DELIVERY.AUTH.COMPLETE_REGISTRATION_WITH_REFERRAL,
+      {
+        tempToken,
+        referralCode,
+      },
+    );
+  },
   refreshToken: () => {
     return apiClient.post(API_ENDPOINTS.DELIVERY.AUTH.REFRESH_TOKEN);
   },
@@ -894,6 +932,17 @@ export const deliveryAPI = {
   },
   getCurrentDelivery: () => {
     return apiClient.get(API_ENDPOINTS.DELIVERY.AUTH.ME);
+  },
+  registerFcmToken: (platform, fcmToken) => {
+    return apiClient.post(API_ENDPOINTS.DELIVERY.AUTH.FCM_TOKEN, {
+      platform,
+      fcmToken,
+    });
+  },
+  removeFcmToken: (platform = "web") => {
+    return apiClient.delete(API_ENDPOINTS.DELIVERY.AUTH.FCM_TOKEN, {
+      data: { platform },
+    });
   },
 
   // Dashboard
@@ -961,6 +1010,24 @@ export const deliveryAPI = {
 
   createSupportTicket: (data) => {
     return apiClient.post(API_ENDPOINTS.DELIVERY.SUPPORT_TICKETS, data);
+  },
+
+  getNotifications: (params = {}) => {
+    return apiClient.get(API_ENDPOINTS.DELIVERY.NOTIFICATIONS, { params });
+  },
+  getUnreadNotificationCount: () => {
+    return apiClient.get(API_ENDPOINTS.DELIVERY.NOTIFICATIONS_UNREAD_COUNT);
+  },
+  markNotificationRead: (notificationId) => {
+    return apiClient.patch(
+      API_ENDPOINTS.DELIVERY.NOTIFICATION_READ.replace(
+        ":notificationId",
+        notificationId,
+      ),
+    );
+  },
+  markAllNotificationsRead: () => {
+    return apiClient.patch(API_ENDPOINTS.DELIVERY.NOTIFICATIONS_READ_ALL);
   },
 
   // Get delivery profile
@@ -1033,6 +1100,12 @@ export const deliveryAPI = {
   confirmReachedDrop: (orderId) => {
     return apiClient.patch(
       API_ENDPOINTS.DELIVERY.ORDER_REACHED_DROP.replace(":orderId", orderId),
+    );
+  },
+  verifyDeliveryOtp: (orderId, otp) => {
+    return apiClient.post(
+      `/delivery/orders/${orderId}/verify-delivery-otp`,
+      { otp },
     );
   },
   completeDelivery: (orderId, rating = null, review = "") => {
@@ -1117,12 +1190,6 @@ export const deliveryAPI = {
       params: { latitude, longitude, radius },
     });
   },
-
-  // FCM Token management
-  registerFcmToken: (platform, fcmToken) =>
-    apiClient.post(API_ENDPOINTS.DELIVERY.AUTH.FCM_TOKEN, { platform, fcmToken }),
-  removeFcmToken: (platform) =>
-    apiClient.delete(API_ENDPOINTS.DELIVERY.AUTH.FCM_TOKEN, { data: { platform } }),
 };
 
 // Export admin API helper functions
@@ -1175,19 +1242,14 @@ export const adminAPI = {
     return apiClient.get(API_ENDPOINTS.ADMIN.DASHBOARD_STATS, { params });
   },
 
-  // Referral Code Management
-  createReferralCode: (data) =>
-    apiClient.post(API_ENDPOINTS.ADMIN_REFERRAL.CREATE, data),
-  getReferralCodes: (params = {}) =>
-    apiClient.get(API_ENDPOINTS.ADMIN_REFERRAL.LIST, { params }),
-  updateReferralCodeStatus: (id, status) =>
-    apiClient.put(API_ENDPOINTS.ADMIN_REFERRAL.STATUS, { id, status }),
-  deleteReferralCode: (id) =>
-    apiClient.delete(`${API_ENDPOINTS.ADMIN_REFERRAL.DELETE}/${id}`),
-
   // Send push notification
   sendPushNotification: (data) => {
     return apiClient.post(API_ENDPOINTS.ADMIN.PUSH_NOTIFICATION, data);
+  },
+
+  // Get all saved push notifications (for resend)
+  getPushNotifications: (params = {}) => {
+    return apiClient.get(API_ENDPOINTS.ADMIN.PUSH_NOTIFICATIONS, { params });
   },
 
   // Get users
@@ -1328,6 +1390,21 @@ export const adminAPI = {
   // Get all offers (with restaurant and dish details)
   getAllOffers: (params = {}) => {
     return apiClient.get(API_ENDPOINTS.ADMIN.OFFERS, { params });
+  },
+
+  // Create restaurant offer (admin)
+  createOffer: (data) => {
+    return apiClient.post(API_ENDPOINTS.ADMIN.OFFERS, data);
+  },
+
+  // Update offer row (admin)
+  updateOffer: (id, data) => {
+    return apiClient.put(API_ENDPOINTS.ADMIN.OFFER_BY_ID.replace(":id", id), data);
+  },
+
+  // Delete offer row (admin)
+  deleteOffer: (id, params = {}) => {
+    return apiClient.delete(API_ENDPOINTS.ADMIN.OFFER_BY_ID.replace(":id", id), { params });
   },
 
   // Restaurant Commission Management
@@ -1550,7 +1627,7 @@ export const adminAPI = {
 
   // Get refund requests
   getRefundRequests: (params = {}) => {
-    return apiClient.get("/api/admin/refund-requests", { params });
+    return apiClient.get("/admin/refund-requests", { params });
   },
 
   // Process refund (supports both old and new endpoints)
@@ -1975,6 +2052,10 @@ export const adminAPI = {
   },
 
   // Food Approval
+  getFoods: (params = {}) => {
+    return apiClient.get(API_ENDPOINTS.ADMIN.FOODS, { params });
+  },
+
   getPendingFoodApprovals: (params = {}) => {
     return apiClient.get(API_ENDPOINTS.ADMIN.FOOD_APPROVALS, { params });
   },
@@ -2053,6 +2134,11 @@ export const orderAPI = {
     return apiClient.post(API_ENDPOINTS.ORDER.VERIFY_PAYMENT, paymentData);
   },
 
+  // Mark abandoned/failed online payment
+  markPaymentFailed: (paymentData) => {
+    return apiClient.post(API_ENDPOINTS.ORDER.PAYMENT_FAILED, paymentData);
+  },
+
   // Get user orders
   getOrders: (params = {}) => {
     return apiClient.get(API_ENDPOINTS.ORDER.LIST, { params });
@@ -2105,9 +2191,10 @@ export const diningAPI = {
   },
 
   // Get restaurant by slug
-  getRestaurantBySlug: (slug) => {
+  getRestaurantBySlug: (slug, params = {}) => {
     return apiClient.get(
       API_ENDPOINTS.DINING.RESTAURANT_BY_SLUG.replace(":slug", slug),
+      { params },
     );
   },
 
@@ -2145,6 +2232,12 @@ export const diningAPI = {
   // Get dining stories
   getStories: () => {
     return apiClient.get(API_ENDPOINTS.DINING.STORIES);
+  },
+  // Get slot availability for a restaurant/date
+  getBookingAvailability: (restaurantId, date) => {
+    return apiClient.get(API_ENDPOINTS.DINING.BOOKING_AVAILABILITY, {
+      params: { restaurantId, date },
+    });
   },
   // Create a new table booking
   createBooking: (bookingData) => {

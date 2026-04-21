@@ -185,23 +185,27 @@ export default function DeliveryOTP() {
         return
       }
 
-      // First attempt: verify OTP for login
-      const response = await deliveryAPI.verifyOTP(phone, code, "login")
+      const purpose = authData?.isSignUp ? "register" : "login"
+      const signupName =
+        authData?.isSignUp && typeof authData?.name === "string"
+          ? authData.name.trim()
+          : null
+
+      const response = await deliveryAPI.verifyOTP(phone, code, purpose, signupName)
       const data = response?.data?.data || {}
 
-      const userStatus = data?.user?.status
-      const skipSignupForApproved =
-        userStatus === "approved" || userStatus === "active"
-
-      // Check if referral code is required first (new partner registration)
-      if (data.needsReferralCode && data.tempToken) {
-        navigate("/delivery/referral-code", {
+      if (data?.needsReferralCode && data?.tempToken) {
+        navigate("/delivery/referral", {
           replace: true,
           state: { tempToken: data.tempToken },
         })
         setIsLoading(false)
         return
       }
+
+      const userStatus = data?.user?.status
+      const skipSignupForApproved =
+        userStatus === "approved" || userStatus === "active"
 
       // Check if user needs to complete signup (but never force it
       // for already approved/active riders).
@@ -226,7 +230,7 @@ export default function DeliveryOTP() {
           return
         }
 
-        localStorage.setItem("delivery_needsSignup", "true")
+        // Dispatch custom event
         window.dispatchEvent(new Event("deliveryAuthChanged"))
 
         // Redirect to signup step 1 after token is stored
@@ -247,7 +251,6 @@ export default function DeliveryOTP() {
 
       // Clear auth data from sessionStorage
       sessionStorage.removeItem("deliveryAuthData")
-      localStorage.removeItem("delivery_needsSignup")
 
       // Store auth data using utility function to ensure proper role handling
       // The setAuthData function includes error handling and verification
@@ -417,7 +420,8 @@ export default function DeliveryOTP() {
       }
 
       // Call backend to resend OTP
-      await deliveryAPI.sendOTP(phone, "login")
+      const purpose = authData?.isSignUp ? "register" : "login"
+      await deliveryAPI.sendOTP(phone, purpose)
     } catch (err) {
       const message =
         err?.response?.data?.message ||

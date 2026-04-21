@@ -2,7 +2,6 @@ import express from "express";
 import {
   sendOTP,
   verifyOTP,
-  completeRegistrationWithReferral,
   register,
   login,
   resetPassword,
@@ -11,6 +10,7 @@ import {
   getCurrentRestaurant,
   reverifyRestaurant,
   firebaseGoogleLogin,
+  completeRegistrationWithReferral,
 } from "../controllers/restaurantAuthController.js";
 import {
   registerRestaurantFcmToken,
@@ -78,22 +78,32 @@ const completeRegistrationSchema = Joi.object({
   referralCode: Joi.string().trim().required(),
 });
 
-const fcmTokenSchema = Joi.object({
-  platform: Joi.string().valid("web", "android", "ios", "app", "mobile", "windows").required(),
+const fcmRegisterSchema = Joi.object({
+  platform: Joi.string().valid("web", "app", "android", "ios").required(),
   fcmToken: Joi.string().optional(),
   token: Joi.string().optional(),
+  deviceType: Joi.string().valid("android", "ios").optional(),
+  appType: Joi.string().valid("android", "ios").optional(),
+  os: Joi.string().valid("android", "ios").optional(),
 }).or("fcmToken", "token");
 
-const fcmTokenDeleteSchema = Joi.object({
-  platform: Joi.string().valid("web", "android", "ios", "app", "mobile", "windows").required(),
+const fcmDeleteSchema = Joi.object({
+  platform: Joi.string().valid("web", "app", "android", "ios").required(),
+  deviceType: Joi.string().valid("android", "ios").optional(),
+  appType: Joi.string().valid("android", "ios").optional(),
+  os: Joi.string().valid("android", "ios").optional(),
 });
 
 // Public routes
 router.post("/send-otp", validate(sendOTPSchema), sendOTP);
 router.post("/verify-otp", validate(verifyOTPSchema), verifyOTP);
-router.post("/complete-registration-with-referral", validate(completeRegistrationSchema), completeRegistrationWithReferral);
 router.post("/register", validate(registerSchema), register);
 router.post("/login", validate(loginSchema), login);
+router.post(
+  "/complete-registration-with-referral",
+  validate(completeRegistrationSchema),
+  completeRegistrationWithReferral,
+);
 router.post("/reset-password", validate(resetPasswordSchema), resetPassword);
 router.post(
   "/firebase/google-login",
@@ -109,13 +119,13 @@ router.post("/reverify", authenticate, reverifyRestaurant);
 router.post(
   "/fcm-token",
   authenticate,
-  validate(fcmTokenSchema),
+  validate(fcmRegisterSchema),
   registerRestaurantFcmToken,
 );
 router.delete(
   "/fcm-token",
   authenticate,
-  validate(fcmTokenDeleteSchema),
+  validate(fcmDeleteSchema),
   removeRestaurantFcmToken,
 );
 

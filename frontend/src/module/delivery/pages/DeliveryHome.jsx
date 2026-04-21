@@ -27,6 +27,7 @@ import {
   Loader2,
   Camera,
   MessageCircle,
+  Shield,
 } from "lucide-react"
 import BottomPopup from "../components/BottomPopup"
 import DeliveryOrderChatModal from "../components/DeliveryOrderChatModal"
@@ -42,7 +43,6 @@ import {
 } from "../utils/deliveryWalletState"
 import { formatCurrency } from "../../restaurant/utils/currency"
 import { getAllDeliveryOrders } from "../utils/deliveryOrderStatus"
-import { getUnreadDeliveryNotificationCount } from "../utils/deliveryNotifications"
 import { deliveryAPI, restaurantAPI, uploadAPI } from "@/lib/api"
 import { useDeliveryNotifications } from "../hooks/useDeliveryNotifications"
 import { getGoogleMapsApiKey } from "@/lib/utils/googleMapsApiKey"
@@ -138,6 +138,40 @@ const mockRestaurants = [
     tripDistance: "6.9 kms"
   }
 ]
+
+function extractCustomerPhoneFromOrder(order) {
+  if (!order) return null
+
+  return (
+    order.userId?.phone ||
+    order.customerPhone ||
+    order.userPhone ||
+    order.customer?.phone ||
+    order.address?.phone ||
+    null
+  )
+}
+
+function normalizeDialPhone(phone) {
+  if (!phone) return null
+
+  const cleanedPhone = String(phone).trim().replace(/[^\d+]/g, "")
+  return cleanedPhone || null
+}
+
+function extractRestaurantPhoneFromOrder(order) {
+  if (!order) return null
+
+  return (
+    order.restaurantId?.phone ||
+    order.restaurantId?.ownerPhone ||
+    order.restaurant?.phone ||
+    order.restaurant?.ownerPhone ||
+    order.restaurantId?.contact?.phone ||
+    order.restaurantId?.owner?.phone ||
+    null
+  )
+}
 
 // ============================================
 // STABLE TRACKING SYSTEM - RAPIDO/UBER STYLE
@@ -387,10 +421,21 @@ export default function DeliveryHome() {
     const stored = localStorage.getItem('activeOrder')
     return stored ? JSON.parse(stored) : null
   })
-  const [unreadNotificationCount, setUnreadNotificationCount] = useState(() => getUnreadDeliveryNotificationCount())
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
   
   // Delivery notifications hook
   const { newOrder, clearNewOrder, orderReady, clearOrderReady, isConnected } = useDeliveryNotifications()
+
+  const refreshUnreadNotificationCount = useCallback(async () => {
+    try {
+      const response = await deliveryAPI.getUnreadNotificationCount()
+      const count = response?.data?.data?.unreadCount ?? response?.data?.unreadCount ?? 0
+      setUnreadNotificationCount(Number(count) || 0)
+    } catch (error) {
+      console.warn("Failed to refresh delivery unread notifications:", error?.message || error)
+      setUnreadNotificationCount(0)
+    }
+  }, [])
   
   // Default location - will be set from saved location or GPS, not hardcoded
   const [riderLocation, setRiderLocation] = useState(null) // Will be set from GPS or saved location
@@ -418,9 +463,9 @@ export default function DeliveryHome() {
   const smoothedLocationRef = useRef(null) // Current smoothed location
   const markerAnimationRef = useRef(null) // Track ongoing marker animation
   const zonesPolygonsRef = useRef([]) // Store zone polygons
-  // Google Maps Directions API refs
-  const directionsServiceRef = useRef(null) // Directions Service instance
-  const directionsRendererRef = useRef(null) // Directions Renderer instance
+  // Legacy refs kept for compatibility (DirectionsRenderer is no longer used)
+  const directionsServiceRef = useRef(null)
+  const directionsRendererRef = useRef(null)
   const directionsMapInstanceRef = useRef(null) // Directions map instance
   const restaurantMarkerRef = useRef(null) // Restaurant marker on directions map
   const directionsBikeMarkerRef = useRef(null) // Bike marker on directions map
@@ -636,6 +681,9 @@ export default function DeliveryHome() {
   const [showPaymentPage, setShowPaymentPage] = useState(false)
   const [isChatOpen, setIsChatOpen] = useState(false)
   const [chatOrderId, setChatOrderId] = useState(null)
+  const [deliveryCompletionOtp, setDeliveryCompletionOtp] = useState("")
+  const [deliveryCompletionOtpError, setDeliveryCompletionOtpError] = useState("")
+  const [isVerifyingDeliveryOtp, setIsVerifyingDeliveryOtp] = useState(false)
   const [customerRating, setCustomerRating] = useState(0)
   const [customerReviewText, setCustomerReviewText] = useState("")
   const [orderEarnings, setOrderEarnings] = useState(0) // Store earnings from completed order
@@ -647,11 +695,17 @@ export default function DeliveryHome() {
   useEffect(() => {
     if (!selectedRestaurant) {
       setOrderEarnings(0)
+      setDeliveryCompletionOtp("")
+      setDeliveryCompletionOtpError("")
+      setIsVerifyingDeliveryOtp(false)
       return
     }
     const key = selectedRestaurant.id || selectedRestaurant.orderId
     if (key) {
       setOrderEarnings(0)
+      setDeliveryCompletionOtp("")
+      setDeliveryCompletionOtpError("")
+      setIsVerifyingDeliveryOtp(false)
     }
   }, [selectedRestaurant?.id, selectedRestaurant?.orderId])
   const [reachedPickupButtonProgress, setreachedPickupButtonProgress] = useState(0)
@@ -773,25 +827,9 @@ export default function DeliveryHome() {
     
     window.addEventListener('onlineStatusChanged', handleCustomStorageChange)
 
-    // Also poll localStorage periodically to catch any missed updates (fallback)
-    const pollInterval = setInterval(() => {
-      try {
-        const raw = localStorage.getItem(LS_KEY)
-        const next = raw ? JSON.parse(raw) === true : false
-        setIsOnline(prev => {
-          if (prev !== next) {
-            console.log('[DeliveryHome] Polling detected change:', prev, '->', next)
-            return next
-          }
-          return prev
-        })
-      } catch {}
-    }, 1000) // Check every second
-
     return () => {
       window.removeEventListener('storage', handleStorageChange)
       window.removeEventListener('onlineStatusChanged', handleCustomStorageChange)
-      clearInterval(pollInterval)
     }
   }, [])
 
@@ -952,29 +990,13 @@ export default function DeliveryHome() {
     // Fetch immediately on mount
     fetchActiveEarningAddons()
 
-    // Refresh every 5 seconds to get latest offers
+    // Keep refresh lightweight to avoid UI feeling like page reload
     const refreshInterval = setInterval(() => {
       fetchActiveEarningAddons()
-    }, 5000)
-
-    // Refresh when page becomes visible
-    const handleVisibilityChange = () => {
-      if (!document.hidden) {
-        fetchActiveEarningAddons()
-      }
-    }
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-
-    // Also listen for focus events for instant refresh
-    const handleFocus = () => {
-      fetchActiveEarningAddons()
-    }
-    window.addEventListener('focus', handleFocus)
+    }, 60000)
 
     return () => {
       clearInterval(refreshInterval)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-      window.removeEventListener('focus', handleFocus)
     }
   }, [])
 
@@ -2449,12 +2471,14 @@ export default function DeliveryHome() {
                 customerAddress: order.address?.formattedAddress || 
                                 (order.address?.street ? `${order.address.street}, ${order.address.city || ''}, ${order.address.state || ''}`.trim() : '') ||
                                 selectedRestaurant?.customerAddress,
+                customerPhone: extractCustomerPhoneFromOrder(order) || selectedRestaurant?.customerPhone || null,
                 customerLat: order.address?.location?.coordinates?.[1],
-                customerLng: order.address?.location?.coordinates?.[0],
-                items: order.items || [],
-                total: order.pricing?.total || 0,
-                paymentMethod: order.paymentMethod ?? order.payment?.method ?? 'razorpay', // backend-resolved first (COD vs Online)
-                phone: order.restaurantId?.phone || order.restaurantId?.ownerPhone || null, // Restaurant phone number (prefer phone, fallback to ownerPhone)
+              customerLng: order.address?.location?.coordinates?.[0],
+              items: order.items || [],
+              total: order.pricing?.total || 0,
+              paymentMethod: order.paymentMethod ?? order.payment?.method ?? 'razorpay', // backend-resolved first (COD vs Online)
+              deliveryVerification: order.deliveryVerification || null,
+              phone: order.restaurantId?.phone || order.restaurantId?.ownerPhone || null, // Restaurant phone number (prefer phone, fallback to ownerPhone)
                 ownerPhone: order.restaurantId?.ownerPhone || null, // Owner phone number (separate field for direct access)
                 orderStatus: order.status || 'preparing', // Store order status (pending, preparing, ready, out_for_delivery, delivered)
                 deliveryState: {
@@ -2645,86 +2669,31 @@ export default function DeliveryHome() {
               console.log('✅ Showing route on main map from live location to restaurant');
               console.log('📍 Flow: Order Accepted → Route to Restaurant → 500m Detection → Reached Pickup → Order ID → Route to Customer → 500m Detection → Reached Drop → Delivered → Review → Payment');
               
-              // Show route on main map using DirectionsRenderer or polyline
+              // Show route on main map using polyline from directions result (OSRM)
               if (window.deliveryMapInstance && restaurantInfo) {
-                // Use DirectionsRenderer on main map if we have directions result
-                // Use directionsResponse state (which was set above) instead of local variable
                 const directionsResult = directionsResultForMap || (directionsResponse && directionsResponse.routes && directionsResponse.routes.length > 0 ? directionsResponse : null);
                 
                 if (directionsResult && directionsResult.routes && directionsResult.routes.length > 0) {
-                  console.log('🗺️ Setting up DirectionsRenderer on main map with route:', directionsResult);
-                  
-                  // Initialize DirectionsRenderer for main map if not exists
-                  // Don't create DirectionsRenderer - it adds dots
-                  // We'll extract route path and use custom polyline instead
-                  if (!directionsRendererRef.current) {
-                    // Create DirectionsRenderer but don't set it on map (only for extracting route data)
-                    directionsRendererRef.current = new window.google.maps.DirectionsRenderer({
-                      suppressMarkers: true,
-                      suppressInfoWindows: false,
-                      polylineOptions: {
-                        strokeColor: '#4285F4',
-                        strokeWeight: 0,
-                        strokeOpacity: 0,
-                        zIndex: -1,
-                        icons: []
-                      },
-                      preserveViewport: true
-                    });
-                    // Explicitly don't set map - we use custom polyline instead
-                    console.log('✅ DirectionsRenderer created (not on map - using custom polyline)');
-                  }
-                  
-                  // Extract route path directly from directionsResult (don't use DirectionsRenderer - it adds dots)
                   try {
-                    // Validate directionsResult is a valid DirectionsResult object
-                    if (!directionsResult || typeof directionsResult !== 'object' || !directionsResult.routes || !Array.isArray(directionsResult.routes) || directionsResult.routes.length === 0) {
-                      console.error('❌ Invalid directionsResult:', directionsResult);
-                      return;
+                    // Clean up old polyline
+                    if (routePolylineRef.current) {
+                      routePolylineRef.current.setMap(null);
+                      routePolylineRef.current = null;
                     }
 
-                    // Validate it's a Google Maps DirectionsResult (has request and legs)
-                    if (!directionsResult.request || !directionsResult.routes[0]?.legs || !Array.isArray(directionsResult.routes[0].legs)) {
-                      console.error('❌ directionsResult is not a valid Google Maps DirectionsResult');
-                      return;
-                    }
-
-                    console.log('📍 Route details:', {
-                      routes: directionsResult.routes?.length || 0,
-                      legs: directionsResult.routes?.[0]?.legs?.length || 0,
-                      distance: directionsResult.routes?.[0]?.legs?.[0]?.distance?.text,
-                      duration: directionsResult.routes?.[0]?.legs?.[0]?.duration?.text
-                    });
-                    
-                    // Don't create main route polyline - only live tracking polyline will be shown
-                    // Remove old custom polyline if exists (cleanup)
-                    try {
-                      if (routePolylineRef.current) {
-                        routePolylineRef.current.setMap(null);
-                        routePolylineRef.current = null;
-                      }
-                      
-                      // Completely remove DirectionsRenderer from map to prevent any dots/icons
-                      if (directionsRendererRef.current) {
-                        directionsRendererRef.current.setMap(null);
-                      }
-                    } catch (e) {
-                      console.warn('⚠️ Error cleaning up polyline:', e);
-                    }
-                    
-                    // Fit bounds to show entire route - but preserve zoom if user has zoomed in
-                    const bounds = directionsResult.routes[0].bounds;
-                    if (bounds) {
+                    // Fit bounds from overview_path
+                    const overviewPath = directionsResult.routes[0]?.overview_path;
+                    if (overviewPath && overviewPath.length > 0 && window.google?.maps) {
+                      const routeBounds = new window.google.maps.LatLngBounds();
+                      overviewPath.forEach(p => routeBounds.extend(p));
                       const currentZoom = window.deliveryMapInstance.getZoom();
-                      window.deliveryMapInstance.fitBounds(bounds, { padding: 100 });
-                      // Restore zoom if user had zoomed in more than fitBounds would set
+                      window.deliveryMapInstance.fitBounds(routeBounds, { padding: 100 });
                       setTimeout(() => {
                         const newZoom = window.deliveryMapInstance.getZoom();
                         if (currentZoom > newZoom && currentZoom >= 18) {
                           window.deliveryMapInstance.setZoom(currentZoom);
                         }
                       }, 100);
-                      console.log('✅ Map bounds fitted to route');
                     }
                     
                     console.log('✅ Route displayed on main map using custom polyline');
@@ -3601,6 +3570,9 @@ export default function DeliveryHome() {
                   customerAddress: order.address?.formattedAddress ||
                                   (order.address?.street ? `${order.address.street}, ${order.address.city || ''}, ${order.address.state || ''}`.trim() : '') ||
                                   selectedRestaurant.customerAddress,
+                  deliveryVerification: order.deliveryVerification || selectedRestaurant.deliveryVerification || null,
+                  paymentMethod: order.paymentMethod ?? order.payment?.method ?? selectedRestaurant.paymentMethod,
+                  paymentStatus: order.paymentStatus ?? order.payment?.status ?? selectedRestaurant.paymentStatus,
                   customerLat,
                   customerLng
                 }
@@ -3653,34 +3625,21 @@ export default function DeliveryHome() {
 
                     // Show route polyline on main Feed map
                     if (window.deliveryMapInstance && window.google?.maps) {
-                      if (!directionsRendererRef.current) {
-                        directionsRendererRef.current = new window.google.maps.DirectionsRenderer({
-                          suppressMarkers: true,
-                          polylineOptions: { strokeColor: '#4285F4', strokeWeight: 0, strokeOpacity: 0, icons: [], zIndex: -1 },
-                          preserveViewport: true
-                        })
-                      }
-                      // Don't create main route polyline - only live tracking polyline will be shown
-                      // Remove old custom polyline if exists (cleanup)
                       try {
                         if (routePolylineRef.current) {
                           routePolylineRef.current.setMap(null);
                           routePolylineRef.current = null;
                         }
-                        
-                        // Remove DirectionsRenderer from map
-                        if (directionsRendererRef.current) {
-                          directionsRendererRef.current.setMap(null);
-                        }
                       } catch (e) {
                         console.warn('⚠️ Error cleaning up polyline:', e);
                       }
-                      
-                      const bounds = directionsResult.routes?.[0]?.bounds
-                      if (bounds) {
+
+                      const overviewPath = directionsResult.routes?.[0]?.overview_path;
+                      if (overviewPath && overviewPath.length > 0) {
+                        const routeBounds = new window.google.maps.LatLngBounds();
+                        overviewPath.forEach(p => routeBounds.extend(p));
                         const currentZoomBeforeFit = window.deliveryMapInstance.getZoom();
-                        window.deliveryMapInstance.fitBounds(bounds, { padding: 100 });
-                        // Preserve zoom if user had zoomed in
+                        window.deliveryMapInstance.fitBounds(routeBounds, { padding: 100 });
                         setTimeout(() => {
                           const newZoom = window.deliveryMapInstance.getZoom();
                           if (currentZoomBeforeFit > newZoom && currentZoomBeforeFit >= 18) {
@@ -3735,6 +3694,9 @@ export default function DeliveryHome() {
               ...prev,
               orderStatus: 'out_for_delivery',
               status: 'out_for_delivery',
+              deliveryVerification: order.deliveryVerification || prev?.deliveryVerification || null,
+              paymentMethod: order.paymentMethod ?? order.payment?.method ?? prev?.paymentMethod,
+              paymentStatus: order.paymentStatus ?? order.payment?.status ?? prev?.paymentStatus,
               deliveryPhase: 'en_route_to_delivery',
               deliveryState: {
                 ...prev.deliveryState,
@@ -3878,6 +3840,173 @@ export default function DeliveryHome() {
     }
   }
 
+  const isPrepaidDeliveryCompletionOrder = (orderLike) => {
+    const paymentMethod = String(
+      orderLike?.paymentMethod || orderLike?.payment?.method || '',
+    ).toLowerCase()
+    const paymentStatus = String(
+      orderLike?.paymentStatus || orderLike?.payment?.status || '',
+    ).toLowerCase()
+
+    if (paymentMethod === 'cash' || paymentMethod === 'cod') {
+      return false
+    }
+
+    if (orderLike?.deliveryVerification?.isRequired) {
+      return true
+    }
+
+    return ['paid', 'completed'].includes(paymentStatus) || Boolean(paymentMethod)
+  }
+
+  const continueOrderCompletion = () => {
+    const requiresDeliveryOtp = isPrepaidDeliveryCompletionOrder(selectedRestaurant)
+    const trimmedDeliveryOtp = deliveryCompletionOtp.trim()
+
+    if (requiresDeliveryOtp && !/^\d{4}$/.test(trimmedDeliveryOtp)) {
+      setDeliveryCompletionOtpError(
+        trimmedDeliveryOtp
+          ? 'Please enter a valid 4-digit OTP.'
+          : 'Ask customer for the 4-digit OTP to complete prepaid delivery.',
+      )
+      return
+    }
+
+    setOrderDeliveredIsAnimatingToComplete(true)
+    setOrderDeliveredButtonProgress(1)
+
+    setTimeout(() => {
+      setShowOrderDeliveredAnimation(false)
+
+      setShowReachedDropPopup(false)
+      setShowreachedPickupPopup(false)
+      setShowOrderIdConfirmationPopup(false)
+
+      ;(async () => {
+        try {
+          const orderIdForApi =
+            selectedRestaurant?.id ||
+            newOrder?.orderMongoId ||
+            newOrder?._id ||
+            selectedRestaurant?.orderId ||
+            newOrder?.orderId
+
+          if (!orderIdForApi) {
+            console.error("âŒ Order ID not available for completeDelivery", {
+              selectedRestaurant,
+              newOrder,
+            })
+            toast.error("Order ID not available. Please try again.")
+            return
+          }
+
+          console.log("ðŸ“ Completing delivery directly from swipe:", {
+            orderId: orderIdForApi,
+          })
+
+          if (requiresDeliveryOtp) {
+            setIsVerifyingDeliveryOtp(true)
+            setDeliveryCompletionOtpError("")
+
+            const verifyResponse = await deliveryAPI.verifyDeliveryOtp(
+              orderIdForApi,
+              trimmedDeliveryOtp,
+            )
+
+            if (!verifyResponse.data?.success) {
+              throw new Error(
+                verifyResponse.data?.message ||
+                  "Invalid OTP. Please re-check and try again.",
+              )
+            }
+          }
+
+          const response = await deliveryAPI.completeDelivery(
+            orderIdForApi,
+            null,
+            "",
+          )
+
+          if (response.data?.success) {
+            let earnings = response.data.data?.earnings?.amount
+            if (earnings == null) {
+              earnings = response.data.data?.totalEarning
+            }
+            if (earnings == null) {
+              const backendEstimated = response.data.data?.estimatedEarnings
+              if (
+                typeof backendEstimated === "object" &&
+                backendEstimated?.totalEarning != null
+              ) {
+                earnings = Number(backendEstimated.totalEarning) || 0
+              } else if (typeof backendEstimated === "number") {
+                earnings = Number(backendEstimated) || 0
+              }
+            }
+            if (earnings == null) {
+              const est = selectedRestaurant?.estimatedEarnings
+              if (typeof est === "object" && est?.totalEarning != null) {
+                earnings = Number(est.totalEarning) || 0
+              } else if (typeof est === "number") {
+                earnings = Number(est) || 0
+              }
+            }
+            if (earnings == null) {
+              earnings = 0
+            }
+
+            setOrderEarnings(earnings)
+
+            console.log(
+              "âœ… Delivery completed and earnings added to wallet:",
+              earnings,
+            )
+            console.log(
+              "âœ… Wallet transaction:",
+              response.data.data?.walletTransaction,
+            )
+
+            window.dispatchEvent(new Event("deliveryWalletStateUpdated"))
+
+            if (earnings > 0) {
+              toast.success(`â‚¹${earnings.toFixed(2)} added to your wallet!`)
+            } else {
+              toast.success("Order marked as delivered")
+            }
+
+            setDeliveryCompletionOtp("")
+            setDeliveryCompletionOtpError("")
+
+            clearOrderData()
+          } else {
+            console.error("âŒ Failed to complete delivery:", response.data)
+            const failureMessage =
+              response.data?.message ||
+              "Failed to complete delivery. Please try again."
+            toast.error(failureMessage)
+            setDeliveryCompletionOtpError(failureMessage)
+            setShowOrderDeliveredAnimation(true)
+          }
+        } catch (error) {
+          console.error("âŒ Error completing delivery:", error)
+          const failureMessage =
+            error?.response?.data?.message ||
+            error?.message ||
+            "Failed to complete delivery. Please try again."
+          toast.error(failureMessage)
+          setDeliveryCompletionOtpError(failureMessage)
+          setShowOrderDeliveredAnimation(true)
+        } finally {
+          setIsVerifyingDeliveryOtp(false)
+          setTimeout(() => {
+            setOrderDeliveredButtonProgress(0)
+            setOrderDeliveredIsAnimatingToComplete(false)
+          }, 500)
+        }
+      })()
+    }, 200)
+  }
+
   const handleOrderDeliveredTouchEnd = (e) => {
     if (!orderDeliveredIsSwiping.current) {
       setOrderDeliveredButtonProgress(0)
@@ -3890,8 +4019,23 @@ export default function DeliveryHome() {
     const padding = 16
     const maxSwipe = buttonWidth - circleWidth - (padding * 2)
     const threshold = maxSwipe * 0.7 // 70% of max swipe
+    const requiresDeliveryOtp = isPrepaidDeliveryCompletionOrder(selectedRestaurant)
+    const trimmedDeliveryOtp = deliveryCompletionOtp.trim()
 
     if (deltaX > threshold) {
+      if (requiresDeliveryOtp && !/^\d{4}$/.test(trimmedDeliveryOtp)) {
+        setDeliveryCompletionOtpError(
+          trimmedDeliveryOtp
+            ? 'Please enter a valid 4-digit OTP.'
+            : 'Ask customer for the 4-digit OTP to complete prepaid delivery.',
+        )
+        setOrderDeliveredButtonProgress(0)
+        orderDeliveredSwipeStartX.current = 0
+        orderDeliveredSwipeStartY.current = 0
+        orderDeliveredIsSwiping.current = false
+        return
+      }
+
       // Animate to completion
       setOrderDeliveredIsAnimatingToComplete(true)
       setOrderDeliveredButtonProgress(1)
@@ -3927,6 +4071,23 @@ export default function DeliveryHome() {
             console.log("📝 Completing delivery directly from swipe:", {
               orderId: orderIdForApi,
             })
+
+            if (requiresDeliveryOtp) {
+              setIsVerifyingDeliveryOtp(true)
+              setDeliveryCompletionOtpError("")
+
+              const verifyResponse = await deliveryAPI.verifyDeliveryOtp(
+                orderIdForApi,
+                trimmedDeliveryOtp,
+              )
+
+              if (!verifyResponse.data?.success) {
+                throw new Error(
+                  verifyResponse.data?.message ||
+                    "Invalid OTP. Please re-check and try again.",
+                )
+              }
+            }
 
             const response = await deliveryAPI.completeDelivery(
               orderIdForApi,
@@ -3982,19 +4143,31 @@ export default function DeliveryHome() {
                 toast.success("Order marked as delivered")
               }
 
+              setDeliveryCompletionOtp("")
+              setDeliveryCompletionOtpError("")
+
               // Clear active order from UI so everywhere reflects delivered state
               clearOrderData()
             } else {
               console.error("❌ Failed to complete delivery:", response.data)
-              toast.error(
+              const failureMessage =
                 response.data?.message ||
-                  "Failed to complete delivery. Please try again.",
-              )
+                "Failed to complete delivery. Please try again."
+              toast.error(failureMessage)
+              setDeliveryCompletionOtpError(failureMessage)
+              setShowOrderDeliveredAnimation(true)
             }
           } catch (error) {
             console.error("❌ Error completing delivery:", error)
-            toast.error("Failed to complete delivery. Please try again.")
+            const failureMessage =
+              error?.response?.data?.message ||
+              error?.message ||
+              "Failed to complete delivery. Please try again."
+            toast.error(failureMessage)
+            setDeliveryCompletionOtpError(failureMessage)
+            setShowOrderDeliveredAnimation(true)
           } finally {
+            setIsVerifyingDeliveryOtp(false)
             // Reset after animation
             setTimeout(() => {
               setOrderDeliveredButtonProgress(0)
@@ -4164,9 +4337,10 @@ export default function DeliveryHome() {
     }
 
     const handleNotificationUpdate = () => {
-      setUnreadNotificationCount(getUnreadDeliveryNotificationCount())
+      refreshUnreadNotificationCount()
     }
 
+    refreshUnreadNotificationCount()
     window.addEventListener('deliveryHomeRefresh', handleRefresh)
     window.addEventListener('gigStateUpdated', handleRefresh)
     window.addEventListener('deliveryOrderStatusUpdated', handleRefresh)
@@ -4182,7 +4356,7 @@ export default function DeliveryHome() {
       window.removeEventListener('storage', handleActiveOrderUpdate)
       window.removeEventListener('deliveryNotificationsUpdated', handleNotificationUpdate)
     }
-  }, [])
+  }, [refreshUnreadNotificationCount])
 
   // Helper function to calculate time away from distance
   const calculateTimeAway = useCallback((distanceStr) => {
@@ -4305,6 +4479,7 @@ export default function DeliveryHome() {
         amount: earnedValue > 0 ? earnedValue : (deliveryFee > 0 ? deliveryFee : 0),
         customerName: newOrder.customerName,
         customerAddress: newOrder.customerLocation?.address || 'Customer address',
+        customerPhone: newOrder.customerPhone || newOrder.userPhone || null,
         customerLat: newOrder.customerLocation?.latitude,
         customerLng: newOrder.customerLocation?.longitude,
         items: newOrder.items || [],
@@ -4714,6 +4889,7 @@ export default function DeliveryHome() {
                            (firstOrder.address?.street 
                              ? `${firstOrder.address.street}, ${firstOrder.address.city || ''}, ${firstOrder.address.state || ''}`.trim()
                              : 'Customer address'),
+            customerPhone: extractCustomerPhoneFromOrder(firstOrder),
             customerLat: firstOrder.address?.location?.coordinates?.[1],
             customerLng: firstOrder.address?.location?.coordinates?.[0],
             items: firstOrder.items || [],
@@ -5585,84 +5761,47 @@ export default function DeliveryHome() {
     }
   }, [selectedRestaurant?.lat, selectedRestaurant?.lng, selectedRestaurant?.name])
 
-  // Calculate route using Google Maps Directions API (Zomato-style road-based routing)
-  // Optimized for TWO_WHEELER mode with DRIVING fallback
-  // NOTE: Must be defined BEFORE the useEffect that uses it (Rules of Hooks)
+  // Calculate route using free OSRM API (no Google Directions cost)
+  // Returns a result shaped like Google DirectionsResult for compatibility
   const calculateRouteWithDirectionsAPI = useCallback(async (origin, destination) => {
-    if (!window.google || !window.google.maps || !window.google.maps.DirectionsService) {
-      console.warn('⚠️ Google Maps Directions API not available');
-      return null;
-    }
-
     try {
-      // Initialize Directions Service if not already created
-      if (!directionsServiceRef.current) {
-        directionsServiceRef.current = new window.google.maps.DirectionsService();
+      const startLng = origin[1];
+      const startLat = origin[0];
+      const endLng = destination.lng;
+      const endLat = destination.lat;
+      const url = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=geojson`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+
+      if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
+        console.warn('⚠️ OSRM route failed, using straight line');
+        return null;
       }
 
-      // Try TWO_WHEELER first (optimized for bike/delivery), fallback to DRIVING
-      const tryRoute = (travelMode, modeName) => {
-        return new Promise((resolve, reject) => {
-          directionsServiceRef.current.route(
-            {
-              origin: { lat: origin[0], lng: origin[1] },
-              destination: { lat: destination.lat, lng: destination.lng },
-              travelMode: travelMode,
-              provideRouteAlternatives: false, // Save API cost - don't get alternatives
-              avoidHighways: false,
-              avoidTolls: false,
-              optimizeWaypoints: false
-            },
-            (result, status) => {
-              if (status === window.google.maps.DirectionsStatus.OK) {
-                console.log(`✅ Directions API route calculated successfully (${modeName})`);
-                console.log('📍 Route details:', {
-                  distance: result.routes[0].legs[0].distance?.text,
-                  duration: result.routes[0].legs[0].duration?.text,
-                  steps: result.routes[0].legs[0].steps?.length,
-                  travelMode: modeName
-                });
-                setDirectionsResponse(result);
-                directionsResponseRef.current = result; // Store in ref for callbacks
-                resolve(result);
-              } else {
-                // Handle specific error cases - suppress console errors for REQUEST_DENIED
-                if (status === 'REQUEST_DENIED') {
-                  // Don't log as error - this is expected when billing is not enabled
-                  // Just reject silently to trigger fallback
-                  reject(new Error(`Directions API not available: ${status}`));
-                } else if (status === 'OVER_QUERY_LIMIT') {
-                  console.warn(`⚠️ Directions API quota exceeded (${modeName})`);
-                  reject(new Error(`Directions request failed: ${status}`));
-                } else {
-                  console.warn(`⚠️ Directions API failed with ${modeName}: ${status}`);
-                  reject(new Error(`Directions request failed: ${status}`));
-                }
-              }
-            }
-          );
-        });
+      const osrmRoute = data.routes[0];
+      const coords = osrmRoute.geometry.coordinates; // [lng, lat] pairs
+      const overviewPath = coords.map(c => ({ lat: c[1], lng: c[0] }));
+      const distanceKm = (osrmRoute.distance / 1000).toFixed(1);
+      const durationMin = Math.ceil(osrmRoute.duration / 60);
+
+      // Build a compatible result shape so existing polyline-drawing code works
+      const result = {
+        routes: [{
+          overview_path: overviewPath,
+          legs: [{
+            distance: { text: `${distanceKm} km`, value: osrmRoute.distance },
+            duration: { text: `${durationMin} min`, value: osrmRoute.duration },
+            steps: []
+          }]
+        }]
       };
 
-      // Try TWO_WHEELER first (if available in region)
-      try {
-        if (window.google.maps.TravelMode.TWO_WHEELER) {
-          return await tryRoute(window.google.maps.TravelMode.TWO_WHEELER, 'TWO_WHEELER');
-        }
-      } catch (twoWheelerError) {
-        console.log('⚠️ TWO_WHEELER mode not available, trying DRIVING...');
-      }
-
-      // Fallback to DRIVING mode
-      return await tryRoute(window.google.maps.TravelMode.DRIVING, 'DRIVING');
+      setDirectionsResponse(result);
+      directionsResponseRef.current = result;
+      return result;
     } catch (error) {
-      // Handle REQUEST_DENIED and other errors gracefully
-      if (error.message?.includes('REQUEST_DENIED') || error.message?.includes('not available')) {
-        console.warn('⚠️ Google Maps Directions API not available (billing/API key issue). Will use fallback route.');
-      } else {
-        console.error('❌ Error calculating route with Directions API:', error);
-      }
-      return null; // Return null to trigger fallback
+      console.warn('⚠️ OSRM route calculation failed:', error.message);
+      return null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -5910,33 +6049,7 @@ export default function DeliveryHome() {
 
         directionsMapInstanceRef.current = map;
 
-        // Initialize Directions Service
-        if (!directionsServiceRef.current) {
-          directionsServiceRef.current = new window.google.maps.DirectionsService();
-        }
-
-        // Initialize Directions Renderer
-        if (!directionsRendererRef.current) {
-          // Don't create DirectionsRenderer with map - it adds dots
-          // We'll extract route path and use custom polyline instead
-          directionsRendererRef.current = new window.google.maps.DirectionsRenderer({
-            suppressMarkers: true,
-            polylineOptions: {
-              strokeColor: '#4285F4',
-              strokeWeight: 0,
-              strokeOpacity: 0,
-              zIndex: -1,
-              icons: []
-            },
-            preserveViewport: true
-          });
-          // Explicitly don't set map - we use custom polyline instead
-        } else {
-          // Don't set map - we use custom polyline instead
-          // directionsRendererRef.current.setMap(map);
-        }
-
-        // Calculate route using Directions API
+        // Calculate route using OSRM (free)
         const routeResult = await calculateRouteWithDirectionsAPI(currentLocation, destinationLocation);
         
         if (routeResult) {
@@ -5957,9 +6070,11 @@ export default function DeliveryHome() {
           }
           
           // Fit bounds to show entire route
-          const bounds = routeResult.routes[0].bounds;
-          if (bounds) {
-            map.fitBounds(bounds, { padding: 50 });
+          const overviewPath = routeResult.routes?.[0]?.overview_path;
+          if (overviewPath && overviewPath.length > 0 && window.google?.maps) {
+            const routeBounds = new window.google.maps.LatLngBounds();
+            overviewPath.forEach(p => routeBounds.extend(p));
+            map.fitBounds(routeBounds, { padding: 50 });
           }
 
           // Add custom Destination Marker (Restaurant or Customer)
@@ -6160,31 +6275,18 @@ export default function DeliveryHome() {
   }, [showDirectionsMap, riderLocation, selectedRestaurant?.id, calculateDistanceInMeters])
 
   // Handle route polyline visibility and updates
-  // Always use custom polyline (DirectionsRenderer is never active - it adds dots)
   useEffect(() => {
-    // DirectionsRenderer is never used - we always use custom polyline
-    // Remove DirectionsRenderer if it somehow got attached
-    if (directionsRendererRef.current && directionsRendererRef.current.getMap()) {
-      directionsRendererRef.current.setMap(null);
-    }
-    
-    // Only show fallback polyline if DirectionsRenderer is NOT active
     if (routePolyline && routePolyline.length > 0 && window.deliveryMapInstance) {
       updateRoutePolyline();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routePolyline?.length, directionsResponse])
 
-  // Handle directionsResponse updates - Show route on main map when directions are calculated
+  // Handle directionsResponse updates - draw route polyline on main map
   useEffect(() => {
-    // Only show route if there's an active order (selectedRestaurant)
     if (!selectedRestaurant) {
-      // Clear route if no active order
       if (routePolylineRef.current) {
         routePolylineRef.current.setMap(null);
-      }
-      if (directionsRendererRef.current) {
-        directionsRendererRef.current.setMap(null);
       }
       return;
     }
@@ -6193,135 +6295,32 @@ export default function DeliveryHome() {
       return;
     }
 
-    if (!window.deliveryMapInstance || !window.google || !window.google.maps) {
-      console.warn('⚠️ Map not ready for directions display');
-      return;
-    }
+    if (!window.deliveryMapInstance || !window.google?.maps) return;
 
-    console.log('🗺️ Showing directions route on main map:', directionsResponse);
+    const route = directionsResponse.routes[0];
+    const overviewPath = route?.overview_path;
+    if (!overviewPath || overviewPath.length === 0) return;
 
-    // Clear any existing fallback polyline to avoid conflicts
+    // Clean up old polyline
     if (routePolylineRef.current) {
       routePolylineRef.current.setMap(null);
+      routePolylineRef.current = null;
     }
 
-    // Initialize DirectionsRenderer for main map if not exists
-    if (!directionsRendererRef.current) {
-      console.log('📦 Creating DirectionsRenderer for main map');
-      // Don't create DirectionsRenderer with map - it adds dots
-      // We'll extract route path and use custom polyline instead
-      directionsRendererRef.current = new window.google.maps.DirectionsRenderer({
-        suppressMarkers: true,
-        suppressInfoWindows: false,
-        polylineOptions: {
-          strokeColor: '#4285F4',
-          strokeWeight: 0,
-          strokeOpacity: 0,
-          zIndex: -1,
-          icons: []
-        },
-        markerOptions: {
-          visible: false
-        },
-        preserveViewport: true
-      });
-      // Explicitly don't set map - we use custom polyline instead
-      console.log('✅ DirectionsRenderer created with bright blue polyline (markers suppressed)');
-      
-      // Ensure it's visible by explicitly setting map
-      directionsRendererRef.current.setMap(window.deliveryMapInstance);
-    } else {
-      // Ensure renderer is attached to main map
-      directionsRendererRef.current.setMap(window.deliveryMapInstance);
-      // Update polyline options to ensure visibility and suppress markers
-      directionsRendererRef.current.setOptions({
-        suppressMarkers: true, // Hide default markers including car icon
-        suppressInfoWindows: false,
-        polylineOptions: {
-          strokeColor: '#4285F4', // Bright blue like Zomato
-          strokeWeight: 0, // Completely hide DirectionsRenderer polyline (has dots)
-          strokeOpacity: 0, // Hide completely
-          zIndex: -1, // Put behind everything
-          icons: [] // No custom icons
-        },
-        markerOptions: {
-          visible: false // Explicitly hide all markers
-        },
-        preserveViewport: true
-      });
-      console.log('✅ DirectionsRenderer re-attached to main map with updated styling (markers suppressed)');
-    }
-
-    // Set directions response to renderer
+    // Fit bounds from overview_path
     try {
-      // Validate directionsResponse is a valid DirectionsResult object
-      if (!directionsResponse || typeof directionsResponse !== 'object' || !directionsResponse.routes || !Array.isArray(directionsResponse.routes) || directionsResponse.routes.length === 0) {
-        console.error('❌ Invalid directionsResponse:', directionsResponse);
-        return;
-      }
-
-      // Validate it's a Google Maps DirectionsResult (has status property)
-      if (!directionsResponse.request || !directionsResponse.routes[0]?.legs) {
-        console.error('❌ directionsResponse is not a valid Google Maps DirectionsResult');
-        return;
-      }
-
-      // Clear any existing polyline first to ensure clean render
-      if (routePolylineRef.current) {
-        routePolylineRef.current.setMap(null);
-      }
-
-      // Extract route path and create custom clean polyline without dots
-      // Don't use DirectionsRenderer on map - it adds dots/icons
-      try {
-        const route = directionsResponse.routes[0];
-        if (route && route.overview_path) {
-          // Don't create main route polyline - only live tracking polyline will be shown
-          // Remove old custom polyline if exists (cleanup)
-          if (routePolylineRef.current) {
-            routePolylineRef.current.setMap(null);
-            routePolylineRef.current = null;
-          }
-          
-          console.log('📍 Route details:', {
-            routes: directionsResponse.routes?.length || 0,
-            legs: directionsResponse.routes?.[0]?.legs?.length || 0,
-            distance: directionsResponse.routes?.[0]?.legs?.[0]?.distance?.text,
-            duration: directionsResponse.routes?.[0]?.legs?.[0]?.duration?.text
-          });
-          
-          // Completely remove DirectionsRenderer from map to prevent any dots/icons
-          if (directionsRendererRef.current) {
-            directionsRendererRef.current.setMap(null);
-          }
+      const routeBounds = new window.google.maps.LatLngBounds();
+      overviewPath.forEach(p => routeBounds.extend(p));
+      const currentZoomBeforeFit = window.deliveryMapInstance.getZoom();
+      window.deliveryMapInstance.fitBounds(routeBounds, { padding: 100 });
+      setTimeout(() => {
+        const newZoom = window.deliveryMapInstance.getZoom();
+        if (currentZoomBeforeFit > newZoom && currentZoomBeforeFit >= 18) {
+          window.deliveryMapInstance.setZoom(currentZoomBeforeFit);
         }
-      } catch (e) {
-        console.warn('⚠️ Could not create custom polyline:', e);
-      }
-
-      // Fit bounds to show entire route - but preserve zoom if user has zoomed in
-      const bounds = directionsResponse.routes[0].bounds;
-      if (bounds) {
-        const currentZoomBeforeFit = window.deliveryMapInstance.getZoom();
-        window.deliveryMapInstance.fitBounds(bounds, { padding: 100 });
-        // Preserve zoom if user had zoomed in more than fitBounds would set
-        setTimeout(() => {
-          const newZoom = window.deliveryMapInstance.getZoom();
-          if (currentZoomBeforeFit > newZoom && currentZoomBeforeFit >= 18) {
-            window.deliveryMapInstance.setZoom(currentZoomBeforeFit);
-          }
-        }, 100);
-        console.log('✅ Map bounds fitted to route');
-      }
-
-      // Ensure DirectionsRenderer is removed from map (we use custom polyline instead)
-      if (directionsRendererRef.current) {
-        directionsRendererRef.current.setMap(null);
-      }
-    } catch (error) {
-      console.error('❌ Error setting directions on renderer:', error);
-      console.error('❌ directionsResponse type:', typeof directionsResponse);
-      console.error('❌ directionsResponse:', directionsResponse);
+      }, 100);
+    } catch (e) {
+      console.warn('⚠️ Error fitting route bounds:', e);
     }
   }, [directionsResponse, selectedRestaurant])
 
@@ -6412,6 +6411,7 @@ export default function DeliveryHome() {
             restaurantInfoToRestore = {
               ...restaurantInfoToRestore,
               deliveryPhase: deliveryPhase || 'en_route_to_delivery',
+              deliveryVerification: order.deliveryVerification || restaurantInfoToRestore.deliveryVerification || null,
               customerLat,
               customerLng,
               customerName: order.userId?.name || restaurantInfoToRestore.customerName,
@@ -6625,6 +6625,47 @@ export default function DeliveryHome() {
     setShowRoutePath(false);
   }, [clearNewOrder, clearOrderReady])
 
+  useEffect(() => {
+    const handleOrderAcceptedByOther = (event) => {
+      const payload = event.detail || {};
+      const acceptedIds = [
+        payload.orderId,
+        payload.mongoId,
+        payload.orderMongoId,
+        payload._id
+      ].filter(Boolean).map(String);
+
+      const currentIds = [
+        newOrder?.orderId,
+        newOrder?.orderMongoId,
+        newOrder?.mongoId,
+        newOrder?._id,
+        selectedRestaurant?.orderId,
+        selectedRestaurant?.id
+      ].filter(Boolean).map(String);
+
+      if (!acceptedIds.some(id => currentIds.includes(id))) return;
+
+      if (alertAudioRef.current) {
+        alertAudioRef.current.pause();
+        alertAudioRef.current.currentTime = 0;
+        alertAudioRef.current = null;
+      }
+
+      acceptedIds.forEach(id => acceptedOrderIdsRef.current.add(id));
+      setShowNewOrderPopup(false);
+      setIsNewOrderPopupMinimized(false);
+      setNewOrderDragY(0);
+      setSelectedRestaurant(null);
+      clearNewOrder();
+    };
+
+    window.addEventListener('deliveryOrderAcceptedByOther', handleOrderAcceptedByOther);
+    return () => {
+      window.removeEventListener('deliveryOrderAcceptedByOther', handleOrderAcceptedByOther);
+    };
+  }, [newOrder, selectedRestaurant, clearNewOrder])
+
   // Periodically verify order still exists (every 30 seconds) to catch deletions
   useEffect(() => {
     if (!selectedRestaurant?.id && !selectedRestaurant?.orderId) {
@@ -6670,6 +6711,7 @@ export default function DeliveryHome() {
             ...prev,
             orderStatus: order.status,
             status: order.status,
+            deliveryVerification: order.deliveryVerification || prev?.deliveryVerification || null,
             deliveryPhase: order.deliveryState?.currentPhase || prev?.deliveryPhase,
             deliveryState: order.deliveryState || prev?.deliveryState
           }));
@@ -7286,11 +7328,12 @@ export default function DeliveryHome() {
               }
               
               // Fit map bounds to show entire route
-              const bounds = directionsResult.routes[0].bounds;
-              if (bounds) {
+              const overviewPath = directionsResult.routes?.[0]?.overview_path;
+              if (overviewPath && overviewPath.length > 0 && window.google?.maps) {
+                const routeBounds = new window.google.maps.LatLngBounds();
+                overviewPath.forEach(p => routeBounds.extend(p));
                 const currentZoomBeforeFit = window.deliveryMapInstance.getZoom();
-                window.deliveryMapInstance.fitBounds(bounds, { padding: 100 });
-                // Preserve zoom if user had zoomed in
+                window.deliveryMapInstance.fitBounds(routeBounds, { padding: 100 });
                 setTimeout(() => {
                   const newZoom = window.deliveryMapInstance.getZoom();
                   if (currentZoomBeforeFit > newZoom && currentZoomBeforeFit >= 18) {
@@ -9709,12 +9752,8 @@ export default function DeliveryHome() {
           <div className="flex gap-3 mb-6">
             <button 
               onClick={async () => {
-                // Try multiple paths to find restaurant phone number
-                let restaurantPhone = selectedRestaurant?.phone || 
-                                    selectedRestaurant?.restaurantId?.phone || 
-                                    selectedRestaurant?.ownerPhone ||
-                                    selectedRestaurant?.restaurant?.phone ||
-                                    null
+                let restaurantPhone = null
+                const orderId = selectedRestaurant?.orderId || selectedRestaurant?.id
                 
                 console.log('📞 Checking phone in selectedRestaurant:', {
                   phone: selectedRestaurant?.phone,
@@ -9724,18 +9763,17 @@ export default function DeliveryHome() {
                   found: !!restaurantPhone
                 })
                 
-                // If phone not found in selectedRestaurant, try to fetch order details from backend
-                if (!restaurantPhone && selectedRestaurant?.orderId) {
+                // Always fetch order details from backend first so the rider gets the real restaurant number.
+                if (orderId) {
                   try {
                     console.log('📞 [CALL] Phone not found in selectedRestaurant, fetching order details from backend...')
-                    const orderId = selectedRestaurant.orderId || selectedRestaurant.id
                     console.log('📞 [CALL] Fetching order details for orderId:', orderId)
                     
                     const response = await deliveryAPI.getOrderDetails(orderId)
                     console.log('📞 [CALL] Order details API response:', JSON.stringify(response.data, null, 2))
                     
                     // Check multiple response formats
-                    const order = response.data?.data?.order || response.data?.order || null
+                    const order = response.data?.data?.order || response.data?.order || response.data?.data || null
                     
                     if (order) {
                       console.log('📞 [CALL] Order data extracted from API:', {
@@ -9748,23 +9786,17 @@ export default function DeliveryHome() {
                       
                       // Try all possible paths in the API response
                       // Restaurant model has both 'phone' and 'ownerPhone' fields
-                      restaurantPhone = order.restaurantId?.phone || 
-                                       order.restaurantId?.ownerPhone ||
-                                       order.restaurant?.phone ||
-                                       order.restaurant?.ownerPhone ||
-                                       order.restaurantId?.contact?.phone ||
-                                       order.restaurantId?.owner?.phone ||
-                                       null
+                      restaurantPhone = extractRestaurantPhoneFromOrder(order)
                       
                       console.log('📞 [CALL] Phone extracted from order:', restaurantPhone)
                       
                       // If phone found, update selectedRestaurant for future use
                       if (restaurantPhone && selectedRestaurant) {
-                        setSelectedRestaurant({
-                          ...selectedRestaurant,
+                        setSelectedRestaurant((prev) => prev ? ({
+                          ...prev,
                           phone: restaurantPhone,
                           ownerPhone: order.restaurantId?.ownerPhone || order.restaurant?.ownerPhone || restaurantPhone
-                        })
+                        }) : prev)
                         console.log('✅ [CALL] Updated selectedRestaurant with phone:', restaurantPhone)
                       }
                       
@@ -9783,11 +9815,11 @@ export default function DeliveryHome() {
                               restaurantPhone = restaurant.phone || restaurant.ownerPhone || restaurant.primaryContactNumber
                               
                               if (restaurantPhone) {
-                                setSelectedRestaurant({
-                                  ...selectedRestaurant,
+                                setSelectedRestaurant((prev) => prev ? ({
+                                  ...prev,
                                   phone: restaurantPhone,
                                   ownerPhone: restaurant.ownerPhone || restaurantPhone
-                                })
+                                }) : prev)
                                 console.log('✅ [CALL] Updated selectedRestaurant with phone from restaurant API:', restaurantPhone)
                               }
                             }
@@ -9812,15 +9844,28 @@ export default function DeliveryHome() {
                     console.error('❌ [CALL] Error response:', error.response?.data)
                     console.error('❌ [CALL] Error status:', error.response?.status)
                   }
-                } else if (!selectedRestaurant?.orderId) {
+                } else if (!orderId) {
                   console.warn('⚠️ [CALL] Cannot fetch phone - orderId not found in selectedRestaurant:', selectedRestaurant)
                 }
                 
-                if (restaurantPhone) {
+                if (!restaurantPhone) {
+                  restaurantPhone =
+                    selectedRestaurant?.phone ||
+                    selectedRestaurant?.ownerPhone ||
+                    selectedRestaurant?.restaurantId?.phone ||
+                    selectedRestaurant?.restaurantId?.ownerPhone ||
+                    selectedRestaurant?.restaurant?.phone ||
+                    selectedRestaurant?.restaurant?.ownerPhone ||
+                    null
+                }
+
+                const dialPhone = normalizeDialPhone(restaurantPhone)
+
+                if (dialPhone) {
                   // Remove any spaces, dashes, or special characters except + and digits
-                  const cleanPhone = restaurantPhone.replace(/[^\d+]/g, '')
+                  const cleanPhone = dialPhone
                   console.log('📞 Calling restaurant:', { original: restaurantPhone, clean: cleanPhone })
-                  window.location.href = `tel:${cleanPhone}`
+                  window.location.href = `tel:${dialPhone}`
                 } else {
                   toast.error('Restaurant phone number not available. Please contact support.')
                   console.error('❌ Restaurant phone not found in any path:', { 
@@ -10223,32 +10268,60 @@ export default function DeliveryHome() {
           </div>
 
           {/* Customer Info */}
-          <div className="mb-6">
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">
+          <div className="mb-6 min-w-0">
+            <h2 className="break-words text-[1.75rem] font-bold leading-tight text-gray-900 mb-2">
               {selectedRestaurant?.customerName || 'Customer Name'}
             </h2>
-            <p className="text-gray-600 mb-2 leading-relaxed">
+            <p className="break-words text-gray-600 mb-2 leading-relaxed">
               {selectedRestaurant?.customerAddress || 'Customer Address'}
             </p>
-            <p className="text-gray-500 text-sm font-medium">
+            <p className="break-all text-gray-500 text-sm font-medium">
               Order ID: {selectedRestaurant?.orderId || 'ORD1234567890'}
             </p>
           </div>
 
-          {/* Action Buttons - Call (customer), Chat, Map (navigation to customer) */}
-          <div className="flex gap-3 mb-6">
+          {/* Action Buttons - Call (customer), Chat */}
+          <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <button
               type="button"
-              onClick={() => {
-                const customerPhone = selectedRestaurant?.customerPhone || selectedRestaurant?.phone
-                if (customerPhone) {
-                  const clean = String(customerPhone).replace(/[^\d+]/g, '')
-                  window.location.href = `tel:${clean}`
+              onClick={async () => {
+                const orderId = selectedRestaurant?.orderId || selectedRestaurant?.id
+                let customerPhone = selectedRestaurant?.customerPhone
+
+                if (orderId) {
+                  try {
+                    const response = await deliveryAPI.getOrderDetails(orderId)
+                    const order = response?.data?.data?.order || response?.data?.data || null
+                    const latestCustomerPhone = extractCustomerPhoneFromOrder(order)
+
+                    if (latestCustomerPhone) {
+                      customerPhone = latestCustomerPhone
+                      setSelectedRestaurant((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              customerPhone: latestCustomerPhone,
+                              customerName: order?.userId?.name || prev.customerName,
+                              customerAddress:
+                                order?.address?.formattedAddress ||
+                                prev.customerAddress,
+                            }
+                          : prev
+                      )
+                    }
+                  } catch (error) {
+                    console.error('Failed to refresh customer phone before dial:', error)
+                  }
+                }
+
+                const dialPhone = normalizeDialPhone(customerPhone)
+                if (dialPhone) {
+                  window.location.href = `tel:${dialPhone}`
                 } else {
                   toast.error('Customer phone not available')
                 }
               }}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              className="flex min-h-[52px] w-full items-center justify-center gap-2 rounded-lg border border-gray-300 px-4 py-3 text-center hover:bg-gray-50 transition-colors"
             >
               <Phone className="w-5 h-5 text-gray-700" />
               <span className="text-gray-700 font-medium">Call</span>
@@ -10264,42 +10337,10 @@ export default function DeliveryHome() {
                   toast.error('Order not found')
                 }
               }}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              className="flex min-h-[52px] w-full items-center justify-center gap-2 rounded-lg border border-gray-300 px-4 py-3 text-center hover:bg-gray-50 transition-colors"
             >
               <MessageCircle className="w-5 h-5 text-gray-700" />
               <span className="text-gray-700 font-medium">Chat</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const customerLat = selectedRestaurant?.customerLat
-                const customerLng = selectedRestaurant?.customerLng
-                if (customerLat != null && customerLng != null) {
-                  const userAgent = navigator.userAgent || navigator.vendor || window.opera
-                  const isAndroid = /android/i.test(userAgent)
-                  const isIOS = /iPad|iPhone|iPod/.test(userAgent) && !window.MSStream
-                  if (isAndroid) {
-                    window.location.href = `google.navigation:q=${customerLat},${customerLng}&mode=b`
-                    setTimeout(() => {
-                      window.open(`https://www.google.com/maps/dir/?api=1&destination=${customerLat},${customerLng}&travelmode=bicycling`, '_blank')
-                    }, 500)
-                  } else if (isIOS) {
-                    window.location.href = `comgooglemaps://?daddr=${customerLat},${customerLng}&directionsmode=bicycling`
-                    setTimeout(() => {
-                      window.open(`https://maps.google.com/?daddr=${customerLat},${customerLng}&directionsmode=bicycling`, '_blank')
-                    }, 500)
-                  } else {
-                    window.open(`https://www.google.com/maps/dir/?api=1&destination=${customerLat},${customerLng}&travelmode=bicycling`, '_blank')
-                  }
-                  toast.success('Opening Google Maps navigation')
-                } else {
-                  toast.error('Customer location not available')
-                }
-              }}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
-            >
-              <MapPin className="w-5 h-5 text-white" />
-              <span className="text-white font-medium">Map</span>
             </button>
           </div>
 
@@ -10373,6 +10414,10 @@ export default function DeliveryHome() {
         isOpen={showOrderDeliveredAnimation}
         onClose={() => {
           setShowOrderDeliveredAnimation(false)
+          setDeliveryCompletionOtp("")
+          setDeliveryCompletionOtpError("")
+          setIsVerifyingDeliveryOtp(false)
+          setOrderDeliveredButtonProgress(0)
           setShowCustomerReviewPopup(true)
         }}
         showCloseButton={false}
@@ -10381,8 +10426,10 @@ export default function DeliveryHome() {
         showHandle={true}
         showBackdrop={false}
         backdropBlocksInteraction={false}
+        stickyFooter={true}
       >
-        <div className="">
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="flex-1 overflow-y-auto pr-1">
           {/* Success Icon and Title */}
           <div className="text-center mb-6">
             <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -10474,11 +10521,75 @@ export default function DeliveryHome() {
             )
           })()}
 
-          {/* Order Delivered Button with Swipe */}
-          <div className="relative w-full">
+          </div>
+
+          <div className="border-t border-gray-100 bg-white pt-4">
+            {(() => {
+              const requiresDeliveryOtp = isPrepaidDeliveryCompletionOrder(
+                selectedRestaurant,
+              )
+
+              if (!requiresDeliveryOtp) return null
+
+              return (
+                <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3">
+                  <div className="mb-2 flex items-center gap-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
+                      <Shield className="h-4 w-4 text-amber-600" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-amber-900">
+                        Enter customer OTP
+                      </p>
+                      <p className="text-xs text-amber-800">
+                        Ask customer for the 4-digit OTP.
+                      </p>
+                    </div>
+                  </div>
+
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={4}
+                    autoComplete="one-time-code"
+                    value={deliveryCompletionOtp}
+                    onChange={(event) => {
+                      const nextOtp = event.target.value.replace(/\D/g, '').slice(0, 4)
+                      setDeliveryCompletionOtp(nextOtp)
+                      if (deliveryCompletionOtpError) {
+                        setDeliveryCompletionOtpError('')
+                      }
+                    }}
+                    placeholder="OTP"
+                    className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2.5 text-center text-xl font-bold tracking-[0.35em] text-gray-900 outline-none transition focus:border-green-500 focus:ring-2 focus:ring-green-100"
+                  />
+
+                  <div className="mt-2 flex items-center justify-between gap-3 text-[11px]">
+                    <span className="text-amber-700">
+                      Order ID: {selectedRestaurant?.orderId || selectedRestaurant?.id || '--'}
+                    </span>
+                    <span className="text-gray-500">
+                      {deliveryCompletionOtp.length}/4
+                    </span>
+                  </div>
+
+                  {deliveryCompletionOtpError && (
+                    <p className="mt-2 text-xs font-medium text-red-600">
+                      {deliveryCompletionOtpError}
+                    </p>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* Order Delivered Button with Swipe */}
+            <div className="relative w-full">
             <motion.div
               ref={orderDeliveredButtonRef}
-              className="relative w-full bg-green-600 rounded-full overflow-hidden shadow-xl"
+              className={`relative w-full rounded-full overflow-hidden shadow-xl ${
+                isVerifyingDeliveryOtp ? 'bg-green-500/80 pointer-events-none' : 'bg-green-600'
+              }`}
               style={{ touchAction: 'pan-x' }} // Prevent vertical scrolling, allow horizontal pan
               onTouchStart={handleOrderDeliveredTouchStart}
               onTouchMove={handleOrderDeliveredTouchMove}
@@ -10529,12 +10640,25 @@ export default function DeliveryHome() {
                       damping: 25
                     } : { duration: 0 }}
                   >
-                    {orderDeliveredButtonProgress > 0.5 ? 'Release to Confirm' : 'Order Delivered'}
+                    {isVerifyingDeliveryOtp
+                      ? 'Verifying OTP...'
+                      : orderDeliveredButtonProgress > 0.5
+                        ? 'Release to Confirm'
+                        : (() => {
+                            const requiresDeliveryOtp = isPrepaidDeliveryCompletionOrder(
+                              selectedRestaurant,
+                            )
+
+                            return requiresDeliveryOtp
+                              ? 'Verify & Complete Delivery'
+                              : 'Order Delivered'
+                          })()}
                   </motion.span>
                 </div>
               </div>
             </motion.div>
           </div>
+        </div>
         </div>
       </BottomPopup>
 

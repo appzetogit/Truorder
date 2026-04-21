@@ -95,6 +95,7 @@ const adminWalletSchema = new mongoose.Schema({
 });
 
 // Indexes (transactions.restaurantId omitted to avoid duplicate - Mongoose may auto-index subdoc paths)
+adminWalletSchema.index({ 'transactions.orderId': 1 });
 adminWalletSchema.index({ 'transactions.type': 1 });
 adminWalletSchema.index({ 'transactions.createdAt': -1 });
 adminWalletSchema.index({ lastTransactionAt: -1 });
@@ -165,3 +166,4 @@ adminWalletSchema.statics.findOrCreate = async function() {
 const AdminWallet = mongoose.model('AdminWallet', adminWalletSchema);
 
 export default AdminWallet;
+

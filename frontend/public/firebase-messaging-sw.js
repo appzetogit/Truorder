@@ -13,147 +13,105 @@ const firebaseConfig = {
 };
 
 self.addEventListener("install", () => {
-  console.log("[FCM-SW] Installing...");
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
-  console.log("[FCM-SW] Activating...");
   event.waitUntil(self.clients.claim());
 });
 
-function applyConfig(data) {
-  firebaseConfig.apiKey = data.apiKey || data.FIREBASE_API_KEY || "";
-  firebaseConfig.authDomain = data.authDomain || data.FIREBASE_AUTH_DOMAIN || "";
-  firebaseConfig.projectId = data.projectId || data.FIREBASE_PROJECT_ID || "";
-  firebaseConfig.storageBucket = data.storageBucket || data.FIREBASE_STORAGE_BUCKET || "";
-  firebaseConfig.messagingSenderId = data.messagingSenderId || data.FIREBASE_MESSAGING_SENDER_ID || "";
-  firebaseConfig.appId = data.appId || data.FIREBASE_APP_ID || "";
-}
-
-function hasValidConfig() {
-  return !!(firebaseConfig.projectId && firebaseConfig.appId);
-}
-
-let firebaseInitialized = false;
-let backgroundHandlerAttached = false;
-
-async function initFirebase() {
-  if (firebaseInitialized) return;
-
-  // 1. Try the Vite dev-server middleware / build-time generated config
+async function loadConfigFromApi() {
   try {
-    const res = await fetch("/firebase-config.json");
-    if (res.ok) {
-      applyConfig(await res.json());
-      console.log("[FCM-SW] Config loaded from /firebase-config.json, projectId:", firebaseConfig.projectId);
-    }
-  } catch (e) {
-    console.warn("[FCM-SW] /firebase-config.json fetch failed:", e.message);
-  }
+    const response = await fetch("/api/env/public", { cache: "no-store" });
+    if (!response.ok) return false;
+    const json = await response.json();
+    const cfg = json?.data || {};
 
-  // 2. Fallback: backend API
-  if (!hasValidConfig()) {
-    try {
-      const res = await fetch("/api/env/public");
-      if (res.ok) {
-        const json = await res.json();
-        if (json?.data) applyConfig(json.data);
-        console.log("[FCM-SW] Config loaded from /api/env/public, projectId:", firebaseConfig.projectId);
-      }
-    } catch (e) {
-      console.warn("[FCM-SW] /api/env/public fetch failed:", e.message);
-    }
-  }
-
-  if (hasValidConfig()) {
-    try {
-      firebase.initializeApp(firebaseConfig);
-      firebaseInitialized = true;
-      console.log("[FCM-SW] Firebase initialized. projectId:", firebaseConfig.projectId);
-
-      if (!backgroundHandlerAttached) {
-        const messaging = firebase.messaging();
-        messaging.onBackgroundMessage((payload) => {
-          console.log("[FCM-SW] onBackgroundMessage:", payload);
-
-          // If FCM includes notification payload, browser can handle display.
-          if (payload?.notification) return;
-
-          const title = payload?.data?.title || "TruOrder";
-          const options = {
-            body: payload?.data?.body || "You have a new notification",
-            icon: "/notification-icon.png",
-            badge: "/notification-icon.png",
-            image: payload?.data?.image || undefined,
-            vibrate: [200, 100, 200],
-            tag: payload?.data?.tag || payload?.data?.orderId || ("truorder-" + Date.now()),
-            requireInteraction: false,
-            actions: [
-              { action: "open", title: "View" },
-              { action: "dismiss", title: "Dismiss" },
-            ],
-            data: payload?.data || {},
-          };
-          return self.registration.showNotification(title, options);
-        });
-        backgroundHandlerAttached = true;
-      }
-    } catch (e) {
-      console.error("[FCM-SW] Firebase init error:", e.message);
-    }
-  } else {
-    console.warn("[FCM-SW] No valid Firebase config found. Push notifications will not work.");
+    firebaseConfig.apiKey = cfg.FIREBASE_API_KEY || "";
+    firebaseConfig.authDomain = cfg.FIREBASE_AUTH_DOMAIN || "";
+    firebaseConfig.projectId = cfg.FIREBASE_PROJECT_ID || "";
+    firebaseConfig.storageBucket = cfg.FIREBASE_STORAGE_BUCKET || "";
+    firebaseConfig.messagingSenderId = cfg.FIREBASE_MESSAGING_SENDER_ID || "";
+    firebaseConfig.appId = cfg.FIREBASE_APP_ID || "";
+    return true;
+  } catch {
+    return false;
   }
 }
 
-// Generic push event handler as safety net
-// If Firebase SDK doesn't handle the push, this catches it
-self.addEventListener("push", (event) => {
-  // Keep this as a fallback for non-FCM SDK delivery paths.
-  if (!event.data) return;
-
+async function loadConfigFromStaticFile() {
   try {
-    const payload = event.data.json();
-    if (payload?.notification) return;
+    const response = await fetch("/firebase-config.json", { cache: "no-store" });
+    if (!response.ok) return false;
+    const data = await response.json();
 
-    const title = payload?.data?.title || "TruOrder";
-    const body = payload?.data?.body || "You have a new notification";
-    event.waitUntil(
-      self.registration.showNotification(title, {
-        body,
-        icon: "/notification-icon.png",
-        badge: "/notification-icon.png",
-        vibrate: [200, 100, 200],
-        tag: payload?.data?.tag || payload?.data?.orderId || ("truorder-" + Date.now()),
-        data: payload?.data || {},
-      })
-    );
-  } catch (e) {
-    console.warn("[FCM-SW] Error handling push event:", e);
+    firebaseConfig.apiKey = data.apiKey || firebaseConfig.apiKey;
+    firebaseConfig.authDomain = data.authDomain || firebaseConfig.authDomain;
+    firebaseConfig.projectId = data.projectId || firebaseConfig.projectId;
+    firebaseConfig.storageBucket = data.storageBucket || firebaseConfig.storageBucket;
+    firebaseConfig.messagingSenderId = data.messagingSenderId || firebaseConfig.messagingSenderId;
+    firebaseConfig.appId = data.appId || firebaseConfig.appId;
+    return true;
+  } catch {
+    return false;
   }
-});
+}
 
-// Handle notification click
+function isConfigReady() {
+  return !!(firebaseConfig.projectId && firebaseConfig.appId && firebaseConfig.messagingSenderId);
+}
+
+function showNotificationFromPayload(payload) {
+  const title = payload?.notification?.title || payload?.data?.title || "Tastizo";
+  const body = payload?.notification?.body || payload?.data?.body || "";
+  const icon = payload?.notification?.icon || payload?.data?.icon || "/favicon.ico";
+  const tag = payload?.data?.tag || payload?.data?.orderId || "tastizo-notification";
+
+  return self.registration.showNotification(title, {
+    body,
+    icon,
+    badge: "/favicon.ico",
+    tag,
+    data: payload?.data || {},
+    requireInteraction: false,
+    vibrate: [200, 100, 200],
+  });
+}
+
+async function initFirebaseMessaging() {
+  await loadConfigFromApi();
+  if (!isConfigReady()) {
+    await loadConfigFromStaticFile();
+  }
+  if (!isConfigReady()) return;
+
+  if (!firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
+  }
+
+  const messaging = firebase.messaging();
+  messaging.onBackgroundMessage((payload) => showNotificationFromPayload(payload));
+}
+
 self.addEventListener("notificationclick", (event) => {
-  console.log("[FCM-SW] Notification clicked:", event.action, event);
   event.notification.close();
-
-  if (event.action === "dismiss") return;
-
-  const urlToOpen = event.notification?.data?.url || "/";
+  const data = event.notification.data || {};
+  const targetUrl = data.link || data.click_action || "/";
 
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
-        if (client.url.includes(self.location.origin) && "focus" in client) {
-          client.navigate(urlToOpen);
+        if ("focus" in client) {
+          client.postMessage({ type: "FCM_NOTIFICATION_CLICK", data });
           return client.focus();
         }
       }
-      return self.clients.openWindow(urlToOpen);
-    })
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+      return undefined;
+    }),
   );
 });
 
-initFirebase();
+initFirebaseMessaging();

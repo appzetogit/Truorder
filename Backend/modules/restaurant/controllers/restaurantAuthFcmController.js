@@ -9,24 +9,27 @@ import Restaurant from "../models/Restaurant.js";
  */
 export const registerRestaurantFcmToken = asyncHandler(async (req, res) => {
   const restaurantId = req.restaurant?._id;
-  const { platform, fcmToken, token } = req.body;
-  const normalizedPlatform = (platform === "app" || platform === "mobile") ? "android" : platform;
-  const normalizedToken = fcmToken || token;
+  const {
+    platform,
+    fcmToken,
+    token,
+    deviceType,
+    appType,
+    os,
+  } = req.body;
+  const resolvedToken = fcmToken || token;
+  const resolvedDeviceType = (deviceType || appType || os || "android").toLowerCase();
 
-  if (!normalizedPlatform || !normalizedToken) {
-    return errorResponse(
-      res,
-      400,
-      "platform and fcmToken/token are required",
-    );
+  if (!platform || !resolvedToken) {
+    return errorResponse(res, 400, "platform and token are required");
   }
 
-  const validPlatforms = ["web", "android", "ios", "windows"];
-  if (!validPlatforms.includes(normalizedPlatform)) {
+  const validPlatforms = ["web", "app", "android", "ios"];
+  if (!validPlatforms.includes(platform)) {
     return errorResponse(
       res,
       400,
-      "Invalid platform. Allowed values: web, android, ios, app, mobile, windows",
+      "Invalid platform. Allowed values: web, app, android, ios",
     );
   }
 
@@ -35,14 +38,18 @@ export const registerRestaurantFcmToken = asyncHandler(async (req, res) => {
     return errorResponse(res, 404, "Restaurant not found");
   }
 
-  if (normalizedPlatform === "web") {
-    restaurant.fcmTokenWeb = normalizedToken;
-  } else if (normalizedPlatform === "android") {
-    restaurant.fcmTokenAndroid = normalizedToken;
-  } else if (normalizedPlatform === "ios") {
-    restaurant.fcmTokenIos = normalizedToken;
-  } else if (normalizedPlatform === "windows") {
-    restaurant.fcmTokenWindows = normalizedToken;
+  if (platform === "web") {
+    restaurant.fcmTokenWeb = resolvedToken;
+  } else if (platform === "android") {
+    restaurant.fcmTokenAndroid = resolvedToken;
+  } else if (platform === "ios") {
+    restaurant.fcmTokenIos = resolvedToken;
+  } else if (platform === "app") {
+    if (resolvedDeviceType === "ios") {
+      restaurant.fcmTokenIos = resolvedToken;
+    } else {
+      restaurant.fcmTokenAndroid = resolvedToken;
+    }
   }
 
   await restaurant.save();
@@ -50,7 +57,6 @@ export const registerRestaurantFcmToken = asyncHandler(async (req, res) => {
     fcmTokenWeb: restaurant.fcmTokenWeb,
     fcmTokenAndroid: restaurant.fcmTokenAndroid,
     fcmTokenIos: restaurant.fcmTokenIos,
-    fcmTokenWindows: restaurant.fcmTokenWindows,
   });
 });
 
@@ -61,19 +67,19 @@ export const registerRestaurantFcmToken = asyncHandler(async (req, res) => {
  */
 export const removeRestaurantFcmToken = asyncHandler(async (req, res) => {
   const restaurantId = req.restaurant?._id;
-  const { platform } = req.body;
-  const normalizedPlatform = (platform === "app" || platform === "mobile") ? "android" : platform;
+  const { platform, deviceType, appType, os } = req.body;
+  const resolvedDeviceType = (deviceType || appType || os || "android").toLowerCase();
 
-  if (!normalizedPlatform) {
+  if (!platform) {
     return errorResponse(res, 400, "platform is required");
   }
 
-  const validPlatforms = ["web", "android", "ios", "windows"];
-  if (!validPlatforms.includes(normalizedPlatform)) {
+  const validPlatforms = ["web", "app", "android", "ios"];
+  if (!validPlatforms.includes(platform)) {
     return errorResponse(
       res,
       400,
-      "Invalid platform. Allowed values: web, android, ios, app, mobile, windows",
+      "Invalid platform. Allowed values: web, app, android, ios",
     );
   }
 
@@ -82,14 +88,18 @@ export const removeRestaurantFcmToken = asyncHandler(async (req, res) => {
     return errorResponse(res, 404, "Restaurant not found");
   }
 
-  if (normalizedPlatform === "web") {
+  if (platform === "web") {
     restaurant.fcmTokenWeb = null;
-  } else if (normalizedPlatform === "android") {
+  } else if (platform === "android") {
     restaurant.fcmTokenAndroid = null;
-  } else if (normalizedPlatform === "ios") {
+  } else if (platform === "ios") {
     restaurant.fcmTokenIos = null;
-  } else if (normalizedPlatform === "windows") {
-    restaurant.fcmTokenWindows = null;
+  } else if (platform === "app") {
+    if (resolvedDeviceType === "ios") {
+      restaurant.fcmTokenIos = null;
+    } else {
+      restaurant.fcmTokenAndroid = null;
+    }
   }
 
   await restaurant.save();

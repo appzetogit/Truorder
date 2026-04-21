@@ -5,7 +5,8 @@ const orderSettlementSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
     required: true,
-    unique: true
+    unique: true,
+    index: true
   },
   orderNumber: {
     type: String,
@@ -198,3 +199,4 @@ orderSettlementSchema.statics.findOrCreateByOrderId = async function(orderId) {
 const OrderSettlement = mongoose.model('OrderSettlement', orderSettlementSchema);
 
 export default OrderSettlement;
+

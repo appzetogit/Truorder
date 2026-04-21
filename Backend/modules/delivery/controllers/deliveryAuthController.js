@@ -70,7 +70,8 @@ export const verifyOTP = asyncHandler(async (req, res) => {
     const identifier = phone;
 
     if (purpose === "register") {
-      // Registration flow - requires referral code
+      // Registration flow
+      // Check if delivery boy already exists
       delivery = await Delivery.findOne({ phone });
 
       if (delivery) {
@@ -81,41 +82,51 @@ export const verifyOTP = asyncHandler(async (req, res) => {
         );
       }
 
+      // Name is mandatory for explicit registration
       if (!normalizedName) {
         return errorResponse(res, 400, "Name is required for registration");
       }
 
       await otpService.verifyOTP(phone, otp, purpose, null);
 
-      // Don't create delivery yet - require referral code first
       const tempToken = jwtService.generateReferralTempToken({
         phone,
         name: normalizedName,
         type: "delivery_partner",
       });
 
-      return successResponse(res, 200, "OTP verified. Enter referral code to continue.", {
-        needsReferralCode: true,
-        tempToken,
-      });
+      return successResponse(
+        res,
+        200,
+        "OTP verified. Enter referral code to continue.",
+        {
+          needsReferralCode: true,
+          tempToken,
+        },
+      );
     } else {
       // Login (with optional auto-registration)
       delivery = await Delivery.findOne({ phone });
 
+      // Verify OTP first (before creating user)
       await otpService.verifyOTP(phone, otp, purpose, null);
 
       if (!delivery) {
-        // New user - require referral code before creating record
         const tempToken = jwtService.generateReferralTempToken({
           phone,
           name: normalizedName || "Delivery Partner",
           type: "delivery_partner",
         });
 
-        return successResponse(res, 200, "OTP verified. Enter referral code to continue.", {
-          needsReferralCode: true,
-          tempToken,
-        });
+        return successResponse(
+          res,
+          200,
+          "OTP verified. Enter referral code to continue.",
+          {
+            needsReferralCode: true,
+            tempToken,
+          },
+        );
       } else {
         // Existing delivery boy login - update verification status if needed
         if (!delivery.phoneVerified) {
@@ -246,105 +257,6 @@ export const verifyOTP = asyncHandler(async (req, res) => {
 });
 
 /**
- * Complete registration with referral code (after OTP verified)
- * POST /api/delivery/auth/complete-registration-with-referral
- */
-export const completeRegistrationWithReferral = asyncHandler(async (req, res) => {
-  const { tempToken, referralCode } = req.body;
-
-  if (!tempToken || !referralCode) {
-    return errorResponse(res, 400, "Temp token and referral code are required");
-  }
-
-  let decoded;
-  try {
-    decoded = jwtService.verifyReferralTempToken(tempToken);
-  } catch (err) {
-    return errorResponse(res, 400, err.message || "Invalid or expired session");
-  }
-
-  if (decoded.registrationType && decoded.registrationType !== "delivery_partner") {
-    return errorResponse(res, 400, "Invalid token type");
-  }
-
-  const { phone, name } = decoded;
-
-  const normalizedRefCode = referralCode.trim().toUpperCase();
-
-  const trulifeResult = await verifyTrulifeReferral(normalizedRefCode);
-  if (!trulifeResult.valid) {
-    return errorResponse(res, 400, trulifeResult.message || "Invalid Referral Code");
-  }
-
-  const existingDelivery = await Delivery.findOne({ phone });
-  if (existingDelivery) {
-    return errorResponse(
-      res,
-      400,
-      "Delivery partner already exists with this phone number. Please login."
-    );
-  }
-
-  const deliveryData = {
-    name: name || "Delivery Partner",
-    phone,
-    phoneVerified: true,
-    signupMethod: "phone",
-    referralCode: normalizedRefCode,
-    status: "pending",
-    isActive: true,
-  };
-
-  let delivery;
-  try {
-    delivery = await Delivery.create(deliveryData);
-  } catch (createError) {
-    if (createError.code === 11000) {
-      delivery = await Delivery.findOne({ phone });
-      if (!delivery) throw createError;
-      return errorResponse(
-        res,
-        400,
-        "Delivery partner already exists. Please login."
-      );
-    }
-    throw createError;
-  }
-
-  const tokens = jwtService.generateTokens({
-    userId: delivery._id.toString(),
-    role: "delivery",
-    email: delivery.email || delivery.phone || delivery.deliveryId,
-  });
-
-  delivery.refreshToken = tokens.refreshToken;
-  await delivery.save();
-
-  res.cookie("refreshToken", tokens.refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
-
-  return successResponse(res, 200, "Registration complete. Please complete your profile.", {
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
-    user: {
-      id: delivery._id,
-      name: delivery.name,
-      phone: delivery.phone,
-      email: delivery.email,
-      deliveryId: delivery.deliveryId,
-      status: delivery.status,
-      rejectionReason: delivery.rejectionReason || null,
-    },
-    sponsorName: trulifeResult.sponsorName || null,
-    needsSignup: true,
-  });
-});
-
-/**
  * Refresh Access Token
  * POST /api/delivery/auth/refresh-token
  */
@@ -393,6 +305,112 @@ export const refreshToken = asyncHandler(async (req, res) => {
   } catch (error) {
     return errorResponse(res, 401, error.message || "Invalid refresh token");
   }
+});
+
+export const completeRegistrationWithReferral = asyncHandler(async (req, res) => {
+  const { tempToken, referralCode } = req.body;
+
+  if (!tempToken || !referralCode) {
+    return errorResponse(res, 400, "Temp token and referral code are required");
+  }
+
+  let decoded;
+  try {
+    decoded = jwtService.verifyReferralTempToken(tempToken);
+  } catch (err) {
+    return errorResponse(res, 400, err.message || "Invalid or expired session");
+  }
+
+  if (
+    decoded.registrationType &&
+    decoded.registrationType !== "delivery_partner"
+  ) {
+    return errorResponse(res, 400, "Invalid token type");
+  }
+
+  const { phone, name } = decoded;
+  const normalizedRefCode = referralCode.trim().toUpperCase();
+
+  const trulifeResult = await verifyTrulifeReferral(normalizedRefCode);
+  if (!trulifeResult.valid) {
+    return errorResponse(
+      res,
+      400,
+      trulifeResult.message || "Invalid Referral Code",
+    );
+  }
+
+  const existingDelivery = await Delivery.findOne({ phone });
+  if (existingDelivery) {
+    return errorResponse(
+      res,
+      400,
+      "Delivery partner already exists with this phone number. Please login.",
+    );
+  }
+
+  let delivery;
+  try {
+    delivery = await Delivery.create({
+      name: name || "Delivery Partner",
+      phone,
+      phoneVerified: true,
+      signupMethod: "phone",
+      referralCode: normalizedRefCode,
+      status: "pending",
+      isActive: true,
+    });
+  } catch (createError) {
+    if (createError.code === 11000) {
+      delivery = await Delivery.findOne({ phone });
+      if (!delivery) {
+        throw createError;
+      }
+      return errorResponse(
+        res,
+        400,
+        "Delivery partner already exists. Please login.",
+      );
+    }
+    throw createError;
+  }
+
+  const tokens = jwtService.generateTokens({
+    userId: delivery._id.toString(),
+    role: "delivery",
+    email: delivery.email || delivery.phone || delivery.deliveryId,
+  });
+
+  delivery.refreshToken = tokens.refreshToken;
+  await delivery.save();
+
+  res.cookie("refreshToken", tokens.refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  return successResponse(
+    res,
+    200,
+    "Registration complete. Please complete your profile.",
+    {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      user: {
+        id: delivery._id,
+        name: delivery.name,
+        phone: delivery.phone,
+        email: delivery.email,
+        deliveryId: delivery.deliveryId,
+        status: delivery.status,
+        rejectionReason: delivery.rejectionReason || null,
+      },
+      sponsorName: trulifeResult.sponsorName || null,
+      needsSignup: true,
+    },
+  );
 });
 
 /**
@@ -455,44 +473,55 @@ export const getCurrentDelivery = asyncHandler(async (req, res) => {
  */
 export const registerFcmToken = asyncHandler(async (req, res) => {
   const deliveryId = req.delivery?._id;
-  const { platform, fcmToken, token } = req.body;
-  const normalizedPlatform = (platform === "app" || platform === "mobile") ? "android" : platform;
-  const normalizedToken = fcmToken || token;
+  const {
+    platform,
+    fcmToken,
+    token,
+    deviceType,
+    appType,
+    os,
+  } = req.body;
+  const resolvedToken = fcmToken || token;
+  const resolvedDeviceType = (deviceType || appType || os || "android").toLowerCase();
 
-  if (!normalizedPlatform || !normalizedToken) {
+  if (!platform || !resolvedToken) {
+    return errorResponse(res, 400, "platform and token are required");
+  }
+
+  const validPlatforms = ["web", "app", "android", "ios"];
+  if (!validPlatforms.includes(platform)) {
     return errorResponse(
       res,
       400,
-      "platform and fcmToken/token are required",
+      "Invalid platform. Allowed values: web, app, android, ios",
     );
   }
 
-  const validPlatforms = ["web", "android", "ios", "windows"];
-  if (!validPlatforms.includes(normalizedPlatform)) {
-    return errorResponse(
-      res,
-      400,
-      "Invalid platform. Allowed values: web, android, ios, app, mobile, windows",
-    );
+  const delivery = await Delivery.findById(deliveryId);
+  if (!delivery) {
+    return errorResponse(res, 404, "Delivery partner not found");
   }
 
   // Update specific platform token
-  if (normalizedPlatform === "web") {
-    req.delivery.fcmTokenWeb = normalizedToken;
-  } else if (normalizedPlatform === "android") {
-    req.delivery.fcmTokenAndroid = normalizedToken;
-  } else if (normalizedPlatform === "ios") {
-    req.delivery.fcmTokenIos = normalizedToken;
-  } else if (normalizedPlatform === "windows") {
-    req.delivery.fcmTokenWindows = normalizedToken;
+  if (platform === "web") {
+    delivery.fcmTokenWeb = resolvedToken;
+  } else if (platform === "android") {
+    delivery.fcmTokenAndroid = resolvedToken;
+  } else if (platform === "ios") {
+    delivery.fcmTokenIos = resolvedToken;
+  } else if (platform === "app") {
+    if (resolvedDeviceType === "ios") {
+      delivery.fcmTokenIos = resolvedToken;
+    } else {
+      delivery.fcmTokenAndroid = resolvedToken;
+    }
   }
 
-  await req.delivery.save();
+  await delivery.save();
   return successResponse(res, 200, "FCM token registered successfully", {
-    fcmTokenWeb: req.delivery.fcmTokenWeb,
-    fcmTokenAndroid: req.delivery.fcmTokenAndroid,
-    fcmTokenIos: req.delivery.fcmTokenIos,
-    fcmTokenWindows: req.delivery.fcmTokenWindows,
+    fcmTokenWeb: delivery.fcmTokenWeb,
+    fcmTokenAndroid: delivery.fcmTokenAndroid,
+    fcmTokenIos: delivery.fcmTokenIos,
   });
 });
 
@@ -502,33 +531,43 @@ export const registerFcmToken = asyncHandler(async (req, res) => {
  * Body: { platform: 'web' | 'android' | 'ios' }
  */
 export const removeFcmToken = asyncHandler(async (req, res) => {
-  const { platform } = req.body;
-  const normalizedPlatform = (platform === "app" || platform === "mobile") ? "android" : platform;
+  const deliveryId = req.delivery?._id;
+  const { platform, deviceType, appType, os } = req.body;
+  const resolvedDeviceType = (deviceType || appType || os || "android").toLowerCase();
 
-  if (!normalizedPlatform) {
+  if (!platform) {
     return errorResponse(res, 400, "platform is required");
   }
 
-  const validPlatforms = ["web", "android", "ios", "windows"];
-  if (!validPlatforms.includes(normalizedPlatform)) {
+  const validPlatforms = ["web", "app", "android", "ios"];
+  if (!validPlatforms.includes(platform)) {
     return errorResponse(
       res,
       400,
-      "Invalid platform. Allowed values: web, android, ios, app, mobile, windows",
+      "Invalid platform. Allowed values: web, app, android, ios",
     );
   }
 
-  if (normalizedPlatform === "web") {
-    req.delivery.fcmTokenWeb = null;
-  } else if (normalizedPlatform === "android") {
-    req.delivery.fcmTokenAndroid = null;
-  } else if (normalizedPlatform === "ios") {
-    req.delivery.fcmTokenIos = null;
-  } else if (normalizedPlatform === "windows") {
-    req.delivery.fcmTokenWindows = null;
+  const delivery = await Delivery.findById(deliveryId);
+  if (!delivery) {
+    return errorResponse(res, 404, "Delivery partner not found");
   }
 
-  await req.delivery.save();
+  if (platform === "web") {
+    delivery.fcmTokenWeb = null;
+  } else if (platform === "android") {
+    delivery.fcmTokenAndroid = null;
+  } else if (platform === "ios") {
+    delivery.fcmTokenIos = null;
+  } else if (platform === "app") {
+    if (resolvedDeviceType === "ios") {
+      delivery.fcmTokenIos = null;
+    } else {
+      delivery.fcmTokenAndroid = null;
+    }
+  }
+
+  await delivery.save();
 
   return successResponse(res, 200, "FCM token removed successfully");
 });

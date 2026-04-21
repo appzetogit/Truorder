@@ -241,7 +241,7 @@ export default function OTP() {
   return (
     <AnimatedPage className="min-h-screen bg-white dark:bg-[#0a0a0a] flex flex-col">
       {/* Header */}
-      <div className="relative flex items-center justify-center py-4 px-4 md:py-6 md:px-6 lg:px-8 border-b border-gray-200 dark:border-gray-800">
+      <div className="relative flex items-center justify-center pt-9 pb-4 px-4 md:pt-11 md:pb-6 md:px-6 lg:px-8 border-b border-gray-200 dark:border-gray-800">
         <button
           onClick={() => navigate("/user/auth/sign-in")}
           className="absolute left-4 md:left-6 lg:left-8 top-1/2 -translate-y-1/2 hover:opacity-70 transition-opacity"
@@ -294,7 +294,7 @@ export default function OTP() {
                     onKeyDown={(e) => handleKeyDown(index, e)}
                     onPaste={index === 0 ? handlePaste : undefined}
                     disabled={isLoading}
-                    className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 lg:w-18 lg:h-18 text-center text-lg sm:text-xl md:text-2xl lg:text-3xl font-semibold p-0 border-2 border-black dark:border-gray-600 rounded-lg focus-visible:ring-2 focus-visible:ring-[#1FCAD3] focus-visible:border-[#1FCAD3] dark:focus-visible:border-[#1FCAD3] bg-white dark:bg-[#1a1a1a] text-black dark:text-white transition-all"
+                    className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 lg:w-18 lg:h-18 text-center text-lg sm:text-xl md:text-2xl lg:text-3xl font-semibold p-0 border-2 border-black dark:border-gray-600 rounded-lg focus-visible:ring-2 focus-visible:ring-[#2B9C64] focus-visible:border-[#2B9C64] dark:focus-visible:border-[#2B9C64] bg-white dark:bg-[#1a1a1a] text-black dark:text-white transition-all"
                   />
                 ))}
               </div>
@@ -313,7 +313,7 @@ export default function OTP() {
                     type="button"
                     onClick={handleResend}
                     disabled={isLoading}
-                    className="text-sm md:text-base text-[#1FCAD3] hover:text-[#14a7b3] dark:text-[#1FCAD3] dark:hover:text-[#14a7b3] disabled:opacity-50 transition-colors font-medium"
+                    className="text-sm md:text-base text-[#2B9C64] hover:text-[#218a56] dark:text-[#2B9C64] dark:hover:text-[#218a56] disabled:opacity-50 transition-colors font-medium"
                   >
                     Resend {contactType === "email" ? "email" : "SMS"}
                   </button>
@@ -339,7 +339,7 @@ export default function OTP() {
                   disabled={isLoading}
                   placeholder="Enter your name"
                   className={`h-11 md:h-14 text-base md:text-lg border-2 ${nameError ? "border-red-500" : "border-gray-300 dark:border-gray-700"
-                    } bg-white dark:bg-[#1a1a1a] text-black dark:text-white rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-[#1FCAD3]`}
+                    } bg-white dark:bg-[#1a1a1a] text-black dark:text-white rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-[#2B9C64]`}
                 />
                 {nameError && (
                   <p className="text-xs md:text-sm text-red-500 text-left">
@@ -351,7 +351,7 @@ export default function OTP() {
               <Button
                 onClick={handleSubmitName}
                 disabled={isLoading}
-                className="w-full h-11 md:h-14 bg-[#1FCAD3] hover:bg-[#14a7b3] text-white font-semibold text-base md:text-lg rounded-lg transition-all hover:shadow-lg active:scale-[0.98]"
+                className="w-full h-11 md:h-14 bg-[#2B9C64] hover:bg-[#218a56] text-white font-semibold text-base md:text-lg rounded-lg transition-all hover:shadow-lg active:scale-[0.98]"
               >
                 {isLoading ? "Continuing..." : "Continue"}
               </Button>
@@ -361,7 +361,7 @@ export default function OTP() {
           {/* Loading Spinner */}
           {isLoading && !showNameInput && (
             <div className="flex justify-center pt-4">
-              <Loader2 className="h-6 w-6 text-[#1FCAD3] animate-spin" />
+              <Loader2 className="h-6 w-6 text-[#2B9C64] animate-spin" />
             </div>
           )}
         </div>
@@ -372,7 +372,7 @@ export default function OTP() {
         <button
           type="button"
           onClick={() => navigate("/user/auth/sign-in")}
-          className="text-sm md:text-base text-[#1FCAD3] hover:text-[#14a7b3] hover:underline transition-colors font-medium"
+          className="text-sm md:text-base text-[#2B9C64] hover:text-[#218a56] hover:underline transition-colors font-medium"
         >
           Go back to login methods
         </button>

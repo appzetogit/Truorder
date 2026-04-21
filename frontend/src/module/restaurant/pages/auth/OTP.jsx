@@ -164,13 +164,11 @@ export default function RestaurantOTP() {
         }
       }
 
-      // Check if referral code is required first (new restaurant registration)
       if (data?.needsReferralCode && data?.tempToken) {
-        navigate("/restaurant/referral-code", {
+        navigate("/restaurant/referral", {
           replace: true,
           state: { tempToken: data.tempToken },
         })
-        setIsLoading(false)
         return
       }
 

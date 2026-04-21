@@ -36,84 +36,6 @@ export function hasFlutterCameraBridge() {
   );
 }
 
-function parseFlutterCameraResult(result) {
-  if (!result) return { success: false, raw: result };
-
-  let data = result;
-  if (typeof data === "string") {
-    try {
-      data = JSON.parse(data);
-    } catch (_) {
-      data = { base64: data };
-    }
-  }
-
-  if (data.file instanceof File) {
-    return { success: true, file: data.file, raw: result };
-  }
-
-  const base64 =
-    data.base64 ||
-    data.imageBase64 ||
-    data.base64Image ||
-    data.dataUrl ||
-    data.imageData ||
-    data.image;
-
-  if (base64 && typeof base64 === "string") {
-    const file = base64ToFile(
-      base64,
-      data.fileName || data.filename || data.name || `image-${Date.now()}.jpg`,
-      data.mimeType || data.contentType || data.type || "image/jpeg",
-    );
-    return { success: true, file, raw: result };
-  }
-
-  return { success: Boolean(data.success), raw: result };
-}
-
-function createFlutterCameraCallback(timeoutMs = 30000) {
-  if (typeof window === "undefined") {
-    return {
-      promise: Promise.resolve({ success: false, reason: "no_window" }),
-      cleanup: () => {},
-    };
-  }
-
-  const previousBridge = window.TruorderCameraBridge;
-  const previousCallback = window.onFlutterCameraResult;
-  let settled = false;
-  let timer;
-
-  const cleanup = () => {
-    clearTimeout(timer);
-    window.TruorderCameraBridge = previousBridge;
-    window.onFlutterCameraResult = previousCallback;
-  };
-
-  const promise = new Promise((resolve) => {
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(parseFlutterCameraResult(result));
-    };
-
-    timer = setTimeout(() => {
-      finish({ success: false, reason: "callback_timeout" });
-    }, timeoutMs);
-
-    window.TruorderCameraBridge = {
-      ...(previousBridge || {}),
-      onCameraResult: finish,
-      onImageCaptured: finish,
-    };
-    window.onFlutterCameraResult = finish;
-  });
-
-  return { promise, cleanup };
-}
-
 /**
  * Open camera via Flutter InAppWebView bridge.
  * Calls handler with no args to match Flutter: openCamera() -> { success, base64, mimeType, fileName }
@@ -127,28 +49,77 @@ export async function openCameraViaFlutter(options = {}) {
     return { success: false, reason: "no_flutter_bridge" };
   }
 
-  let callbackBridge;
   try {
-    callbackBridge = createFlutterCameraCallback(options.timeoutMs);
-    const result = await window.flutter_inappwebview.callHandler("openCamera", options);
-    const parsed = parseFlutterCameraResult(result);
+    // Call with no args for maximum Flutter compatibility (handler opens camera, returns base64)
+    const result = await window.flutter_inappwebview.callHandler("openCamera");
 
-    if (parsed.success && parsed.file) {
-      callbackBridge.cleanup();
-      return parsed;
+    if (!result || !result.success) {
+      return { success: false, raw: result };
     }
 
-    const callbackResult = await callbackBridge.promise;
-    if (callbackResult.success && callbackResult.file) {
-      return callbackResult;
+    // If Flutter returns a File directly, prefer it
+    if (result.file instanceof File) {
+      return { success: true, file: result.file, raw: result };
     }
 
-    return parsed.success ? parsed : callbackResult;
+    if (result.base64) {
+      const file = base64ToFile(
+        result.base64,
+        result.fileName || `image-${Date.now()}.jpg`,
+        result.mimeType || "image/jpeg",
+      );
+      return { success: true, file, raw: result };
+    }
+
+    return { success: false, raw: result };
   } catch (error) {
-    callbackBridge?.cleanup();
     console.error("[CameraBridge] Failed to open camera via Flutter:", error);
     return { success: false, error };
   }
+}
+
+function normalizeFlutterImageResult(result) {
+  if (!result || !result.success) {
+    return { success: false, raw: result };
+  }
+
+  if (result.file instanceof File) {
+    return { success: true, file: result.file, raw: result };
+  }
+
+  if (result.base64) {
+    const file = base64ToFile(
+      result.base64,
+      result.fileName || `image-${Date.now()}.jpg`,
+      result.mimeType || "image/jpeg",
+    );
+    return { success: true, file, raw: result };
+  }
+
+  return { success: false, raw: result };
+}
+
+/**
+ * Open gallery/image picker via Flutter InAppWebView bridge.
+ * Tries common handler names for compatibility.
+ */
+export async function openGalleryViaFlutter() {
+  if (!hasFlutterCameraBridge()) {
+    return { success: false, reason: "no_flutter_bridge" };
+  }
+
+  const handlerNames = ["openGallery", "pickImageFromGallery", "pickImage"];
+  for (const handlerName of handlerNames) {
+    try {
+      const result = await window.flutter_inappwebview.callHandler(handlerName);
+      const normalized = normalizeFlutterImageResult(result);
+      if (normalized.success) return normalized;
+    } catch {
+      // Try the next supported handler
+    }
+  }
+
+  return { success: false, reason: "gallery_handler_unavailable" };
 }
 
 /**
@@ -181,3 +152,4 @@ export async function pickImageForUpload(fileInputRef, useCamera = true) {
   }
   return null;
 }
+

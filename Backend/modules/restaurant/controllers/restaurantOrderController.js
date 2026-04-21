@@ -4,10 +4,25 @@ import Restaurant from '../models/Restaurant.js';
 import { successResponse, errorResponse } from '../../../shared/utils/response.js';
 import asyncHandler from '../../../shared/middleware/asyncHandler.js';
 import { notifyRestaurantOrderUpdate } from '../../order/services/restaurantNotificationService.js';
+import {
+  notifyUserOrderEvent,
+  sendNotificationToUser,
+  USER_NOTIFICATION_EVENTS,
+} from "../../user/services/userNotificationService.js";
 import { assignOrderToDeliveryBoy, findNearestDeliveryBoys, findNearestDeliveryBoy } from '../../order/services/deliveryAssignmentService.js';
 import { notifyDeliveryBoyNewOrder, notifyMultipleDeliveryBoys, broadcastNewOrderToAllDeliveryBoys } from '../../order/services/deliveryNotificationService.js';
+import orderAssignmentTriggerService from '../../order/services/orderAssignmentTriggerService.js';
 import mongoose from 'mongoose';
-import { sendPushToEntity } from '../../../shared/services/fcmPushService.js';
+import { removeActiveOrder } from '../../../services/firebaseRealtimeService.js';
+
+const isAwaitingPaymentApproval = (order) => {
+  if (!order || order.status !== 'pending') return false;
+  const paymentMethod = order.payment?.method;
+  const paymentStatus = order.payment?.status;
+  // COD/cash orders can proceed with pending payment status.
+  if (paymentMethod === 'cash' || paymentMethod === 'cod') return false;
+  return paymentStatus !== 'completed';
+};
 
 /**
  * Get all orders for restaurant
@@ -57,10 +72,23 @@ export const getRestaurantOrders = asyncHandler(async (req, res) => {
     // Build query - search for orders with any matching restaurantId variation
     // Use $in for multiple variations and also try direct match as fallback
     const query = {
-      $or: [
-        { restaurantId: { $in: restaurantIdVariations } },
-        // Direct match fallback
-        { restaurantId: restaurantIdString }
+      $and: [
+        {
+          $or: [
+            { restaurantId: { $in: restaurantIdVariations } },
+            // Direct match fallback
+            { restaurantId: restaurantIdString }
+          ]
+        },
+        {
+          // Hide online unpaid pending orders from restaurant until payment approval.
+          $or: [
+            { status: { $ne: 'pending' } },
+            { 'payment.method': 'cash' },
+            { 'payment.method': 'cod' },
+            { 'payment.status': 'completed' }
+          ]
+        }
       ]
     };
 
@@ -165,6 +193,14 @@ export const getRestaurantOrderById = asyncHandler(async (req, res) => {
       return errorResponse(res, 404, 'Order not found');
     }
 
+    if (isAwaitingPaymentApproval(order)) {
+      return errorResponse(
+        res,
+        404,
+        'Order not found',
+      );
+    }
+
     return successResponse(res, 200, 'Order retrieved successfully', {
       order
     });
@@ -209,6 +245,14 @@ export const acceptOrder = asyncHandler(async (req, res) => {
 
     if (!order) {
       return errorResponse(res, 404, 'Order not found');
+    }
+
+    if (isAwaitingPaymentApproval(order)) {
+      return errorResponse(
+        res,
+        403,
+        'Order payment is pending approval. You can accept this order only after payment confirmation.',
+      );
     }
 
     // Allow accepting orders with status 'pending' or 'confirmed'
@@ -261,6 +305,24 @@ export const acceptOrder = asyncHandler(async (req, res) => {
 
     await order.save();
 
+    notifyUserOrderEvent(
+      order,
+      USER_NOTIFICATION_EVENTS.ORDER_ACCEPTED_BY_RESTAURANT,
+      { previousStatus: order.status === "preparing" ? "confirmed" : undefined },
+      "restaurantOrderController.acceptOrder",
+    ).catch((notifyError) => {
+      console.error("Error sending user accepted notification:", notifyError);
+    });
+
+    notifyUserOrderEvent(
+      order,
+      USER_NOTIFICATION_EVENTS.ORDER_PREPARING,
+      { acceptedByRestaurant: true },
+      "restaurantOrderController.acceptOrder",
+    ).catch((notifyError) => {
+      console.error("Error sending user preparing notification:", notifyError);
+    });
+
     // Trigger ETA recalculation for restaurant accepted event
     try {
       const etaEventService = (await import('../../order/services/etaEventService.js')).default;
@@ -276,12 +338,6 @@ export const acceptOrder = asyncHandler(async (req, res) => {
     } catch (notifError) {
       console.error('Error sending notification:', notifError);
     }
-
-    // Push to customer: order accepted
-    sendPushToEntity("user", order.userId, {
-      title: "Order Accepted!",
-      body: `Your order #${order.orderId} is being prepared.`,
-    }).catch(() => {});
 
     // Delivery boys receive the order only when restaurant marks it as "Ready" (PATCH /ready), not on accept.
     return successResponse(res, 200, 'Order accepted successfully', {
@@ -357,6 +413,14 @@ export const rejectOrder = asyncHandler(async (req, res) => {
       });
       return errorResponse(res, 404, 'Order not found');
     }
+    if (isAwaitingPaymentApproval(order)) {
+      return errorResponse(
+        res,
+        403,
+        'Order payment is pending approval. Wait for confirmation before taking restaurant actions.',
+      );
+    }
+
     // Allow rejecting/cancelling orders with status 'pending', 'confirmed', or 'preparing'
     if (!['pending', 'confirmed', 'preparing'].includes(order.status)) {
       return errorResponse(res, 400, `Order cannot be cancelled. Current status: ${order.status}`);
@@ -368,15 +432,60 @@ export const rejectOrder = asyncHandler(async (req, res) => {
     order.cancelledAt = new Date();
     await order.save();
 
-    // Calculate refund amount but don't process automatically
-    // Admin will process refund manually via refund button
+    const isInstantWalletRefund =
+      order.payment?.method === 'wallet' && order.payment?.status === 'completed';
+
+    if (!isInstantWalletRefund) {
+      notifyUserOrderEvent(
+        order,
+        USER_NOTIFICATION_EVENTS.ORDER_REJECTED,
+        { reason: order.cancellationReason },
+        "restaurantOrderController.rejectOrder",
+      ).catch((notifyError) => {
+        console.error("Error sending user rejected notification:", notifyError);
+      });
+    }
+
+    // Clean up Firebase active order entry
     try {
-      const { calculateCancellationRefund } = await import('../../order/services/cancellationRefundService.js');
-      await calculateCancellationRefund(order._id, reason || 'Rejected by restaurant');
+      await removeActiveOrder(order.orderId);
+    } catch (fbErr) {
+      console.warn("Firebase removeActiveOrder on restaurant reject failed:", fbErr.message);
+    }
+
+    // Wallet refunds are instant. Other payment methods keep the existing
+    // refund-calculation flow for admin/processor follow-up.
+    try {
+      if (isInstantWalletRefund) {
+        const { processWalletRefund } = await import('../../order/services/cancellationRefundService.js');
+        const refundResult = await processWalletRefund(order._id.toString(), null);
+
+        order.payment.status = 'refunded';
+        await order.save();
+
+        await sendNotificationToUser({
+          userId: order.userId,
+          order,
+          type: USER_NOTIFICATION_EVENTS.ORDER_REJECTED,
+          title: "Order Cancelled - Wallet Refunded",
+          message: `Restaurant cancelled your order. ₹${Number(refundResult?.refundAmount || 0).toFixed(2)} has been refunded to your wallet instantly.`,
+          eventKey: `${USER_NOTIFICATION_EVENTS.ORDER_REJECTED}:wallet_refund:${order._id}`,
+          metadata: {
+            reason: order.cancellationReason,
+            orderDisplayId: order.orderId,
+            refundAmount: refundResult?.refundAmount || 0,
+            refundMethod: "wallet",
+            refundedInstantly: true,
+          },
+          source: "restaurantOrderController.rejectOrder.walletRefund",
+        });
+      } else {
+        const { calculateCancellationRefund } = await import('../../order/services/cancellationRefundService.js');
+        await calculateCancellationRefund(order._id, reason || 'Rejected by restaurant');
+      }
     } catch (refundError) {
-      console.error(`❌ Error calculating cancellation refund for order ${order.orderId}:`, refundError);
-      // Don't fail order cancellation if refund calculation fails
-      // But log it for investigation
+      console.error(`❌ Error processing refund for order ${order.orderId}:`, refundError);
+      // Don't fail order cancellation if refund processing fails, but keep it visible for investigation.
     }
 
     // Notify about status update
@@ -385,11 +494,6 @@ export const rejectOrder = asyncHandler(async (req, res) => {
     } catch (notifError) {
       console.error('Error sending notification:', notifError);
     }
-
-    sendPushToEntity("user", order.userId, {
-      title: "Order Cancelled",
-      body: `Your order #${order.orderId} was cancelled by the restaurant.`,
-    }).catch(() => {});
 
     return successResponse(res, 200, 'Order rejected successfully', {
       order
@@ -436,6 +540,14 @@ export const markOrderPreparing = asyncHandler(async (req, res) => {
       return errorResponse(res, 404, 'Order not found');
     }
 
+    if (isAwaitingPaymentApproval(order)) {
+      return errorResponse(
+        res,
+        403,
+        'Order payment is pending approval. You can mark preparing only after payment confirmation.',
+      );
+    }
+
     // Allow marking as preparing if status is 'confirmed', 'pending', or already 'preparing'.
     // From this point we ONLY update the status to 'preparing'.
     // Delivery partner assignment and rider notifications are now handled when
@@ -451,6 +563,15 @@ export const markOrderPreparing = asyncHandler(async (req, res) => {
       order.status = 'preparing';
       order.tracking.preparing = { status: true, timestamp: new Date() };
       await order.save();
+
+      notifyUserOrderEvent(
+        order,
+        USER_NOTIFICATION_EVENTS.ORDER_PREPARING,
+        {},
+        "restaurantOrderController.markOrderPreparing",
+      ).catch((notifyError) => {
+        console.error("Error sending user preparing notification:", notifyError);
+      });
     }
 
     // Notify about status update only if status actually changed
@@ -528,6 +649,15 @@ export const markOrderReady = asyncHandler(async (req, res) => {
     };
     await order.save();
 
+    notifyUserOrderEvent(
+      order,
+      USER_NOTIFICATION_EVENTS.ORDER_READY,
+      {},
+      "restaurantOrderController.markOrderReady",
+    ).catch((notifyError) => {
+      console.error("Error sending user ready notification:", notifyError);
+    });
+
     // Populate order for notifications and potential assignment
     let populatedOrder = await Order.findById(order._id)
       .populate('restaurantId', 'name location address phone')
@@ -601,20 +731,6 @@ export const markOrderReady = asyncHandler(async (req, res) => {
       } catch (deliveryNotifError) {
         console.error('Error sending specific delivery boy notification at READY stage:', deliveryNotifError);
       }
-    }
-
-    // Push to customer: order ready
-    sendPushToEntity("user", order.userId, {
-      title: "Order Ready!",
-      body: `Your order #${order.orderId} is ready for pickup.`,
-    }).catch(() => {});
-
-    // Push to assigned delivery partner if exists
-    if (order.deliveryPartnerId) {
-      sendPushToEntity("delivery", order.deliveryPartnerId, {
-        title: "Order Ready for Pickup",
-        body: `Order #${order.orderId} is ready. Head to the restaurant.`,
-      }).catch(() => {});
     }
 
     return successResponse(res, 200, 'Order marked as ready', {

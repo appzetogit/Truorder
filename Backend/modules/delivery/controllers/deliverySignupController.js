@@ -1,11 +1,10 @@
 import { asyncHandler } from '../../../shared/middleware/asyncHandler.js';
 import { successResponse, errorResponse } from '../../../shared/utils/response.js';
 import Delivery from '../models/Delivery.js';
-import { incrementReferralUsage } from '../../referral/services/referralService.js';
-import { registerTrulifeAffiliate } from '../../referral/services/trulifeService.js';
 import { validate } from '../../../shared/middleware/validate.js';
 import Joi from 'joi';
 import winston from 'winston';
+import { registerTrulifeAffiliate } from '../../referral/services/trulifeService.js';
 
 const logger = winston.createLogger({
   level: 'info',
@@ -281,31 +280,30 @@ export const submitSignupDocuments = asyncHandler(async (req, res) => {
       hasDrivingLicense: !!updatedDelivery.documents?.drivingLicense?.document
     });
 
-    if (updatedDelivery.referralCodeId && !updatedDelivery.referralCounted) {
-      try {
-        await incrementReferralUsage(updatedDelivery.referralCodeId);
-        await Delivery.findByIdAndUpdate(delivery._id, { $set: { referralCounted: true } });
-      } catch (referralError) {
-        logger.error(`Failed to increment referral usage: ${referralError.message}`);
-      }
-    }
-
-    if (updatedDelivery.referralCode && !updatedDelivery.trulifeAffiliateRegistered) {
+    if (
+      updatedDelivery.referralCode &&
+      !updatedDelivery.trulifeAffiliateRegistered
+    ) {
       try {
         const affiliateResult = await registerTrulifeAffiliate({
           referralCode: updatedDelivery.referralCode,
-          fullName: updatedDelivery.name,
-          email: updatedDelivery.email || "",
-          mobileNo: updatedDelivery.phone,
-          state: updatedDelivery.location?.state || "",
-          city: updatedDelivery.location?.city || "",
-          role: "delivery_partner",
+          fullName: updatedDelivery.name || '',
+          email: updatedDelivery.email || '',
+          mobileNo: updatedDelivery.phone || '',
+          state: updatedDelivery.location?.state || '',
+          city: updatedDelivery.location?.city || '',
+          role: 'delivery_partner',
         });
+
         if (affiliateResult.success) {
-          await Delivery.findByIdAndUpdate(delivery._id, { $set: { trulifeAffiliateRegistered: true } });
+          await Delivery.findByIdAndUpdate(delivery._id, {
+            $set: { trulifeAffiliateRegistered: true },
+          });
         }
       } catch (affiliateError) {
-        logger.error(`Trulife affiliate registration failed: ${affiliateError.message}`);
+        logger.error(
+          `Failed to register delivery affiliate with Trulife: ${affiliateError.message}`,
+        );
       }
     }
 

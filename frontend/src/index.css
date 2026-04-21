@@ -129,10 +129,104 @@
   * {
     @apply border-border outline-ring/50;
   }
+
+  html {
+    margin: 0;
+    padding: 0;
+  }
+
   body {
     @apply bg-background text-foreground m-0 min-h-screen;
+    min-height: 100dvh;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
+  #root {
+    min-height: 100dvh;
   }
 }
+
+/* 100% ACCURACY SCROLLBAR HIDING: Must be outside any layer for maximum precedence */
+html, body, #root, * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+#root::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Disable accidental whole-page focus outlines that can look like scrollbars */
+html:focus, body:focus, #root:focus {
+  outline: none !important;
+}
+
+/* Prevent horizontal page drift/white edge without affecting sticky containers */
+html,
+body {
+  overflow-x: clip !important;
+  overscroll-behavior-x: none;
+}
+
+/* WebView fallback: some engines ignore `overflow-x: clip` and allow 1px horizontal drift */
+@supports not (overflow: clip) {
+  html,
+  body {
+    overflow-x: hidden !important;
+    max-width: 100%;
+  }
+}
+
+/* Mobile WebView bottom safe-area handling:
+   keep fixed bottom UI above OS nav buttons without adding desktop gaps. */
+@media (max-width: 767px) and (hover: none) and (pointer: coarse) {
+  body {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 20px);
+  }
+
+  /* Bottom nav bars used across user/delivery/restaurant/usermain mobile screens */
+  .md\:hidden.fixed.bottom-0.left-0.right-0.border-t.border-gray-200.z-50.shadow-lg {
+    padding-bottom: max(calc(env(safe-area-inset-bottom, 0px) + 8px), 24px);
+  }
+
+  /* Fixed bottom sheets / CTA containers anchored to viewport bottom */
+  [class*="fixed bottom-0 left-0 right-0"][class*="rounded-t-"],
+  [class*="fixed bottom-0 left-0 w-full"],
+  [class*="fixed inset-x-0 bottom-0"] {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+  }
+
+  /* CSS-only auto hide/reveal for bottom nav during page scroll.
+     If scroll-driven animations are unsupported, nav remains visible. */
+  @supports (animation-timeline: scroll(root block)) {
+    .md\:hidden.fixed.bottom-0.left-0.right-0.border-t.border-gray-200.z-50.shadow-lg {
+      will-change: transform;
+      animation-name: mobile-bottom-nav-autohide;
+      animation-timing-function: linear;
+      animation-fill-mode: both;
+      animation-timeline: scroll(root block);
+      animation-range: 0 120px;
+    }
+  }
+}
+
+@keyframes mobile-bottom-nav-autohide {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(calc(100% + env(safe-area-inset-bottom, 0px) + 8px));
+  }
+}
+
+
 
 @layer utilities {
   .scrollbar-hide {

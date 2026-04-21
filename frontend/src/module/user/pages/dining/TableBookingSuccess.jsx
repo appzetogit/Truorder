@@ -2,6 +2,7 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { Check, Calendar, Clock, Users, MapPin, Share2, Home } from "lucide-react"
 import { motion } from "framer-motion"
 import { useState } from "react"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
 
 export default function TableBookingSuccess() {
     const location = useLocation()
@@ -20,15 +21,11 @@ export default function TableBookingSuccess() {
 
     const handleShare = async () => {
         const text = `Table booked at ${booking.restaurant?.name} – ${formattedDate} at ${booking.timeSlot}, ${booking.guests} guests. ID: ${booking.bookingId}`
-        try {
-            if (navigator.share) {
-                await navigator.share({ title: 'Booking confirmed', text })
-            } else {
-                await navigator.clipboard.writeText(text)
-                setShared(true)
-                setTimeout(() => setShared(false), 2000)
-            }
-        } catch (e) { /* ignore */ }
+        const result = await shareWithFallback({ title: "Booking confirmed", text })
+        if (result.method === "copy") {
+            setShared(true)
+            setTimeout(() => setShared(false), 2000)
+        }
     }
 
     const restaurantImg = booking.restaurant?.image
@@ -50,7 +47,7 @@ export default function TableBookingSuccess() {
                     initial={{ opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ duration: 0.3 }}
-                    className="w-16 h-16 rounded-full bg-[#1FCAD3] flex items-center justify-center mb-5"
+                    className="w-16 h-16 rounded-full bg-[#2B9C64] flex items-center justify-center mb-5"
                 >
                     <Check className="w-8 h-8 text-white" strokeWidth={2.5} />
                 </motion.div>
@@ -96,7 +93,7 @@ export default function TableBookingSuccess() {
                             className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
                             aria-label="Share"
                         >
-                            {shared ? <span className="text-xs text-[#1FCAD3] font-medium">Copied</span> : <Share2 className="w-4 h-4" />}
+                            {shared ? <span className="text-xs text-[#2B9C64] font-medium">Copied</span> : <Share2 className="w-4 h-4" />}
                         </button>
                     </div>
 
@@ -116,7 +113,7 @@ export default function TableBookingSuccess() {
                                 <Users className="w-4 h-4 text-slate-400" />
                                 {booking.guests} guests
                             </span>
-                            <span className="text-xs font-medium text-[#1FCAD3] bg-[#1FCAD3]/10 px-2 py-0.5 rounded">Confirmed</span>
+                            <span className="text-xs font-medium text-[#2B9C64] bg-[#2B9C64]/10 px-2 py-0.5 rounded">Confirmed</span>
                         </div>
                     </div>
                 </motion.div>
@@ -130,7 +127,7 @@ export default function TableBookingSuccess() {
                 >
                     <button
                         onClick={() => navigate("/bookings")}
-                        className="w-full h-12 rounded-xl bg-[#1FCAD3] text-white font-semibold flex items-center justify-center gap-2 hover:bg-[#14a7b3] active:scale-[0.99] transition-all"
+                        className="w-full h-12 rounded-xl bg-[#2B9C64] text-white font-semibold flex items-center justify-center gap-2 hover:bg-[#258555] active:scale-[0.99] transition-all"
                     >
                         View my bookings
                     </button>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react"
-import { Upload, Trash2, Image as ImageIcon, Loader2, AlertCircle, CheckCircle2, ArrowUp, ArrowDown, Layout, Tag, UtensilsCrossed, Trophy, ChefHat, Megaphone, Search } from "lucide-react"
+import { Upload, Trash2, Image as ImageIcon, Loader2, AlertCircle, CheckCircle2, ArrowUp, ArrowDown, Layout, Tag, UtensilsCrossed, Trophy, ChefHat, Megaphone, Search, Monitor } from "lucide-react"
 import api from "@/lib/api"
 import { adminAPI } from "@/lib/api"
 import { getModuleToken } from "@/lib/utils/auth"
@@ -20,6 +20,10 @@ export default function LandingPageManagement() {
   const [bannersUploadProgress, setBannersUploadProgress] = useState({ current: 0, total: 0 })
   const [bannersDeleting, setBannersDeleting] = useState(null)
   const bannersFileInputRef = useRef(null)
+  const heroDesktopFileInputRef = useRef(null)
+  const desktopUploadBannerIdRef = useRef(null)
+  const [bannerDesktopUploading, setBannerDesktopUploading] = useState(null)
+  const [bannerDesktopDeleting, setBannerDesktopDeleting] = useState(null)
 
   // Categories
   const [categories, setCategories] = useState([])
@@ -192,6 +196,68 @@ export default function LandingPageManagement() {
       return
     }
     uploadBanners(files)
+  }
+
+  const triggerHeroDesktopUpload = (bannerId) => {
+    desktopUploadBannerIdRef.current = bannerId
+    heroDesktopFileInputRef.current?.click()
+  }
+
+  const handleHeroDesktopFileSelect = async (e) => {
+    const file = e.target?.files?.[0]
+    const bannerId = desktopUploadBannerIdRef.current
+    if (heroDesktopFileInputRef.current) heroDesktopFileInputRef.current.value = ""
+    desktopUploadBannerIdRef.current = null
+    if (!file || !bannerId) return
+
+    const adminToken = getModuleToken("admin")
+    if (!adminToken || adminToken.trim() === "" || adminToken === "null" || adminToken === "undefined") {
+      setErrorSafely("Authentication required. Please login again.")
+      return
+    }
+
+    try {
+      setBannerDesktopUploading(bannerId)
+      setError(null)
+      setSuccess(null)
+      const formData = new FormData()
+      formData.append("image", file)
+      const response = await api.patch(`/hero-banners/${bannerId}/desktop`, formData, getAuthConfig())
+      if (response.data.success) {
+        setSuccess("Desktop banner updated!")
+        await fetchBanners()
+        setTimeout(() => setSuccess(null), 4000)
+      } else {
+        setErrorSafely(response.data.message || "Failed to upload desktop banner")
+      }
+    } catch (err) {
+      if (err.response?.status === 401 || err.message === "Authentication token not found") {
+        setError(null)
+      } else {
+        setErrorSafely(err.response?.data?.message || "Failed to upload desktop banner")
+      }
+    } finally {
+      setBannerDesktopUploading(null)
+    }
+  }
+
+  const handleDeleteHeroDesktop = async (bannerId) => {
+    if (!window.confirm("Remove the desktop-only image for this banner? Mobile image stays.")) return
+    try {
+      setBannerDesktopDeleting(bannerId)
+      setError(null)
+      setSuccess(null)
+      const response = await api.delete(`/hero-banners/${bannerId}/desktop`, getAuthConfig())
+      if (response.data.success) {
+        setSuccess("Desktop banner removed.")
+        await fetchBanners()
+        setTimeout(() => setSuccess(null), 3000)
+      }
+    } catch (err) {
+      setErrorSafely(err.response?.data?.message || "Failed to remove desktop banner.")
+    } finally {
+      setBannerDesktopDeleting(null)
+    }
   }
 
   const uploadBanners = async (files) => {
@@ -725,11 +791,15 @@ export default function LandingPageManagement() {
   const handleUnder250BannerFileSelect = (e) => {
     const files = Array.from(e.target?.files || e.files || [])
     if (files.length === 0) return
-    if (files.length > 5) {
-      setError('You can upload a maximum of 5 images at once')
+    if (under250Banners.length >= 1) {
+      setError('Only 1 banner allowed for 250 Banner. Delete the existing banner to upload a new one.')
       return
     }
-    uploadUnder250Banners(files)
+    if (files.length > 1) {
+      setError('Only 1 banner allowed. Please select a single image.')
+      return
+    }
+    uploadUnder250Banners(files.slice(0, 1))
   }
 
   const uploadUnder250Banners = async (files) => {
@@ -850,11 +920,15 @@ export default function LandingPageManagement() {
   const handleDiningBannerFileSelect = (e) => {
     const files = Array.from(e.target?.files || e.files || [])
     if (files.length === 0) return
-    if (files.length > 5) {
-      setError('You can upload a maximum of 5 images at once')
+    if (diningBanners.length >= 1) {
+      setError('Only 1 banner allowed for Dining. Delete the existing banner to upload a new one.')
       return
     }
-    uploadDiningBanners(files)
+    if (files.length > 1) {
+      setError('Only 1 banner allowed. Please select a single image.')
+      return
+    }
+    uploadDiningBanners(files.slice(0, 1))
   }
 
   const uploadDiningBanners = async (files) => {
@@ -1288,7 +1362,8 @@ export default function LandingPageManagement() {
           <>
             {/* Upload Section */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4">Upload New Banner(s)</h2>
+              <h2 className="text-lg font-bold text-slate-900 mb-1">Upload mobile / tablet banners</h2>
+              <p className="text-sm text-slate-600 mb-4">Wide desktop images are set per banner below (optional).</p>
               <div
                 className="border-2 border-dashed border-blue-300 rounded-lg p-8 text-center bg-blue-50/30 cursor-pointer transition-colors hover:border-blue-400 hover:bg-blue-50/50"
                 onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -1344,6 +1419,14 @@ export default function LandingPageManagement() {
                   </div>
                 )}
               </div>
+              <input
+                ref={heroDesktopFileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleHeroDesktopFileSelect}
+                disabled={bannerDesktopUploading !== null}
+              />
             </div>
 
             {/* Banners List */}
@@ -1363,7 +1446,7 @@ export default function LandingPageManagement() {
                   {banners.map((banner, index) => (
                     <div key={banner._id} className="border border-slate-200 rounded-lg overflow-hidden hover:shadow-md transition-shadow">
                       <div className="relative aspect-video bg-slate-100">
-                        <img src={banner.imageUrl} alt={`Hero Banner ${index + 1}`} className="w-full h-full object-cover" />
+                        <img src={banner.imageUrl} alt={`Hero Banner ${index + 1} (mobile)`} className="w-full h-full object-cover" />
                         <div className="absolute top-2 right-2">
                           <span className={`px-2 py-1 rounded text-xs font-medium ${banner.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
                             {banner.isActive ? 'Active' : 'Inactive'}
@@ -1371,6 +1454,44 @@ export default function LandingPageManagement() {
                         </div>
                         <div className="absolute top-2 left-2">
                           <span className="px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-800">Order: {banner.order}</span>
+                        </div>
+                        <div className="absolute bottom-2 left-2">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-black/60 text-white">Mobile</span>
+                        </div>
+                      </div>
+                      <div className="border-t border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs font-semibold text-slate-700 mb-2 flex items-center gap-1">
+                          <Monitor className="w-3.5 h-3.5" />
+                          Desktop banner (wide screens)
+                        </p>
+                        <div className="relative aspect-[21/9] max-h-28 bg-slate-200 rounded-md overflow-hidden">
+                          {banner.desktopImageUrl ? (
+                            <img src={banner.desktopImageUrl} alt={`Desktop hero ${index + 1}`} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="flex h-full items-center justify-center text-xs text-slate-500 px-2 text-center">No desktop image — uses mobile on large screens</div>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          <button
+                            type="button"
+                            onClick={() => triggerHeroDesktopUpload(banner._id)}
+                            disabled={bannerDesktopUploading === banner._id}
+                            className="px-2.5 py-1 rounded text-xs font-medium bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-50 flex items-center gap-1"
+                          >
+                            {bannerDesktopUploading === banner._id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                            {banner.desktopImageUrl ? "Replace" : "Upload"}
+                          </button>
+                          {banner.desktopImageUrl && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteHeroDesktop(banner._id)}
+                              disabled={bannerDesktopDeleting === banner._id}
+                              className="px-2.5 py-1 rounded text-xs font-medium bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50 flex items-center gap-1"
+                            >
+                              {bannerDesktopDeleting === banner._id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                              Remove desktop
+                            </button>
+                          )}
                         </div>
                       </div>
                       <div className="p-4 bg-white">
@@ -1434,27 +1555,27 @@ export default function LandingPageManagement() {
           <>
             {/* Upload Section */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4">Upload New Banner(s)</h2>
+              <h2 className="text-lg font-bold text-slate-900 mb-4">Upload New Banner (1 only)</h2>
               <div
-                className="border-2 border-dashed border-blue-300 rounded-lg p-8 text-center bg-blue-50/30 cursor-pointer transition-colors hover:border-blue-400 hover:bg-blue-50/50"
-                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${under250Banners.length >= 1 ? 'border-slate-200 bg-slate-50 cursor-not-allowed opacity-70' : 'border-blue-300 bg-blue-50/30 cursor-pointer hover:border-blue-400 hover:bg-blue-50/50'}`}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (under250Banners.length >= 1) return; }}
                 onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); }}
                 onDrop={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
+                  if (under250Banners.length >= 1) return
                   const files = Array.from(e.dataTransfer.files)
-                  if (files.length > 0) handleUnder250BannerFileSelect({ files })
+                  if (files.length > 0) handleUnder250BannerFileSelect({ files: files.slice(0, 1) })
                 }}
-                onClick={() => under250BannersFileInputRef.current?.click()}
+                onClick={() => { if (under250Banners.length < 1) under250BannersFileInputRef.current?.click(); }}
               >
                 <input
                   ref={under250BannersFileInputRef}
                   type="file"
                   accept="image/*"
-                  multiple
                   onChange={handleUnder250BannerFileSelect}
                   className="hidden"
-                  disabled={under250BannersUploading}
+                  disabled={under250BannersUploading || under250Banners.length >= 1}
                 />
                 {under250BannersUploading ? (
                   <div className="flex flex-col items-center gap-3">
@@ -1486,7 +1607,8 @@ export default function LandingPageManagement() {
                       </button>
                       <span className="text-slate-600"> or drag and drop</span>
                     </div>
-                    <p className="text-xs text-slate-500">PNG, JPG, WEBP up to 5MB each (Max 5 images at once)</p>
+                    <p className="text-xs text-slate-500">PNG, JPG, WEBP up to 5MB. Only 1 banner allowed for 250 Banner.</p>
+                    {under250Banners.length >= 1 && <p className="text-xs text-amber-600 font-medium">Delete the current banner to upload a new one.</p>}
                   </div>
                 )}
               </div>
@@ -1494,7 +1616,7 @@ export default function LandingPageManagement() {
 
             {/* Banners List */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4">Banner List ({under250Banners.length})</h2>
+              <h2 className="text-lg font-bold text-slate-900 mb-4">Banner (max 1)</h2>
               {under250BannersLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
@@ -1521,14 +1643,16 @@ export default function LandingPageManagement() {
                       </div>
                       <div className="p-4 bg-white">
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1">
-                            <button onClick={() => handleUnder250BannerOrderChange(banner._id, 'up')} disabled={index === 0} className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50">
-                              <ArrowUp className="w-4 h-4 text-slate-600" />
-                            </button>
-                            <button onClick={() => handleUnder250BannerOrderChange(banner._id, 'down')} disabled={index === under250Banners.length - 1} className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50">
-                              <ArrowDown className="w-4 h-4 text-slate-600" />
-                            </button>
-                          </div>
+                          {under250Banners.length > 1 && (
+                            <div className="flex items-center gap-1">
+                              <button onClick={() => handleUnder250BannerOrderChange(banner._id, 'up')} disabled={index === 0} className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50">
+                                <ArrowUp className="w-4 h-4 text-slate-600" />
+                              </button>
+                              <button onClick={() => handleUnder250BannerOrderChange(banner._id, 'down')} disabled={index === under250Banners.length - 1} className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50">
+                                <ArrowDown className="w-4 h-4 text-slate-600" />
+                              </button>
+                            </div>
+                          )}
                           <button onClick={() => handleToggleUnder250BannerStatus(banner._id, banner.isActive)} className={`px-3 py-1.5 rounded text-sm font-medium ${banner.isActive ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>
                             {banner.isActive ? 'Deactivate' : 'Activate'}
                           </button>
@@ -1550,27 +1674,27 @@ export default function LandingPageManagement() {
           <>
             {/* Upload Section */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4">Upload New Dining Banner(s)</h2>
+              <h2 className="text-lg font-bold text-slate-900 mb-4">Upload New Dining Banner (1 only)</h2>
               <div
-                className="border-2 border-dashed border-blue-300 rounded-lg p-8 text-center bg-blue-50/30 cursor-pointer transition-colors hover:border-blue-400 hover:bg-blue-50/50"
-                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${diningBanners.length >= 1 ? 'border-slate-200 bg-slate-50 cursor-not-allowed opacity-70' : 'border-blue-300 bg-blue-50/30 cursor-pointer hover:border-blue-400 hover:bg-blue-50/50'}`}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (diningBanners.length >= 1) return; }}
                 onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); }}
                 onDrop={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
+                  if (diningBanners.length >= 1) return
                   const files = Array.from(e.dataTransfer.files)
-                  if (files.length > 0) handleDiningBannerFileSelect({ files })
+                  if (files.length > 0) handleDiningBannerFileSelect({ files: files.slice(0, 1) })
                 }}
-                onClick={() => diningBannersFileInputRef.current?.click()}
+                onClick={() => { if (diningBanners.length < 1) diningBannersFileInputRef.current?.click(); }}
               >
                 <input
                   ref={diningBannersFileInputRef}
                   type="file"
                   accept="image/*"
-                  multiple
                   onChange={handleDiningBannerFileSelect}
                   className="hidden"
-                  disabled={diningBannersUploading}
+                  disabled={diningBannersUploading || diningBanners.length >= 1}
                 />
                 {diningBannersUploading ? (
                   <div className="flex flex-col items-center gap-3">
@@ -1602,7 +1726,8 @@ export default function LandingPageManagement() {
                       </button>
                       <span className="text-slate-600"> or drag and drop</span>
                     </div>
-                    <p className="text-xs text-slate-500">PNG, JPG, WEBP up to 5MB each (Max 5 images at once)</p>
+                    <p className="text-xs text-slate-500">PNG, JPG, WEBP up to 5MB. Only 1 banner allowed for Dining.</p>
+                    {diningBanners.length >= 1 && <p className="text-xs text-amber-600 font-medium">Delete the current banner to upload a new one.</p>}
                   </div>
                 )}
               </div>
@@ -1610,7 +1735,7 @@ export default function LandingPageManagement() {
 
             {/* Banners List */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4">Banner List ({diningBanners.length})</h2>
+              <h2 className="text-lg font-bold text-slate-900 mb-4">Banner (max 1)</h2>
               {diningBannersLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
@@ -1637,14 +1762,16 @@ export default function LandingPageManagement() {
                       </div>
                       <div className="p-4 bg-white">
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1">
-                            <button onClick={() => handleDiningBannerOrderChange(banner._id, 'up')} disabled={index === 0} className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50">
-                              <ArrowUp className="w-4 h-4 text-slate-600" />
-                            </button>
-                            <button onClick={() => handleDiningBannerOrderChange(banner._id, 'down')} disabled={index === diningBanners.length - 1} className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50">
-                              <ArrowDown className="w-4 h-4 text-slate-600" />
-                            </button>
-                          </div>
+                          {diningBanners.length > 1 && (
+                            <div className="flex items-center gap-1">
+                              <button onClick={() => handleDiningBannerOrderChange(banner._id, 'up')} disabled={index === 0} className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50">
+                                <ArrowUp className="w-4 h-4 text-slate-600" />
+                              </button>
+                              <button onClick={() => handleDiningBannerOrderChange(banner._id, 'down')} disabled={index === diningBanners.length - 1} className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50">
+                                <ArrowDown className="w-4 h-4 text-slate-600" />
+                              </button>
+                            </div>
+                          )}
                           <button onClick={() => handleToggleDiningBannerStatus(banner._id, banner.isActive)} className={`px-3 py-1.5 rounded text-sm font-medium ${banner.isActive ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>
                             {banner.isActive ? 'Deactivate' : 'Activate'}
                           </button>

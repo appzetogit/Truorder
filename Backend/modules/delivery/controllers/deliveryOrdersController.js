@@ -5,6 +5,7 @@ import {
 } from "../../../shared/utils/response.js";
 import Delivery from "../models/Delivery.js";
 import Order from "../../order/models/Order.js";
+import OrderAssignmentHistory from "../../order/models/OrderAssignmentHistory.js";
 import Payment from "../../payment/models/Payment.js";
 import Restaurant from "../../restaurant/models/Restaurant.js";
 import DeliveryWallet from "../models/DeliveryWallet.js";
@@ -12,15 +13,30 @@ import DeliveryBoyCommission from "../../admin/models/DeliveryBoyCommission.js";
 import RestaurantWallet from "../../restaurant/models/RestaurantWallet.js";
 import RestaurantCommission from "../../admin/models/RestaurantCommission.js";
 import AdminCommission from "../../admin/models/AdminCommission.js";
+import {
+  RESTAURANT_NOTIFICATION_EVENTS,
+  sendNotificationToRestaurant,
+} from "../../restaurant/services/restaurantNotificationService.js";
+import {
+  sendNotificationToUser,
+  notifyUserOrderEvent,
+  USER_NOTIFICATION_EVENTS,
+} from "../../user/services/userNotificationService.js";
+import {
+  DELIVERY_NOTIFICATION_EVENTS,
+  notifyDeliveryOrderEvent,
+} from "../services/deliveryNotificationService.js";
 import { calculateRoute } from "../../order/services/routeCalculationService.js";
 import {
   upsertActiveOrder,
   updateDeliveryBoyLocation,
+  updateActiveOrderStatus,
+  removeActiveOrder,
 } from "../../../services/firebaseRealtimeService.js";
 import { encodePolyline } from "../../../shared/utils/polylineEncoder.js";
 import mongoose from "mongoose";
+import crypto from "crypto";
 import winston from "winston";
-import { sendPushToEntity } from "../../../shared/services/fcmPushService.js";
 
 const logger = winston.createLogger({
   level: "info",
@@ -31,6 +47,108 @@ const logger = winston.createLogger({
     }),
   ],
 });
+
+const DELIVERY_OTP_LENGTH = 4;
+const DELIVERY_OTP_MAX_ATTEMPTS = 5;
+const DELIVERY_OTP_EXPIRY_MS = 6 * 60 * 60 * 1000;
+const DELIVERY_OTP_LOCK_MS = 15 * 60 * 1000;
+const PREPAID_PAYMENT_METHODS = new Set(["razorpay", "wallet", "upi", "card"]);
+const ACTIVE_DELIVERY_OTP_STATUSES = new Set(["out_for_delivery"]);
+
+function resolvePaymentMethod(order) {
+  return String(order?.payment?.method || order?.paymentMethod || "")
+    .trim()
+    .toLowerCase();
+}
+
+function resolvePaymentStatus(order) {
+  return String(order?.payment?.status || order?.paymentStatus || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isPrepaidOrder(order) {
+  return (
+    PREPAID_PAYMENT_METHODS.has(resolvePaymentMethod(order)) &&
+    ["completed", "paid"].includes(resolvePaymentStatus(order))
+  );
+}
+
+function generateDeliveryOtp() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+function hashDeliveryOtp(otp) {
+  return crypto
+    .createHash("sha256")
+    .update(`${otp}:${process.env.DELIVERY_OTP_SECRET || "delivery-otp-secret"}`)
+    .digest("hex");
+}
+
+function isDeliveryOtpExpired(deliveryVerification) {
+  if (!deliveryVerification?.expiresAt) return true;
+  const expiresAt = new Date(deliveryVerification.expiresAt);
+  return Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now();
+}
+
+function isDeliveryOtpLocked(deliveryVerification) {
+  if (!deliveryVerification?.lockedUntil) return false;
+  const lockedUntil = new Date(deliveryVerification.lockedUntil);
+  return !Number.isNaN(lockedUntil.getTime()) && lockedUntil.getTime() > Date.now();
+}
+
+function shouldGenerateDeliveryOtp(order) {
+  if (!isPrepaidOrder(order)) return false;
+  if (!ACTIVE_DELIVERY_OTP_STATUSES.has(String(order?.status || "").toLowerCase()) &&
+      String(order?.deliveryState?.currentPhase || "").toLowerCase() !== "en_route_to_delivery") {
+    return false;
+  }
+
+  const deliveryVerification = order?.deliveryVerification || {};
+  if (!deliveryVerification.isRequired) return true;
+  if (deliveryVerification.verified) return false;
+  if (!deliveryVerification.otp || !deliveryVerification.otpHash) return true;
+  if (isDeliveryOtpExpired(deliveryVerification)) return true;
+
+  return false;
+}
+
+function buildDeliveryVerificationPayload(order, otp) {
+  const now = new Date();
+  return {
+    isRequired: true,
+    otp,
+    otpHash: hashDeliveryOtp(otp),
+    createdAt: now,
+    expiresAt: new Date(now.getTime() + DELIVERY_OTP_EXPIRY_MS),
+    verified: false,
+    verifiedAt: null,
+    verifiedBy: null,
+    attempts: 0,
+    lastSentAt: now,
+    lockedUntil: null,
+  };
+}
+
+function sanitizeOrderForDelivery(order) {
+  if (!order) return order;
+
+  const deliveryVerification = order.deliveryVerification || null;
+  return {
+    ...order,
+    deliveryVerification: deliveryVerification
+      ? {
+          isRequired: Boolean(deliveryVerification.isRequired && isPrepaidOrder(order)),
+          createdAt: deliveryVerification.createdAt || null,
+          expiresAt: deliveryVerification.expiresAt || null,
+          verified: Boolean(deliveryVerification.verified),
+          verifiedAt: deliveryVerification.verifiedAt || null,
+          attempts: Number(deliveryVerification.attempts || 0),
+          lockedUntil: deliveryVerification.lockedUntil || null,
+        }
+      : null,
+  };
+}
 
 /**
  * Get Delivery Partner Orders
@@ -52,7 +170,7 @@ export const getOrders = asyncHandler(async (req, res) => {
     } else {
       // By default, exclude delivered and cancelled orders unless explicitly requested
       if (includeDelivered !== "true" && includeDelivered !== true) {
-        baseFilters.status = { $nin: ["delivered", "cancelled"] };
+        baseFilters.status = { $nin: ["pending", "delivered", "cancelled"] };
         // Also exclude orders with completed delivery phase
         baseFilters.$or = [
           { "deliveryState.currentPhase": { $ne: "completed" } },
@@ -97,7 +215,7 @@ export const getOrders = asyncHandler(async (req, res) => {
     const total = await Order.countDocuments(query);
 
     return successResponse(res, 200, "Orders retrieved successfully", {
-      orders,
+      orders: orders.map(sanitizeOrderForDelivery),
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -224,7 +342,10 @@ export const getOrderDetails = asyncHandler(async (req, res) => {
         /* ignore */
       }
     }
-    const orderWithPayment = { ...order, paymentMethod };
+    const orderWithPayment = sanitizeOrderForDelivery({
+      ...order,
+      paymentMethod,
+    });
 
     return successResponse(res, 200, "Order details retrieved successfully", {
       order: orderWithPayment,
@@ -252,11 +373,14 @@ export const acceptOrder = asyncHandler(async (req, res) => {
       !orderId ||
       (typeof orderId !== "string" && typeof orderId !== "object")
     ) {
-      console.error(`❌ Invalid orderId provided: ${orderId}`);
+      console.error(`Invalid orderId provided: ${orderId}`);
       return errorResponse(res, 400, "Invalid order ID");
     }
+
+    // Import the new assignment controller
+    const { default: orderAssignmentController } = await import("../../order/services/orderAssignmentController.js");
+
     // Find order - try both by _id and orderId
-    // First check if order exists (without deliveryPartnerId filter)
     let order = await Order.findOne({
       $or: [{ _id: orderId }, { orderId: orderId }],
     })
@@ -265,151 +389,81 @@ export const acceptOrder = asyncHandler(async (req, res) => {
       .lean();
 
     if (!order) {
-      console.error(`❌ Order ${orderId} not found in database`);
+      console.error(`Order ${orderId} not found in database`);
       return errorResponse(res, 404, "Order not found");
     }
 
-    // Check if order is assigned to this delivery partner
-    const orderDeliveryPartnerId = order.deliveryPartnerId?.toString();
     const currentDeliveryId = delivery._id.toString();
+    const orderDeliveryPartnerId = order.deliveryPartnerId?.toString();
 
-    // If order is not assigned, check if this delivery boy was notified (priority-based system)
-    // Also allow acceptance if order is in valid status (preparing/ready) - more permissive
-    if (!orderDeliveryPartnerId) {
-      // Check if this delivery boy was in the priority or expanded notification list
-      const assignmentInfo = order.assignmentInfo || {};
-      const priorityIds = assignmentInfo.priorityDeliveryPartnerIds || [];
-      const expandedIds = assignmentInfo.expandedDeliveryPartnerIds || [];
+    // Check if order is already accepted by someone else
+    if (order.assignmentStatus === 'accepted' && orderDeliveryPartnerId !== currentDeliveryId) {
+      return errorResponse(res, 409, "Order was already accepted by another delivery partner");
+    }
 
-      // Helper function to normalize ID for comparison
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === "string") return id;
-        if (id.toString) return id.toString();
-        return String(id);
-      };
+    // CRITICAL: Check if this delivery partner previously rejected this order
+    const hasPreviousRejection = await OrderAssignmentHistory.findOne({
+      orderId: order._id,
+      deliveryPartnerId: currentDeliveryId,
+      assignmentStatus: { $in: ["rejected", "expired"] }
+    });
 
-      // Normalize all IDs to strings for comparison
-      const normalizedCurrentId = normalizeId(currentDeliveryId);
-      const normalizedPriorityIds = priorityIds
-        .map(normalizeId)
-        .filter(Boolean);
-      const normalizedExpandedIds = expandedIds
-        .map(normalizeId)
-        .filter(Boolean);
-      const wasNotified =
-        normalizedPriorityIds.includes(normalizedCurrentId) ||
-        normalizedExpandedIds.includes(normalizedCurrentId);
+    if (hasPreviousRejection) {
+      return errorResponse(res, 403, "You cannot accept an order you have previously rejected or expired");
+    }
 
-      // Also allow if order is in valid status (preparing/ready) - more permissive for unassigned orders
-      const isValidStatus =
-        order.status === "preparing" || order.status === "ready";
-
-      if (!wasNotified && !isValidStatus) {
-        console.error(
-          `❌ Order ${order.orderId} is not assigned, delivery partner ${currentDeliveryId} was not notified, and order status is ${order.status}`,
-        );
-        console.error(`❌ Full order details:`, {
-          orderId: order.orderId,
-          orderStatus: order.status,
-          deliveryPartnerId: order.deliveryPartnerId,
-          assignmentInfo: JSON.stringify(order.assignmentInfo),
-          priorityIds: normalizedPriorityIds,
-          expandedIds: normalizedExpandedIds,
-          currentDeliveryId: normalizedCurrentId,
-        });
-        return errorResponse(
-          res,
-          403,
-          "This order is not available for you. It may have been assigned to another delivery partner or you were not notified about it.",
-        );
-      }
-
-      // Allow acceptance if delivery boy was notified OR order is in valid status
-      if (wasNotified) {
-      } else if (isValidStatus) {
-      }
-
-      // Proceed with assignment: atomic update to prevent multiple delivery boys accepting the same order
-      const orderMongoIdForAssign = order._id;
-      const assignmentUpdate = {
-        deliveryPartnerId: delivery._id,
-        assignmentInfo: {
-          ...(order.assignmentInfo || {}),
-          deliveryPartnerId: currentDeliveryId,
-          assignedAt: new Date(),
-          assignedBy: "delivery_accept",
-          acceptedFromNotification: true,
-        },
-      };
-
-      const assignFilter = {
-        _id: orderMongoIdForAssign,
-        status: { $in: ["preparing", "ready"] },
-        $or: [
-          { deliveryPartnerId: null },
-          { deliveryPartnerId: { $exists: false } },
-        ],
-      };
-
-      let orderDoc = await Order.findOneAndUpdate(
-        assignFilter,
-        { $set: assignmentUpdate },
-        { new: true },
+    // Use the new assignment system for acceptance
+    try {
+      const acceptResult = await orderAssignmentController.acceptOrderAssignment(
+        order._id.toString(),
+        currentDeliveryId
       );
 
-      if (!orderDoc) {
-        console.error(
-          `❌ Order ${order.orderId} was already accepted by another delivery partner (atomic check failed)`,
-        );
-        return errorResponse(
-          res,
-          409,
-          "Order was accepted by another delivery partner. Please try another order.",
-        );
+      if (!acceptResult.success) {
+        return errorResponse(res, 400, acceptResult.message || "Failed to accept order");
       }
-      // Reload order with populated data
-      try {
-        order = await Order.findOne({
-          $or: [{ _id: orderDoc._id }, { orderId: orderId }],
-        })
-          .populate("restaurantId", "name location address phone ownerPhone")
-          .populate("userId", "name phone")
-          .lean();
 
-        if (!order) {
-          console.error(`❌ Order not found after assignment: ${orderDoc._id}`);
-          return errorResponse(
-            res,
-            500,
-            "Order not found after assignment. Please try again.",
-          );
+      // Reload the updated order
+      order = acceptResult.order;
+    } catch (acceptError) {
+      console.error("Error in assignment acceptance:", acceptError);
+      
+      // Fallback to legacy logic if new system fails
+      if (orderDeliveryPartnerId && orderDeliveryPartnerId !== currentDeliveryId) {
+        return errorResponse(res, 403, "Order is assigned to another delivery partner");
+      }
+
+      // For unassigned orders, check if this delivery boy was notified
+      if (!orderDeliveryPartnerId) {
+        const assignmentInfo = order.assignmentInfo || {};
+        const priorityIds = assignmentInfo.priorityDeliveryPartnerIds || [];
+        const expandedIds = assignmentInfo.expandedDeliveryPartnerIds || [];
+
+        const normalizeId = (id) => {
+          if (!id) return null;
+          if (typeof id === "string") return id;
+          if (id.toString) return id.toString();
+          return String(id);
+        };
+
+        const normalizedCurrentId = normalizeId(currentDeliveryId);
+        const normalizedPriorityIds = priorityIds.map(normalizeId).filter(Boolean);
+        const normalizedExpandedIds = expandedIds.map(normalizeId).filter(Boolean);
+        const wasNotified = normalizedPriorityIds.includes(normalizedCurrentId) ||
+                           normalizedExpandedIds.includes(normalizedCurrentId);
+
+        const isValidStatus = order.status === "preparing" || order.status === "ready";
+
+        if (!wasNotified && !isValidStatus) {
+          return errorResponse(res, 403, "This order is not available for you");
         }
-      } catch (reloadError) {
-        console.error(
-          `❌ Error reloading order after assignment: ${reloadError.message}`,
-        );
-        return errorResponse(
-          res,
-          500,
-          "Error reloading order. Please try again.",
-        );
       }
-    } else if (orderDeliveryPartnerId !== currentDeliveryId) {
-      console.error(
-        `❌ Order ${order.orderId} is assigned to ${orderDeliveryPartnerId}, but current delivery partner is ${currentDeliveryId}`,
-      );
-      return errorResponse(
-        res,
-        403,
-        "Order is assigned to another delivery partner",
-      );
-    } else {
     }
     // Check if order is in valid state to accept
     const validStatuses = ["preparing", "ready"];
     if (!validStatuses.includes(order.status)) {
       console.warn(
+        `Order ${order.orderId} cannot be accepted. Current status: ${order.status}, Valid statuses: ${validStatuses.join(", ")}`,
         `⚠️ Order ${order.orderId} cannot be accepted. Current status: ${order.status}, Valid statuses: ${validStatuses.join(", ")}`,
       );
       return errorResponse(
@@ -668,6 +722,12 @@ export const acceptOrder = asyncHandler(async (req, res) => {
         orderMongoId,
         {
           $set: {
+            deliveryPartnerId: delivery._id,
+            assignmentStatus: "accepted",
+            "assignmentInfo.deliveryPartnerId": delivery._id.toString(),
+            "assignmentInfo.assignedBy": order.assignmentInfo?.assignedBy || "delivery_accept",
+            "assignmentInfo.assignedAt": order.assignmentInfo?.assignedAt || new Date(),
+            "assignmentTimings.acceptedAt": new Date(),
             "deliveryState.status": "accepted",
             "deliveryState.acceptedAt": new Date(),
             "deliveryState.currentPhase": "en_route_to_pickup",
@@ -700,6 +760,33 @@ export const acceptOrder = asyncHandler(async (req, res) => {
         `Failed to update order: ${updateError.message || "Unknown error"}`,
       );
     }
+
+    await sendNotificationToRestaurant({
+      restaurantId: updatedOrder.restaurantId?._id || updatedOrder.restaurantId || order.restaurantId,
+      type: RESTAURANT_NOTIFICATION_EVENTS.DELIVERY_PARTNER_ASSIGNED,
+      orderId: updatedOrder._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.DELIVERY_PARTNER_ASSIGNED}:${updatedOrder._id}:${delivery._id}`,
+      redirectUrl: `/restaurant/orders/${updatedOrder.orderId}`,
+      metadata: {
+        orderDisplayId: updatedOrder.orderId,
+        deliveryPartnerId: delivery._id.toString(),
+        deliveryPartnerName: delivery.name,
+      },
+      source: "deliveryOrdersController.acceptOrder",
+    });
+
+    notifyDeliveryOrderEvent({
+      order: updatedOrder,
+      deliveryBoyId: delivery._id,
+      type: DELIVERY_NOTIFICATION_EVENTS.ORDER_ASSIGNED,
+      metadata: {
+        deliveryPartnerName: delivery.name,
+      },
+      source: "deliveryOrdersController.acceptOrder",
+    }).catch((notifyError) => {
+      console.warn("Delivery assigned notification failed:", notifyError.message);
+    });
+
     // Calculate delivery distance (restaurant to customer) for earnings calculation
     let deliveryDistance = 0;
     if (
@@ -823,16 +910,26 @@ export const acceptOrder = asyncHandler(async (req, res) => {
       console.error("Error emitting order_accepted:", emitErr);
     }
 
-    // Push to customer + restaurant: delivery partner assigned
-    sendPushToEntity("user", order.userId, {
-      title: "Delivery Partner Assigned",
-      body: `A delivery partner is on the way for order #${order.orderId}.`,
-    }).catch(() => {});
-    if (order.restaurantId) {
-      sendPushToEntity("restaurant", order.restaurantId, {
-        title: "Delivery Partner Assigned",
-        body: `Delivery partner assigned for order #${order.orderId}.`,
-      }).catch(() => {});
+    // Store pickup polyline in Firebase so frontend can render route without Google Directions API
+    try {
+      const custCoords = updatedOrder.address?.location?.coordinates;
+      const [custLng, custLat] = custCoords || [0, 0];
+      await upsertActiveOrder({
+        orderId: updatedOrder.orderId,
+        boy_id: delivery._id.toString(),
+        boy_lat: deliveryLat,
+        boy_lng: deliveryLng,
+        restaurant_lat: restaurantLat,
+        restaurant_lng: restaurantLng,
+        customer_lat: custLat,
+        customer_lng: custLng,
+        polyline: encodePolyline(routeData.coordinates),
+        distance: routeData.distance,
+        duration: routeData.duration,
+        status: "accepted",
+      });
+    } catch (firebaseErr) {
+      console.warn("Firebase upsertActiveOrder in acceptOrder failed:", firebaseErr.message);
     }
 
     return successResponse(res, 200, "Order accepted successfully", {
@@ -860,6 +957,95 @@ export const acceptOrder = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Reject Order Assignment (Delivery Boy rejects the assigned order)
+ * PATCH /api/delivery/orders/:orderId/reject
+ */
+export const rejectOrder = asyncHandler(async (req, res) => {
+  try {
+    const delivery = req.delivery;
+    const { orderId } = req.params;
+    const { reason } = req.body; // Optional rejection reason
+
+    // Validate orderId
+    if (!orderId || (typeof orderId !== "string" && typeof orderId !== "object")) {
+      console.error(`Invalid orderId provided: ${orderId}`);
+      return errorResponse(res, 400, "Invalid order ID");
+    }
+
+    // Import the new assignment controller
+    const { default: orderAssignmentController } = await import("../../order/services/orderAssignmentController.js");
+
+    // Find order - try both by _id and orderId
+    let order = await Order.findOne({
+      $or: [{ _id: orderId }, { orderId: orderId }],
+    })
+      .populate("restaurantId", "name location address phone ownerPhone")
+      .populate("userId", "name phone")
+      .lean();
+
+    if (!order) {
+      console.error(`Order ${orderId} not found in database`);
+      return errorResponse(res, 404, "Order not found");
+    }
+
+    const currentDeliveryId = delivery._id.toString();
+    const orderDeliveryPartnerId = order.deliveryPartnerId?.toString();
+
+    // Check if order is assigned to this delivery partner or they were notified
+    if (orderDeliveryPartnerId && orderDeliveryPartnerId !== currentDeliveryId) {
+      return errorResponse(res, 403, "Order is assigned to another delivery partner");
+    }
+
+    // Check if order is still in rejectable state
+    if (order.assignmentStatus === 'accepted') {
+      return errorResponse(res, 400, "Order has already been accepted and cannot be rejected");
+    }
+
+    // CRITICAL: Check if this delivery partner previously rejected this order
+    const hasPreviousRejection = await OrderAssignmentHistory.findOne({
+      orderId: order._id,
+      deliveryPartnerId: currentDeliveryId,
+      assignmentStatus: { $in: ["rejected", "expired"] }
+    });
+
+    if (hasPreviousRejection) {
+      return errorResponse(res, 403, "You cannot reject an order you have already rejected or expired");
+    }
+
+    // Use the new assignment system for rejection
+    try {
+      const rejectResult = await orderAssignmentController.rejectOrderAssignment(
+        order._id.toString(),
+        currentDeliveryId,
+        reason || 'rejected_by_delivery'
+      );
+
+      if (!rejectResult.success) {
+        return errorResponse(res, 400, rejectResult.message || "Failed to reject order");
+      }
+
+      return successResponse(res, 200, "Order rejected successfully", {
+        message: "Order rejected and will be reassigned to another delivery partner",
+        orderId: order.orderId
+      });
+    } catch (rejectError) {
+      console.error("Error in assignment rejection:", rejectError);
+      return errorResponse(res, 500, "Failed to reject order assignment");
+    }
+  } catch (error) {
+    logger.error(`Error rejecting order: ${error.message}`);
+    console.error("Error rejecting order - Full error:", {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      orderId: req.params?.orderId,
+      deliveryId: req.delivery?._id,
+    });
+    return errorResponse(res, 500, error.message || "Failed to reject order");
+  }
+});
+
+/**
  * Confirm Reached Pickup
  * PATCH /api/delivery/orders/:orderId/reached-pickup
  */
@@ -868,20 +1054,28 @@ export const confirmReachedPickup = asyncHandler(async (req, res) => {
     const delivery = req.delivery;
     const { orderId } = req.params;
     const deliveryId = delivery._id;
+    const deliveryIdString = deliveryId.toString();
     // Find order by _id or orderId field
     let order = null;
+    const deliveryPartnerMatch = {
+      $or: [
+        { deliveryPartnerId: deliveryId },
+        { deliveryPartnerId: deliveryIdString },
+        { "assignmentInfo.deliveryPartnerId": deliveryIdString },
+      ],
+    };
 
     // Check if orderId is a valid MongoDB ObjectId
     if (mongoose.Types.ObjectId.isValid(orderId) && orderId.length === 24) {
       order = await Order.findOne({
         _id: orderId,
-        deliveryPartnerId: deliveryId,
+        ...deliveryPartnerMatch,
       });
     } else {
       // If not a valid ObjectId, search by orderId field
       order = await Order.findOne({
         orderId: orderId,
-        deliveryPartnerId: deliveryId,
+        ...deliveryPartnerMatch,
       });
     }
 
@@ -959,6 +1153,28 @@ export const confirmReachedPickup = asyncHandler(async (req, res) => {
     order.deliveryState.currentPhase = "at_pickup";
     order.deliveryState.reachedPickupAt = new Date();
     await order.save();
+
+    await sendNotificationToRestaurant({
+      restaurantId: order.restaurantId,
+      type: RESTAURANT_NOTIFICATION_EVENTS.DELIVERY_PARTNER_REACHED,
+      orderId: order._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.DELIVERY_PARTNER_REACHED}:${order._id}`,
+      redirectUrl: `/restaurant/orders/${order.orderId}`,
+      metadata: {
+        orderDisplayId: order.orderId,
+        deliveryPartnerId: delivery._id.toString(),
+        deliveryPartnerName: delivery.name,
+      },
+      source: "deliveryOrdersController.confirmReachedPickup",
+    });
+
+    // Sync phase to Firebase
+    try {
+      await updateActiveOrderStatus(order.orderId, { status: "at_pickup" });
+    } catch (fbErr) {
+      console.warn("Firebase updateActiveOrderStatus (at_pickup) failed:", fbErr.message);
+    }
+
     // After 10 seconds, trigger order ID confirmation request
     // Use order._id (MongoDB ObjectId) instead of orderId string
     const orderMongoId = order._id;
@@ -1022,11 +1238,20 @@ export const confirmOrderId = asyncHandler(async (req, res) => {
     // Find order by _id or orderId - try multiple methods for better compatibility
     let order = null;
     const deliveryId = delivery._id;
+    const deliveryIdString = deliveryId.toString();
+    const deliveryPartnerMatch = {
+      $or: [
+        { deliveryPartnerId: deliveryId },
+        { deliveryPartnerId: deliveryIdString },
+        { "assignmentInfo.deliveryPartnerId": deliveryIdString },
+      ],
+    };
 
     // Method 1: Try as MongoDB ObjectId
     if (mongoose.Types.ObjectId.isValid(orderId) && orderId.length === 24) {
       order = await Order.findOne({
-        $and: [{ _id: orderId }, { deliveryPartnerId: deliveryId }],
+        _id: orderId,
+        ...deliveryPartnerMatch,
       })
         .populate("userId", "name phone")
         .populate("restaurantId", "name location address phone ownerPhone")
@@ -1036,24 +1261,8 @@ export const confirmOrderId = asyncHandler(async (req, res) => {
     // Method 2: Try by orderId field
     if (!order) {
       order = await Order.findOne({
-        $and: [{ orderId: orderId }, { deliveryPartnerId: deliveryId }],
-      })
-        .populate("userId", "name phone")
-        .populate("restaurantId", "name location address phone ownerPhone")
-        .lean();
-    }
-
-    // Method 3: Try with string comparison for deliveryPartnerId
-    if (!order) {
-      order = await Order.findOne({
-        $and: [
-          {
-            $or: [{ _id: orderId }, { orderId: orderId }],
-          },
-          {
-            deliveryPartnerId: deliveryId.toString(),
-          },
-        ],
+        orderId: orderId,
+        ...deliveryPartnerMatch,
       })
         .populate("userId", "name phone")
         .populate("restaurantId", "name location address phone ownerPhone")
@@ -1191,7 +1400,7 @@ export const confirmOrderId = asyncHandler(async (req, res) => {
             polyline,
             distance: routeData.distance,
             duration: routeData.duration,
-            status: "assigned",
+            status: "en_route_to_delivery",
           });
 
           await updateDeliveryBoyLocation(
@@ -1322,6 +1531,28 @@ export const confirmOrderId = asyncHandler(async (req, res) => {
       },
     };
 
+    let generatedDeliveryOtp = null;
+    if (shouldGenerateDeliveryOtp({
+      ...order,
+      status: "out_for_delivery",
+      deliveryState: {
+        ...(order.deliveryState || {}),
+        currentPhase: "en_route_to_delivery",
+      },
+    })) {
+      generatedDeliveryOtp = generateDeliveryOtp();
+      updateData.deliveryVerification = buildDeliveryVerificationPayload(
+        {
+          ...order,
+          paymentMethod: order.payment?.method,
+        },
+        generatedDeliveryOtp,
+      );
+    } else if (order.deliveryVerification?.isRequired) {
+      updateData["deliveryVerification.lastSentAt"] =
+        order.deliveryVerification?.lastSentAt || new Date();
+    }
+
     // Add bill image URL if provided (with validation)
     if (billImageUrl) {
       // Validate URL format
@@ -1363,9 +1594,92 @@ export const confirmOrderId = asyncHandler(async (req, res) => {
       .populate("userId", "name phone")
       .populate("restaurantId", "name location address")
       .lean();
+
+    await sendNotificationToRestaurant({
+      restaurantId: updatedOrder.restaurantId?._id || updatedOrder.restaurantId || order.restaurantId,
+      type: RESTAURANT_NOTIFICATION_EVENTS.ORDER_PICKED_UP,
+      orderId: updatedOrder._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.ORDER_PICKED_UP}:${updatedOrder._id}`,
+      redirectUrl: `/restaurant/orders/${updatedOrder.orderId}`,
+      metadata: {
+        orderDisplayId: updatedOrder.orderId,
+        deliveryPartnerId: delivery._id.toString(),
+        deliveryPartnerName: delivery.name,
+      },
+      source: "deliveryOrdersController.confirmOrderId",
+    });
+
+    notifyDeliveryOrderEvent({
+      order: updatedOrder,
+      deliveryBoyId: delivery._id,
+      type:
+        updatedOrder.payment?.method === "cash" || updatedOrder.payment?.method === "cod"
+          ? DELIVERY_NOTIFICATION_EVENTS.COD_COLLECTION_REMINDER
+          : DELIVERY_NOTIFICATION_EVENTS.ONLINE_PAYMENT_CONFIRMED,
+      metadata: {
+        paymentMethod: updatedOrder.payment?.method || "online",
+        amount: updatedOrder.pricing?.total || 0,
+      },
+      source: "deliveryOrdersController.confirmOrderId.payment",
+    }).catch((notifyError) => {
+      console.warn("Delivery payment notification failed:", notifyError.message);
+    });
+
+    notifyUserOrderEvent(
+      updatedOrder,
+      USER_NOTIFICATION_EVENTS.ORDER_PICKED_BY_DELIVERY_PARTNER,
+      {
+        deliveryPartnerId: delivery._id.toString(),
+        deliveryPartnerName: delivery.name,
+      },
+      "deliveryOrdersController.confirmOrderId",
+    ).catch((notifyError) => {
+      console.error("Error sending user picked-up notification:", notifyError);
+    });
+
+    notifyUserOrderEvent(
+      updatedOrder,
+      USER_NOTIFICATION_EVENTS.ORDER_OUT_FOR_DELIVERY,
+      {
+        deliveryPartnerId: delivery._id.toString(),
+        deliveryPartnerName: delivery.name,
+        estimatedDeliveryTime: routeData.duration || null,
+      },
+      "deliveryOrdersController.confirmOrderId",
+    ).catch((notifyError) => {
+      console.error("Error sending user out-for-delivery notification:", notifyError);
+    });
+
+    if (
+      generatedDeliveryOtp &&
+      updatedOrder?.userId &&
+      updatedOrder?.orderId
+    ) {
+      sendNotificationToUser({
+        userId: updatedOrder.userId?._id || updatedOrder.userId,
+        order: updatedOrder,
+        type: USER_NOTIFICATION_EVENTS.ORDER_DELIVERY_OTP_READY,
+        title: "Your delivery OTP is here",
+        message: [
+          `Order ID: #${updatedOrder.orderId}`,
+          `OTP: ${generatedDeliveryOtp}`,
+          "",
+          "Share this OTP with the delivery partner only after receiving your prepaid order.",
+        ].join("\n"),
+        eventKey: `${USER_NOTIFICATION_EVENTS.ORDER_DELIVERY_OTP_READY}:${updatedOrder._id}:${generatedDeliveryOtp}`,
+        metadata: {
+          orderDisplayId: updatedOrder.orderId,
+          deliveryOtp: generatedDeliveryOtp,
+        },
+        source: "deliveryOrdersController.confirmOrderId.deliveryOtp",
+      }).catch((notifyError) => {
+        console.error("Error sending user delivery OTP notification:", notifyError);
+      });
+    }
+
     // Send response first, then handle socket notification asynchronously
     const responseData = {
-      order: updatedOrder,
+      order: sanitizeOrderForDelivery(updatedOrder),
       route: {
         coordinates: routeData.coordinates,
         distance: routeData.distance,
@@ -1373,12 +1687,6 @@ export const confirmOrderId = asyncHandler(async (req, res) => {
         method: routeData.method,
       },
     };
-
-    // Push to customer: out for delivery
-    sendPushToEntity("user", order.userId, {
-      title: "Out for Delivery",
-      body: `Your order #${order.orderId} is on its way!`,
-    }).catch(() => {});
 
     const response = successResponse(
       res,
@@ -1450,7 +1758,7 @@ export const confirmOrderId = asyncHandler(async (req, res) => {
             polyline,
             distance: routeData.distance,
             duration: routeData.duration,
-            status: "assigned",
+            status: "en_route_to_delivery",
           });
 
           await updateDeliveryBoyLocation(
@@ -1499,30 +1807,27 @@ export const confirmReachedDrop = asyncHandler(async (req, res) => {
     // Find order by _id or orderId, and ensure it's assigned to this delivery partner
     // Try multiple comparison methods for deliveryPartnerId (ObjectId vs string)
     const deliveryId = delivery._id;
+    const deliveryIdString = deliveryId.toString();
+    const deliveryPartnerMatch = {
+      $or: [
+        { deliveryPartnerId: deliveryId },
+        { deliveryPartnerId: deliveryIdString },
+        { "assignmentInfo.deliveryPartnerId": deliveryIdString },
+      ],
+    };
     // Try finding order with different deliveryPartnerId comparison methods
     // First try without lean() to get Mongoose document (needed for proper ObjectId comparison)
-    let order = await Order.findOne({
-      $and: [
-        {
-          $or: [{ _id: orderId }, { orderId: orderId }],
-        },
-        {
-          deliveryPartnerId: deliveryId, // Try as ObjectId first (most common)
-        },
-      ],
-    });
-
-    // If not found, try with string comparison
+    let order = null;
+    if (mongoose.Types.ObjectId.isValid(orderId) && orderId.length === 24) {
+      order = await Order.findOne({
+        _id: orderId,
+        ...deliveryPartnerMatch,
+      });
+    }
     if (!order) {
       order = await Order.findOne({
-        $and: [
-          {
-            $or: [{ _id: orderId }, { orderId: orderId }],
-          },
-          {
-            deliveryPartnerId: deliveryId.toString(), // Try as string
-          },
-        ],
+        orderId,
+        ...deliveryPartnerMatch,
       });
     }
 
@@ -1623,6 +1928,18 @@ export const confirmReachedDrop = asyncHandler(async (req, res) => {
       return errorResponse(res, 500, "Failed to process order");
     }
 
+    notifyDeliveryOrderEvent({
+      order: finalOrder,
+      deliveryBoyId: delivery._id,
+      type: DELIVERY_NOTIFICATION_EVENTS.NEAR_CUSTOMER,
+      metadata: {
+        reachedDropAt: finalOrder.deliveryState?.reachedDropAt || new Date(),
+      },
+      source: "deliveryOrdersController.confirmReachedDrop",
+    }).catch((notifyError) => {
+      console.warn("Delivery near customer notification failed:", notifyError.message);
+    });
+
     const orderIdForLog =
       finalOrder.orderId || finalOrder._id?.toString() || orderId;
     return successResponse(res, 200, "Reached drop confirmed", {
@@ -1643,6 +1960,150 @@ export const confirmReachedDrop = asyncHandler(async (req, res) => {
       500,
       `Failed to confirm reached drop: ${error.message}`,
     );
+  }
+});
+
+/**
+ * Verify Delivery OTP for prepaid orders
+ * POST /api/delivery/orders/:orderId/verify-delivery-otp
+ */
+export const verifyDeliveryOtp = asyncHandler(async (req, res) => {
+  try {
+    const delivery = req.delivery;
+    const { orderId } = req.params;
+    const otp = String(req.body?.otp || "").trim();
+
+    if (!delivery?._id) {
+      return errorResponse(res, 401, "Delivery partner authentication required");
+    }
+
+    if (!orderId) {
+      return errorResponse(res, 400, "Order ID is required");
+    }
+
+    if (!/^\d{4}$/.test(otp)) {
+      return errorResponse(res, 400, "OTP must be exactly 4 digits");
+    }
+
+    let order = null;
+    if (mongoose.Types.ObjectId.isValid(orderId) && orderId.length === 24) {
+      order = await Order.findOne({
+        _id: orderId,
+        deliveryPartnerId: delivery._id,
+      })
+        .populate("restaurantId", "name location address phone ownerPhone")
+        .populate("userId", "name phone")
+        .lean();
+    }
+
+    if (!order) {
+      order = await Order.findOne({
+        orderId,
+        deliveryPartnerId: delivery._id,
+      })
+        .populate("restaurantId", "name location address phone ownerPhone")
+        .populate("userId", "name phone")
+        .lean();
+    }
+
+    if (!order) {
+      return errorResponse(res, 404, "Order not found or not assigned to you");
+    }
+
+    if (!isPrepaidOrder(order)) {
+      return errorResponse(res, 400, "Delivery OTP is required only for prepaid paid orders");
+    }
+
+    if (order.status === "cancelled") {
+      return errorResponse(res, 400, "Cancelled orders cannot be verified");
+    }
+
+    if (
+      order.status === "delivered" ||
+      order.deliveryState?.currentPhase === "completed" ||
+      order.deliveryState?.status === "delivered"
+    ) {
+      return errorResponse(res, 400, "Order is already delivered");
+    }
+
+    const deliveryVerification = order.deliveryVerification || {};
+
+    if (!deliveryVerification.isRequired || !deliveryVerification.otpHash) {
+      return errorResponse(res, 400, "Delivery OTP is not available for this order");
+    }
+
+    if (deliveryVerification.verified) {
+      return successResponse(res, 200, "OTP already verified", {
+        order: sanitizeOrderForDelivery(order),
+        orderStatus: order.status,
+      });
+    }
+
+    if (isDeliveryOtpExpired(deliveryVerification)) {
+      return errorResponse(res, 400, "Delivery OTP has expired");
+    }
+
+    if (isDeliveryOtpLocked(deliveryVerification)) {
+      return errorResponse(
+        res,
+        429,
+        "Too many invalid attempts. Please try again later or contact support.",
+      );
+    }
+
+    const hashedOtp = hashDeliveryOtp(otp);
+    if (hashedOtp !== deliveryVerification.otpHash) {
+      const nextAttempts = Number(deliveryVerification.attempts || 0) + 1;
+      const updatePayload = {
+        "deliveryVerification.attempts": nextAttempts,
+      };
+
+      if (nextAttempts >= DELIVERY_OTP_MAX_ATTEMPTS) {
+        updatePayload["deliveryVerification.lockedUntil"] = new Date(
+          Date.now() + DELIVERY_OTP_LOCK_MS,
+        );
+      }
+
+      await Order.updateOne(
+        { _id: order._id },
+        {
+          $set: updatePayload,
+        },
+      );
+
+      return errorResponse(
+        res,
+        nextAttempts >= DELIVERY_OTP_MAX_ATTEMPTS ? 429 : 400,
+        nextAttempts >= DELIVERY_OTP_MAX_ATTEMPTS
+          ? "Too many invalid attempts. Please contact support or retry later."
+          : "Invalid OTP. Please re-check and try again.",
+      );
+    }
+
+    const verifiedAt = new Date();
+    const verifiedOrder = await Order.findByIdAndUpdate(
+      order._id,
+      {
+        $set: {
+          "deliveryVerification.verified": true,
+          "deliveryVerification.verifiedAt": verifiedAt,
+          "deliveryVerification.verifiedBy": delivery._id,
+          "deliveryVerification.lockedUntil": null,
+        },
+      },
+      { new: true },
+    )
+      .populate("restaurantId", "name location address phone ownerPhone")
+      .populate("userId", "name phone")
+      .lean();
+
+    return successResponse(res, 200, "OTP verified successfully", {
+      order: sanitizeOrderForDelivery(verifiedOrder),
+      orderStatus: verifiedOrder?.status || order.status,
+    });
+  } catch (error) {
+    logger.error(`Error verifying delivery OTP: ${error.message}`);
+    return errorResponse(res, 500, "Failed to verify delivery OTP");
   }
 });
 
@@ -1829,7 +2290,7 @@ export const completeDelivery = asyncHandler(async (req, res) => {
       }
 
       return successResponse(res, 200, "Order already delivered", {
-        order: order,
+        order: sanitizeOrderForDelivery(order),
         earnings: earnings,
         message: "Order was already marked as delivered",
       });
@@ -1856,6 +2317,39 @@ export const completeDelivery = asyncHandler(async (req, res) => {
       return errorResponse(res, 500, "Order ID not found in order object");
     }
 
+    if (isPrepaidOrder(order)) {
+      const deliveryVerification = order.deliveryVerification || {};
+
+      if (!deliveryVerification.isRequired) {
+        return errorResponse(
+          res,
+          400,
+          "Delivery OTP verification is required before completing this prepaid order",
+        );
+      }
+
+      if (isDeliveryOtpExpired(deliveryVerification)) {
+        return errorResponse(res, 400, "Delivery OTP has expired");
+      }
+
+      if (!deliveryVerification.verified) {
+        return errorResponse(
+          res,
+          400,
+          "OTP verification is required before completing prepaid delivery",
+        );
+      }
+
+      const verifiedBy = deliveryVerification.verifiedBy?.toString?.() || "";
+      if (verifiedBy && verifiedBy !== delivery._id.toString()) {
+        return errorResponse(
+          res,
+          403,
+          "OTP was verified by another delivery partner",
+        );
+      }
+    }
+
     // Prepare update object
     const updateData = {
       status: "delivered",
@@ -1871,6 +2365,15 @@ export const completeDelivery = asyncHandler(async (req, res) => {
     // Also update embedded payment status for COD orders
     if (order.payment?.method === "cash" || order.payment?.method === "cod") {
       updateData["payment.status"] = "completed";
+    }
+
+    if (isPrepaidOrder(order)) {
+      updateData["deliveryVerification.verified"] = true;
+      updateData["deliveryVerification.verifiedAt"] =
+        order.deliveryVerification?.verifiedAt || new Date();
+      updateData["deliveryVerification.verifiedBy"] = delivery._id;
+      updateData["deliveryVerification.otp"] = "";
+      updateData["deliveryVerification.otpHash"] = "";
     }
 
     // Delivery partners should not overwrite user-submitted ratings/comments.
@@ -2260,10 +2763,18 @@ export const completeDelivery = asyncHandler(async (req, res) => {
       // But log it for investigation
     }
 
+    // Clean up Firebase active order entry
+    try {
+      const fbOrderId = updatedOrder.orderId || order.orderId || orderId;
+      await removeActiveOrder(fbOrderId);
+    } catch (fbErr) {
+      console.warn("Firebase removeActiveOrder failed:", fbErr.message);
+    }
+
     // Send response first, then handle notifications asynchronously
     // This prevents timeouts if notifications take too long
     const responseData = {
-      order: updatedOrder,
+      order: sanitizeOrderForDelivery(updatedOrder),
       earnings: {
         amount: totalEarning,
         currency: "INR",
@@ -2293,18 +2804,6 @@ export const completeDelivery = asyncHandler(async (req, res) => {
       message: "Delivery completed successfully",
     };
 
-    // Push to customer + restaurant: delivered
-    sendPushToEntity("user", order.userId, {
-      title: "Order Delivered!",
-      body: `Your order #${order.orderId || orderIdForLog} has been delivered. Enjoy!`,
-    }).catch(() => {});
-    if (order.restaurantId) {
-      sendPushToEntity("restaurant", order.restaurantId, {
-        title: "Order Delivered",
-        body: `Order #${order.orderId || orderIdForLog} has been delivered.`,
-      }).catch(() => {});
-    }
-
     // Send response immediately
     const response = successResponse(
       res,
@@ -2318,6 +2817,27 @@ export const completeDelivery = asyncHandler(async (req, res) => {
       ? orderMongoId.toString()
       : orderMongoId;
     Promise.all([
+      notifyDeliveryOrderEvent({
+        order: updatedOrder,
+        deliveryBoyId: delivery._id,
+        type: DELIVERY_NOTIFICATION_EVENTS.DELIVERY_COMPLETED,
+        metadata: {
+          amount: totalEarning,
+          orderDisplayId: orderIdForLog,
+        },
+        source: "deliveryOrdersController.completeDelivery",
+      }),
+      notifyDeliveryOrderEvent({
+        order: updatedOrder,
+        deliveryBoyId: delivery._id,
+        type: DELIVERY_NOTIFICATION_EVENTS.EARNINGS_UPDATE,
+        metadata: {
+          amount: totalEarning,
+          currency: "INR",
+          transactionId: walletTransaction?._id || walletTransaction?.id,
+        },
+        source: "deliveryOrdersController.completeDelivery.wallet",
+      }),
       // Notify restaurant about delivery completion
       (async () => {
         try {
@@ -2407,7 +2927,10 @@ export const getActiveOrder = asyncHandler(async (req, res) => {
         /* ignore */
       }
     }
-    const orderWithPayment = { ...order, paymentMethod };
+    const orderWithPayment = sanitizeOrderForDelivery({
+      ...order,
+      paymentMethod,
+    });
 
     // Determine current state/phase from backend
     const deliveryState = order.deliveryState || {};

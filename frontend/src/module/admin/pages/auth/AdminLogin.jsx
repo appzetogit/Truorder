@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import { adminAPI } from "@/lib/api"
-import { setAuthData, isModuleAuthenticated, decodeToken } from "@/lib/utils/auth"
+import { setAuthData, isModuleAuthenticated } from "@/lib/utils/auth"
 import { loadBusinessSettings } from "@/lib/utils/businessSettings"
 import { Button } from "@/components/ui/button"
 import {
@@ -67,24 +67,15 @@ export default function AdminLogin() {
       const response = await adminAPI.login(email, password)
       const data = response?.data?.data || response?.data
 
-      if (!data.accessToken || !data.admin) {
+      if (data.accessToken && data.admin) {
+        // Store admin token and data
+        setAuthData("admin", data.accessToken, data.admin)
+
+        // Navigate to admin dashboard after successful login
+        navigate("/admin", { replace: true })
+      } else {
         throw new Error("Login failed. Please try again.")
       }
-
-      // Decode token to check if this is a hub manager
-      const decoded = decodeToken(data.accessToken)
-      if (decoded?.hubRole === "hub_manager") {
-        // Do NOT allow hub accounts on admin login
-        setError("This account is a Hub account. Please use the Hub login page.")
-        setIsLoading(false)
-        return
-      }
-
-      // Store admin token and data
-      setAuthData("admin", data.accessToken, data.admin)
-
-      // Navigate to admin dashboard after successful login
-      navigate("/admin", { replace: true })
     } catch (err) {
       const message =
         err?.response?.data?.message ||

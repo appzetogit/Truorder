@@ -1,7 +1,8 @@
 import RestaurantComplaint from '../models/RestaurantComplaint.js';
-import Restaurant from '../../restaurant/models/Restaurant.js';
+import Order from "../../order/models/Order.js";
 import { successResponse, errorResponse } from '../../../shared/utils/response.js';
 import { asyncHandler } from '../../../shared/middleware/asyncHandler.js';
+import { getRestaurantIdsFromOrders } from "../utils/hubZoneFilter.js";
 
 /**
  * Get all restaurant complaints
@@ -19,40 +20,9 @@ export const getAllComplaints = asyncHandler(async (req, res) => {
       toDate,
       search
     } = req.query;
+    const assignedZoneIds = req.zoneFilter?.zoneIds || [];
 
     const query = {};
-
-    // Hub Manager: restrict complaints to restaurants within assigned zones
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      const Zone = (await import('../models/Zone.js')).default;
-
-      const zonesForHub = await Zone.find({
-        _id: { $in: req.user.assignedZoneIds },
-        isActive: true,
-        'boundary.coordinates': { $exists: true },
-      }).select('boundary').lean();
-
-      const restaurantIdSet = new Set();
-      for (const zone of zonesForHub) {
-        if (!zone.boundary || !zone.boundary.coordinates) continue;
-        const inZoneRestaurants = await Restaurant.find({
-          'location.coordinates': { $geoWithin: { $geometry: zone.boundary } },
-        }).select('_id').lean();
-        inZoneRestaurants.forEach((r) => {
-          if (r?._id) restaurantIdSet.add(r._id.toString());
-        });
-      }
-
-      const zoneRestaurantIds = Array.from(restaurantIdSet);
-      if (zoneRestaurantIds.length === 0) {
-        return successResponse(res, 200, 'Complaints retrieved successfully', {
-          complaints: [],
-          stats: { total: 0, pending: 0, in_progress: 0, resolved: 0, rejected: 0 },
-          pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, pages: 0 },
-        });
-      }
-      query.restaurantId = { $in: zoneRestaurantIds };
-    }
 
     // Status filter
     if (status) {
@@ -96,6 +66,14 @@ export const getAllComplaints = asyncHandler(async (req, res) => {
       ];
     }
 
+    if (assignedZoneIds.length > 0) {
+      const restaurantIds = await getRestaurantIdsFromOrders(
+        Order,
+        assignedZoneIds,
+      );
+      query.restaurantId = { $in: restaurantIds };
+    }
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const complaints = await RestaurantComplaint.find(query)
@@ -110,10 +88,8 @@ export const getAllComplaints = asyncHandler(async (req, res) => {
 
     const total = await RestaurantComplaint.countDocuments(query);
 
-    // Get summary statistics (scoped to the same query filter)
-    const statsQuery = query.restaurantId ? { restaurantId: query.restaurantId } : {};
+    // Get summary statistics
     const stats = await RestaurantComplaint.aggregate([
-      ...(Object.keys(statsQuery).length ? [{ $match: statsQuery }] : []),
       {
         $group: {
           _id: '$status',

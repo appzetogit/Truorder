@@ -1,13 +1,10 @@
 // Sidebar menu structure with all items
-// allowedRoles: if set, only show for these roles. Omit = show for all admin roles except hub_manager gets limited view
-// hubManagerAllowed: if true, show for hub_manager. Hub manager sees only items with hubManagerAllowed: true
 export const sidebarMenuData = [
   {
     type: "link",
     label: "Dashboard",
     path: "/admin",
     icon: "LayoutDashboard",
-    hubManagerAllowed: true,
   },
   {
     type: "link",
@@ -17,27 +14,7 @@ export const sidebarMenuData = [
   },
   {
     type: "section",
-    label: "HUB MANAGEMENT",
-    allowedRoles: ["super_admin"],
-    items: [
-      {
-        type: "link",
-        label: "Hub List",
-        path: "/admin/hubs",
-        icon: "Building2",
-      },
-      {
-        type: "link",
-        label: "Create Hub",
-        path: "/admin/hubs/create",
-        icon: "Plus",
-      },
-    ],
-  },
-  {
-    type: "section",
     label: "FOOD MANAGEMENT",
-    hubManagerAllowed: true,
     items: [
       {
         type: "link",
@@ -65,13 +42,18 @@ export const sidebarMenuData = [
   {
     type: "section",
     label: "RESTAURANT MANAGEMENT",
-    hubManagerAllowed: true,
     items: [
       {
         type: "link",
         label: "Zone Setup",
         path: "/admin/zone-setup",
         icon: "MapPin",
+      },
+      {
+        type: "link",
+        label: "Hubs",
+        path: "/admin/hubs",
+        icon: "Building2",
       },
       {
         type: "expandable",
@@ -101,20 +83,7 @@ export const sidebarMenuData = [
 
   {
     type: "section",
-    label: "REFERRAL CODE MANAGEMENT",
-    items: [
-      {
-        type: "link",
-        label: "Referral Codes",
-        path: "/admin/referral-codes",
-        icon: "Link",
-      },
-    ],
-  },
-  {
-    type: "section",
     label: "ORDER MANAGEMENT",
-    hubManagerAllowed: true,
     items: [
       {
         type: "expandable",
@@ -181,7 +150,6 @@ export const sidebarMenuData = [
   {
     type: "section",
     label: "DELIVERYMAN MANAGEMENT",
-    hubManagerAllowed: true,
     items: [
       {
         type: "link",
@@ -266,7 +234,6 @@ export const sidebarMenuData = [
   {
     type: "section",
     label: "HELP & SUPPORT",
-    hubManagerAllowed: true,
     items: [
       {
         type: "link",
@@ -286,7 +253,6 @@ export const sidebarMenuData = [
   {
     type: "section",
     label: "REPORT MANAGEMENT",
-    hubManagerAllowed: true,
     items: [
       {
         type: "link",
@@ -324,7 +290,6 @@ export const sidebarMenuData = [
   {
     type: "section",
     label: "TRANSACTION MANAGEMENT",
-    hubManagerAllowed: true,
     items: [
       {
         type: "link",

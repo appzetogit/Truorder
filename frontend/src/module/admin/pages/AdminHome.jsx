@@ -1,5 +1,5 @@
-import { useEffect, useState, useMemo } from "react"
-import { useNavigate, useLocation } from "react-router-dom"
+import { useEffect, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Select,
@@ -27,19 +27,6 @@ import { Activity, ArrowUpRight, ShoppingBag, CreditCard, Truck, Receipt, Dollar
 import { adminAPI } from "@/lib/api"
 
 export default function AdminHome() {
-  const location = useLocation()
-  const isHub = location.pathname.startsWith("/hub")
-
-  const hubAssignedZoneIds = useMemo(() => {
-    if (!isHub) return null
-    try {
-      const hubUser = JSON.parse(localStorage.getItem("hub_user") || "{}")
-      return hubUser.assignedZoneIds || []
-    } catch {
-      return []
-    }
-  }, [isHub])
-
   const [selectedZone, setSelectedZone] = useState("all")
   const [selectedPeriod, setSelectedPeriod] = useState("overall")
   const [isLoading, setIsLoading] = useState(true)
@@ -52,23 +39,14 @@ export default function AdminHome() {
       try {
         const res = await adminAPI.getZones({ limit: 100, isActive: "true" })
         if (res?.data?.success && res?.data?.data?.zones) {
-          const allZones = res.data.data.zones
-          if (isHub && hubAssignedZoneIds?.length) {
-            const filtered = allZones.filter(z => hubAssignedZoneIds.includes(z._id))
-            setZones(filtered)
-            if (filtered.length === 1) {
-              setSelectedZone(filtered[0]._id)
-            }
-          } else {
-            setZones(allZones)
-          }
+          setZones(res.data.data.zones)
         }
       } catch (err) {
         console.error("Failed to fetch zones:", err)
       }
     }
     fetchZones()
-  }, [isHub, hubAssignedZoneIds])
+  }, [])
 
   // Fetch dashboard stats when filters change
   useEffect(() => {
@@ -178,31 +156,25 @@ export default function AdminHome() {
         <div className="flex flex-col gap-4 border-b border-neutral-200 bg-linear-to-br from-white via-neutral-50 to-neutral-100 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">{isHub ? "Hub Overview" : "Admin Overview"}</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Admin Overview</p>
               <h1 className="text-2xl font-semibold text-neutral-900">Operations Command</h1>
             </div>
 
           </div>
           <div className="flex flex-wrap gap-3">
-            {isHub && hubAssignedZoneIds?.length === 1 ? (
-              <div className="flex items-center min-w-[160px] px-3 py-2 border border-neutral-300 bg-white rounded-md text-sm text-neutral-900">
-                {zones[0]?.name || zones[0]?.zoneName || "Your Zone"}
-              </div>
-            ) : (
-              <Select value={selectedZone} onValueChange={setSelectedZone}>
-                <SelectTrigger className="min-w-[160px] border-neutral-300 bg-white text-neutral-900">
-                  <SelectValue placeholder={isHub ? "Your zones" : "All zones"} />
-                </SelectTrigger>
-                <SelectContent className="border-neutral-200 bg-white text-neutral-900">
-                  {!isHub && <SelectItem value="all">All zones</SelectItem>}
-                  {zones.map((z) => (
-                    <SelectItem key={z._id} value={z._id}>
-                      {z.name || z.zoneName || z.serviceLocation || z._id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
+            <Select value={selectedZone} onValueChange={setSelectedZone}>
+              <SelectTrigger className="min-w-[160px] border-neutral-300 bg-white text-neutral-900">
+                <SelectValue placeholder="All zones" />
+              </SelectTrigger>
+              <SelectContent className="border-neutral-200 bg-white text-neutral-900">
+                <SelectItem value="all">All zones</SelectItem>
+                {zones.map((z) => (
+                  <SelectItem key={z._id} value={z._id}>
+                    {z.name || z.zoneName || z.serviceLocation || z._id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
               <SelectTrigger className="min-w-[140px] border-neutral-300 bg-white text-neutral-900">
                 <SelectValue placeholder="Overall" />

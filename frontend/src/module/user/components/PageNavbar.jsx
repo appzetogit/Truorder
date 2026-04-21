@@ -1,42 +1,102 @@
 import { Link } from "react-router-dom"
-import { useState, useEffect } from "react"
-import { ChevronDown, ShoppingCart, Wallet } from "lucide-react"
+import { useState, useEffect, useRef } from "react"
+import { motion } from "framer-motion"
+import { Bell, ChevronDown, ShoppingCart, Wallet } from "lucide-react"
+import { TbLocation } from "react-icons/tb"
 import { Button } from "@/components/ui/button"
 import { useLocation } from "../hooks/useLocation"
 import { useCart } from "../context/CartContext"
 import { useLocationSelector } from "./UserLayout"
+import { useLocationIconTransition } from "@/context/LocationIconTransitionContext"
+import { useUserNotifications } from "../hooks/useUserNotifications"
 import { FaLocationDot } from "react-icons/fa6"
 import { getCachedSettings, loadBusinessSettings } from "@/lib/utils/businessSettings"
 import { DEFAULT_LOGO_PLACEHOLDER } from "@/lib/constants/defaultLogo"
+import { hasDetailedAddress, pickNavbarLocationLines } from "@/lib/userLocationDisplay"
 
 export default function PageNavbar({
   textColor = "white",
   zIndex = 20,
   showProfile = false,
+  showBrandLogo = true,
+  showLocation = true,
+  brandOnLeftMobile = false,
   onNavClick
 }) {
   const { location, loading, requestLocation } = useLocation()
   const { getCartCount } = useCart()
   const { openLocationSelector } = useLocationSelector()
+  const { unreadCount } = useUserNotifications()
   const cartCount = getCartCount()
   const [logoUrl, setLogoUrl] = useState(null)
   const [companyName, setCompanyName] = useState(null)
+  const [showLocationIcon, setShowLocationIcon] = useState(false)
+  const transitionCtx = useLocationIconTransition()
 
-  // Auto-trigger location fetch if we have placeholder values (only once on mount)
+  // Show location icon: after transition completes, or when splash ends without transition (no location)
   useEffect(() => {
-    if (location &&
-      !loading &&
-      requestLocation &&
-      (location.formattedAddress === "Select location" ||
-        location.city === "Current Location")) {
-      // Wait a bit to avoid multiple rapid calls, and only trigger once
-      const timeoutId = setTimeout(() => {
-        requestLocation().catch(() => {})
-      }, 2000) // Wait 2 seconds before triggering
-
-      return () => clearTimeout(timeoutId)
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768
+    if (!isMobile) {
+      setShowLocationIcon(true)
+      return
     }
-  }, []) // Only run once on mount
+    if (transitionCtx?.phase === "transitioning") {
+      setShowLocationIcon(false)
+      return
+    }
+    if (transitionCtx?.phase === "done") return
+
+    const onSplashEnded = () => {
+      if (transitionCtx?.phase === "idle" || transitionCtx?.phase === "splash") {
+        setShowLocationIcon(true)
+      }
+    }
+    window.addEventListener("splashEnded", onSplashEnded)
+    const fallback = setTimeout(() => {
+      if (transitionCtx?.phase === "idle" || transitionCtx?.phase === "splash") {
+        setShowLocationIcon(true)
+      }
+    }, 3000)
+    return () => {
+      window.removeEventListener("splashEnded", onSplashEnded)
+      clearTimeout(fallback)
+    }
+  }, [transitionCtx?.phase])
+
+  // Show icon when transition completes
+  useEffect(() => {
+    if (transitionCtx?.phase === "done") {
+      setShowLocationIcon(true)
+    }
+  }, [transitionCtx?.phase])
+
+  // One-shot: if hook left us with a placeholder (or no coords), request GPS + reverse geocode.
+  // Previous effect used [] and read stale `location` — it never ran when state updated.
+  const locationFetchAttemptedRef = useRef(false)
+  useEffect(() => {
+    if (loading) return
+    if (locationFetchAttemptedRef.current) return
+
+    // Do not treat `location === null` as a signal — useLocation may already be running getLocation.
+    const needsFetch =
+      !!location &&
+      !hasDetailedAddress(location) &&
+      (location.formattedAddress === "Select location" ||
+        location.city === "Select location" ||
+        (location.city === "Current Location" &&
+          (!(location.formattedAddress || "").trim() ||
+            (location.formattedAddress || "").trim() === "Select location")))
+
+    if (!needsFetch) return
+
+    locationFetchAttemptedRef.current = true
+    const timeoutId = setTimeout(() => {
+      requestLocation().catch(() => {
+        locationFetchAttemptedRef.current = false
+      })
+    }, 600)
+    return () => clearTimeout(timeoutId)
+  }, [location, loading, requestLocation])
 
   // Load business settings logo
   useEffect(() => {
@@ -785,11 +845,13 @@ export default function PageNavbar({
     }
   })()
 
-  const mainLocationName = locationDisplay.main
-  const subLocationName = locationDisplay.sub
+  const navLines = pickNavbarLocationLines(location)
+  const mainLocationName = navLines.main || "Select"
+  const subLocationName = navLines.sub || ""
 
-  const handleLocationClick = () => {
-    // Open location selector overlay
+  const handleLocationClick = (e) => {
+    e?.preventDefault?.()
+    e?.stopPropagation?.()
     openLocationSelector()
   }
 
@@ -807,51 +869,86 @@ export default function PageNavbar({
       <div className="flex items-center justify-between gap-2 sm:gap-3 md:gap-4 lg:gap-6 max-w-7xl mx-auto">
         {/* Left: Location - Hidden on desktop, shown on mobile */}
         <div className="flex md:hidden items-center gap-3 sm:gap-4 min-w-0">
-          {/* Location Button */}
-          <Button
-            variant="ghost"
-            onClick={handleLocationClick}
-            disabled={loading}
-            className="h-auto px-0 py-0 hover:bg-transparent transition-colors flex-shrink-0"
-          >
-            {loading ? (
-              <span className={`text-sm font-bold ${textColorClass} ${textColor === "white" ? "drop-shadow-lg" : ""}`}>
-                Loading...
-              </span>
-            ) : (
-              <div className="flex flex-col items-start min-w-0">
-                <div className="flex items-center gap-1.5">
-
-                  <span className={`text-md sm:text-lg font-bold ${textColorClass} whitespace-nowrap ${textColor === "white" ? "drop-shadow-lg" : ""}`}>
-                    {mainLocationName}
-                  </span>
-                  <ChevronDown className={`h-4 w-4 sm:h-5 sm:w-5 ${textColorClass} flex-shrink-0 ${textColor === "white" ? "drop-shadow-lg" : ""}`} strokeWidth={2.5} />
+          {showLocation ? (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleLocationClick}
+              disabled={loading}
+              className="h-auto px-0 py-0 hover:bg-transparent transition-colors flex-shrink-0"
+            >
+              {loading ? (
+                <span className={`text-sm font-bold ${textColorClass} ${textColor === "white" ? "drop-shadow-lg" : ""}`}>
+                  Loading...
+                </span>
+              ) : (
+                <div className="flex flex-col items-start min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    {(showLocationIcon || transitionCtx?.phase === "transitioning") && (
+                      <motion.div
+                        initial={showLocationIcon ? false : { opacity: 0 }}
+                        animate={{ opacity: showLocationIcon ? 1 : 0 }}
+                        transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+                        className="flex-shrink-0 w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center"
+                      >
+                        <span
+                          ref={transitionCtx?.registerNavbarIconRef}
+                          className="flex h-3.5 w-3.5 sm:h-4 sm:w-4 items-center justify-center"
+                        >
+                          <TbLocation className={`h-full w-full ${textColorClass} ${textColor === "white" ? "drop-shadow-lg" : ""}`} />
+                        </span>
+                      </motion.div>
+                    )}
+                    <span className={`text-md sm:text-lg font-bold ${textColorClass} whitespace-nowrap ${textColor === "white" ? "drop-shadow-lg" : ""}`}>
+                      {mainLocationName}
+                    </span>
+                    <ChevronDown className={`h-4 w-4 sm:h-5 sm:w-5 ${textColorClass} flex-shrink-0 ${textColor === "white" ? "drop-shadow-lg" : ""}`} strokeWidth={2.5} />
+                  </div>
+                  {subLocationName && (
+                    <span className={`text-xs font-bold ${textColorClass}${textColor === "white" ? "/90" : ""} whitespace-nowrap mt-0.5 ${textColor === "white" ? "drop-shadow-md" : ""}`}>
+                      {subLocationName}
+                    </span>
+                  )}
                 </div>
-                {/* Show sub location (city, state) in second line */}
-                {subLocationName && (
-                  <span className={`text-xs font-bold ${textColorClass}${textColor === "white" ? "/90" : ""} whitespace-nowrap mt-0.5 ${textColor === "white" ? "drop-shadow-md" : ""}`}>
-                    {subLocationName}
-                  </span>
-                )}
-              </div>
-            )}
-          </Button>
+              )}
+            </Button>
+          ) : brandOnLeftMobile && showBrandLogo ? (
+            <Link to="/" className="flex items-center justify-start pl-5">
+              {logoUrl && logoUrl !== DEFAULT_LOGO_PLACEHOLDER && (
+                <img
+                  src={logoUrl}
+                  alt="Company Logo"
+                  className="h-12 w-20 object-contain"
+                  crossOrigin="anonymous"
+                  onError={(e) => {
+                    e.target.style.display = "none"
+                  }}
+                />
+              )}
+            </Link>
+          ) : (
+            <div className="w-16 sm:w-20" aria-hidden />
+          )}
         </div>
 
-        {/* Center: Company Logo or Name - Show on all screen sizes; show nothing if no logo */}
-        <Link to="/" className="flex items-center justify-center">
-          {logoUrl && logoUrl !== DEFAULT_LOGO_PLACEHOLDER && (
-            <img
-              src={logoUrl}
-              alt="Company Logo"
-              className="h-12 w-20 mr-3 sm:h-10 sm:w-10 md:h-12 md:w-12 object-contain"
-              crossOrigin="anonymous"
-              onError={(e) => {
-                e.target.style.display = "none"
-              }}
-            />
-          )}
-        </Link>
+        {/* Center: Company Logo */}
+        {showBrandLogo && !brandOnLeftMobile ? (
+          <Link to="/" className="flex items-center justify-center">
+            {logoUrl && logoUrl !== DEFAULT_LOGO_PLACEHOLDER && (
+              <img
+                src={logoUrl}
+                alt="Company Logo"
+                className="h-12 w-20 mr-3 sm:h-10 sm:w-10 md:h-12 md:w-12 object-contain"
+                crossOrigin="anonymous"
+                onError={(e) => {
+                  e.target.style.display = "none"
+                }}
+              />
+            )}
+          </Link>
+        ) : (
+          <div className="w-16 sm:w-10 md:w-12" aria-hidden />
+        )}
 
         {/* Right: Actions - Hidden on desktop, shown on mobile */}
         <div className="flex md:hidden items-center gap-2 sm:gap-3 flex-shrink-0">
@@ -866,6 +963,25 @@ export default function PageNavbar({
               <div className={`h-full w-full rounded-full bg-white/20 flex items-center justify-center ring-2 ${ringColor}`}>
                 <Wallet className="h-4 w-4 sm:h-5 sm:w-5 text-gray-800" strokeWidth={2} />
               </div>
+            </Button>
+          </Link>
+
+          {/* Notification Icon */}
+          <Link to="/user/notifications">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative h-8 w-8 sm:h-9 sm:w-9 rounded-full p-0 hover:opacity-80 transition-opacity"
+              title="Notifications"
+            >
+              <div className={`h-full w-full rounded-full bg-white/20 flex items-center justify-center ring-2 ${ringColor}`}>
+                <Bell className="h-4 w-4 sm:h-5 sm:w-5 text-gray-800" strokeWidth={2} />
+              </div>
+              {unreadCount > 0 && (
+                <span className={`absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 bg-red-500 rounded-full flex items-center justify-center ring-2 ${textColor === "white" ? "ring-white/50" : "ring-gray-800/30"}`}>
+                  <span className="text-[9px] font-bold text-white">{unreadCount > 99 ? "99+" : unreadCount}</span>
+                </span>
+              )}
             </Button>
           </Link>
 

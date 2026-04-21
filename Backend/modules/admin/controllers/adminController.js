@@ -11,6 +11,10 @@ import {
 } from "../../../shared/utils/response.js";
 import { asyncHandler } from "../../../shared/middleware/asyncHandler.js";
 import { normalizePhoneNumber } from "../../../shared/utils/phoneUtils.js";
+import {
+  getOrderZoneFilter,
+  getRestaurantIdsFromOrders,
+} from "../utils/hubZoneFilter.js";
 import winston from "winston";
 import mongoose from "mongoose";
 import { uploadToCloudinary } from "../../../shared/utils/cloudinaryService.js";
@@ -26,6 +30,63 @@ const logger = winston.createLogger({
   ],
 });
 
+const payableOrderVisibilityQuery = {
+  $or: [
+    { "payment.method": { $in: ["cash", "cod"] } },
+    { "payment.status": { $in: ["completed", "refunded"] } },
+  ],
+};
+
+const extractFoodsFromMenus = (menus = []) => {
+  const foods = [];
+  const countedFoodIds = new Set();
+
+  const pushItem = (menu, section, subsection, item) => {
+    if (!item || !item.id || !item.name) return;
+    if (item.approvalStatus === "rejected") return;
+    if (countedFoodIds.has(item.id)) return;
+    countedFoodIds.add(item.id);
+
+    foods.push({
+      id: String(item.id),
+      name: item.name || "Unnamed Item",
+      image: item.image || item.images?.[0] || "",
+      description: item.description || "",
+      price: Number(item.price || 0),
+      foodType: item.foodType || "Non-Veg",
+      isAvailable: item.isAvailable !== false,
+      approvalStatus: item.approvalStatus || "pending",
+      restaurantId:
+        menu?.restaurant?.restaurantId || menu?.restaurant?._id?.toString() || "",
+      restaurantName: menu?.restaurant?.name || "Unknown Restaurant",
+      sectionName: section?.name || "Unknown Section",
+      subsectionName: subsection?.name || "",
+      menuId: menu?._id?.toString?.() || "",
+    });
+  };
+
+  menus.forEach((menu) => {
+    if (!menu?.sections || !Array.isArray(menu.sections)) return;
+
+    menu.sections.forEach((section) => {
+      if (Array.isArray(section?.items)) {
+        section.items.forEach((item) => pushItem(menu, section, null, item));
+      }
+
+      if (Array.isArray(section?.subsections)) {
+        section.subsections.forEach((subsection) => {
+          if (!Array.isArray(subsection?.items)) return;
+          subsection.items.forEach((item) =>
+            pushItem(menu, section, subsection, item),
+          );
+        });
+      }
+    });
+  });
+
+  return foods;
+};
+
 /**
  * Get Admin Dashboard Statistics
  * GET /api/admin/dashboard/stats
@@ -34,15 +95,14 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
   try {
     const { period = "overall", zone } = req.query;
     const now = new Date();
+    const assignedZoneIds = req.zoneFilter?.zoneIds || [];
 
-    // Hub Manager: enforce zone filter from assigned zones
+    // Resolve zone to zoneId for filtering (when zone is not "all")
     let zoneIdFilter = null;
-    let zoneMatch = {};
+    let zoneMatch = {}; // Applied to order queries when zone filter is active
     const Zone = (await import("../models/Zone.js")).default;
 
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      zoneMatch["assignmentInfo.zoneId"] = { $in: req.user.assignedZoneIds };
-    } else if (zone && zone !== "all") {
+    if (zone && zone !== "all") {
       if (mongoose.Types.ObjectId.isValid(zone) && String(new mongoose.Types.ObjectId(zone)) === zone) {
         zoneIdFilter = zone;
       } else {
@@ -71,6 +131,8 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
           zoneMatch["assignmentInfo.zoneId"] = zoneIdFilter;
         }
       }
+    } else if (assignedZoneIds.length > 0) {
+      Object.assign(zoneMatch, getOrderZoneFilter(assignedZoneIds));
     }
     const last30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
@@ -204,7 +266,7 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
     );
 
     // Get order statistics (with period and zone filter)
-    const orderStatsMatch = {};
+    const orderStatsMatch = { ...payableOrderVisibilityQuery };
     if (Object.keys(dateFilter).length > 0) {
       orderStatsMatch.createdAt = dateFilter;
     }
@@ -227,7 +289,7 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
     });
 
     // Get total orders processed (with period and zone filter)
-    const totalOrdersMatch = { status: "delivered" };
+    const totalOrdersMatch = { status: "delivered", ...payableOrderVisibilityQuery };
     if (Object.keys(dateFilter).length > 0) {
       totalOrdersMatch.deliveredAt = dateFilter;
     }
@@ -297,81 +359,35 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
       $or: [{ isActive: false }, { deliveryStatus: "pending" }],
     });
 
-    // Total foods (Menu items) - Count all individual menu items from active menus
-    // Count ALL items (including disabled sections, unavailable items, pending/approved, excluding only rejected)
+    // Total foods (Menu items) - keep same counting source as Admin Foods list.
     const Menu = (await import("../../restaurant/models/Menu.js")).default;
-    // Get all active menus and count items in sections and subsections
     const activeMenus = await Menu.find({ isActive: true })
-      .select("sections")
+      .populate("restaurant", "name restaurantId")
+      .select("restaurant sections")
       .lean();
-    let totalFoods = 0;
-    activeMenus.forEach((menu) => {
-      if (menu.sections && Array.isArray(menu.sections)) {
-        menu.sections.forEach((section) => {
-          // Count items from ALL sections (enabled and disabled)
-
-          // Count items directly in section (all items, excluding only rejected)
-          if (section.items && Array.isArray(section.items)) {
-            totalFoods += section.items.filter((item) => {
-              // Must have required fields
-              if (!item || !item.id || !item.name) return false;
-              // Exclude only rejected items (include all others: pending, approved, available, unavailable)
-              if (item.approvalStatus === "rejected") return false;
-              // Count all other items regardless of availability or approval status
-              return true;
-            }).length;
-          }
-          // Count items in subsections (all items, excluding only rejected)
-          if (section.subsections && Array.isArray(section.subsections)) {
-            section.subsections.forEach((subsection) => {
-              if (subsection.items && Array.isArray(subsection.items)) {
-                totalFoods += subsection.items.filter((item) => {
-                  // Must have required fields
-                  if (!item || !item.id || !item.name) return false;
-                  // Exclude only rejected items (include all others: pending, approved, available, unavailable)
-                  if (item.approvalStatus === "rejected") return false;
-                  // Count all other items regardless of availability or approval status
-                  return true;
-                }).length;
-              }
-            });
-          }
-        });
-      }
-    });
+    const foods = extractFoodsFromMenus(activeMenus);
+    const totalFoods = foods.length;
 
     // Total addons - Count all addons from active menus
     // Count ALL addons (including unavailable, pending/approved, excluding only rejected)
     let totalAddons = 0;
+    const countedAddonIds = new Set();
     const menusWithAddons = await Menu.find({ isActive: true })
       .select("addons")
       .lean();
     menusWithAddons.forEach((menu) => {
-      // Only process if menu has addons array and it's not empty
-      if (
-        !menu.addons ||
-        !Array.isArray(menu.addons) ||
-        menu.addons.length === 0
-      ) {
+      if (!menu.addons || !Array.isArray(menu.addons) || menu.addons.length === 0) {
         return;
       }
-
-      totalAddons += menu.addons.filter((addon) => {
-        // Only count if addon exists and has required fields (id and name are mandatory)
-        if (!addon || typeof addon !== "object") return false;
-        if (!addon.id || typeof addon.id !== "string" || addon.id.trim() === "")
-          return false;
-        if (
-          !addon.name ||
-          typeof addon.name !== "string" ||
-          addon.name.trim() === ""
-        )
-          return false;
-        // Exclude only rejected addons (include all others: pending, approved, available, unavailable)
-        if (addon.approvalStatus === "rejected") return false;
-        // Count all other addons regardless of availability or approval status
-        return true;
-      }).length;
+      menu.addons.forEach((addon) => {
+        if (!addon || typeof addon !== "object") return;
+        if (!addon.id || typeof addon.id !== "string" || !addon.id.trim()) return;
+        if (!addon.name || typeof addon.name !== "string" || !addon.name.trim()) return;
+        if (addon.approvalStatus === "rejected") return;
+        if (countedAddonIds.has(addon.id)) return;
+        countedAddonIds.add(addon.id);
+        totalAddons += 1;
+      });
     });
 
     // Total customers (users with role 'user' or no role specified)
@@ -394,6 +410,7 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
     const last24Hours = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const recentOrders = await Order.countDocuments({
       createdAt: { $gte: last24Hours },
+      ...payableOrderVisibilityQuery,
     });
     const recentRestaurants = await Restaurant.countDocuments({
       createdAt: { $gte: last24Hours },
@@ -434,6 +451,7 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
       const monthOrderMatch = {
         status: "delivered",
         deliveredAt: { $gte: monthStart, $lte: monthEnd },
+        ...payableOrderVisibilityQuery,
       };
       if (Object.keys(zoneMatch).length > 0) {
         Object.assign(monthOrderMatch, zoneMatch);
@@ -930,21 +948,16 @@ export const getUsers = asyncHandler(async (req, res) => {
       joiningDate,
     } = req.query;
     const User = (await import("../../auth/models/User.js")).default;
+    const assignedZoneIds = req.zoneFilter?.zoneIds || [];
 
     // Build query
     const query = { role: "user" }; // Only get users, not restaurants/delivery/admins
 
-    // Hub Manager: restrict to users who placed orders in assigned zones
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      const zoneUserIds = await Order.distinct("userId", {
-        "assignmentInfo.zoneId": { $in: req.user.assignedZoneIds },
-      });
-      if (zoneUserIds.length === 0) {
-        return successResponse(res, 200, "Users retrieved successfully", {
-          users: [],
-          total: 0,
-        });
-      }
+    if (assignedZoneIds.length > 0) {
+      const zoneUserIds = await Order.distinct(
+        "userId",
+        getOrderZoneFilter(assignedZoneIds),
+      );
       query._id = { $in: zoneUserIds };
     }
 
@@ -1209,60 +1222,10 @@ export const updateUserStatus = asyncHandler(async (req, res) => {
 export const getRestaurants = asyncHandler(async (req, res) => {
   try {
     const { page = 1, limit = 50, search, status, cuisine, zone } = req.query;
+    const assignedZoneIds = req.zoneFilter?.zoneIds || [];
 
     // Build query
     const query = {};
-
-    // Hub Manager: restrict restaurants to those whose location lies inside any assigned zone
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      const Zone = (await import("../models/Zone.js")).default;
-
-      const zonesForHub = await Zone.find({
-        _id: { $in: req.user.assignedZoneIds },
-        isActive: true,
-        "boundary.coordinates": { $exists: true },
-      })
-        .select("boundary")
-        .lean();
-
-      const restaurantIdSet = new Set();
-
-      for (const zone of zonesForHub) {
-        if (!zone.boundary || !zone.boundary.coordinates) continue;
-
-        const inZoneRestaurants = await Restaurant.find({
-          "location.coordinates": {
-            $geoWithin: {
-              $geometry: zone.boundary,
-            },
-          },
-        })
-          .select("_id")
-          .lean();
-
-        inZoneRestaurants.forEach((r) => {
-          if (r?._id) {
-            restaurantIdSet.add(r._id.toString());
-          }
-        });
-      }
-
-      const restaurantIds = Array.from(restaurantIdSet);
-
-      if (restaurantIds.length === 0) {
-        return successResponse(res, 200, "Restaurants retrieved successfully", {
-          restaurants: [],
-          pagination: {
-            page: parseInt(page),
-            limit: parseInt(limit),
-            total: 0,
-            pages: 0,
-          },
-        });
-      }
-
-      query._id = { $in: restaurantIds };
-    }
 
     // Status filter - Default to active only (approved restaurants)
     // Only show inactive if explicitly requested via status filter
@@ -1295,6 +1258,26 @@ export const getRestaurants = asyncHandler(async (req, res) => {
       query.$or = [
         { "location.area": { $regex: zone, $options: "i" } },
         { "location.city": { $regex: zone, $options: "i" } },
+      ];
+    }
+
+    if (assignedZoneIds.length > 0) {
+      const restaurantIds = await getRestaurantIdsFromOrders(
+        Order,
+        assignedZoneIds,
+      );
+      const validObjectIds = restaurantIds.filter((id) =>
+        mongoose.Types.ObjectId.isValid(id),
+      );
+
+      query.$and = [
+        ...(query.$and || []),
+        {
+          $or: [
+            { _id: { $in: validObjectIds } },
+            { restaurantId: { $in: restaurantIds } },
+          ],
+        },
       ];
     }
 
@@ -2293,6 +2276,55 @@ export const updateRestaurant = asyncHandler(async (req, res) => {
  * GET /api/admin/offers
  * Query params: page, limit, search, status, restaurantId
  */
+const UNIVERSAL_ITEM_ID = "__ALL__";
+
+const normalizeOfferDiscount = (discountType, discountValue, originalPrice) => {
+  const numericDiscountValue = Number(discountValue);
+  const numericOriginalPrice = Number(originalPrice || 0);
+
+  if (!Number.isFinite(numericDiscountValue) || numericDiscountValue < 0) {
+    throw new Error("discountValue must be a valid non-negative number");
+  }
+
+  if (discountType === "percentage") {
+    if (numericDiscountValue > 100) {
+      throw new Error(
+        "For percentage discount, discountValue must be between 0 and 100",
+      );
+    }
+    const discountedPrice = Math.max(
+      0,
+      numericOriginalPrice * (1 - numericDiscountValue / 100),
+    );
+    return {
+      originalPrice: Number(numericOriginalPrice.toFixed(2)),
+      discountPercentage: Number(numericDiscountValue.toFixed(2)),
+      discountedPrice: Number(discountedPrice.toFixed(2)),
+    };
+  }
+
+  const discountedPrice = Number(numericDiscountValue.toFixed(2));
+  if (discountedPrice > numericOriginalPrice) {
+    throw new Error(
+      "For flat-price discount, discounted price cannot exceed originalPrice",
+    );
+  }
+  const discountPercentage =
+    numericOriginalPrice > 0
+      ? Number(
+          (
+            ((numericOriginalPrice - discountedPrice) / numericOriginalPrice) *
+            100
+          ).toFixed(2),
+        )
+      : 0;
+  return {
+    originalPrice: Number(numericOriginalPrice.toFixed(2)),
+    discountPercentage,
+    discountedPrice,
+  };
+};
+
 export const getAllOffers = asyncHandler(async (req, res) => {
   try {
     const { page = 1, limit = 50, search, status, restaurantId } = req.query;
@@ -2311,27 +2343,44 @@ export const getAllOffers = asyncHandler(async (req, res) => {
     // Calculate pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Fetch offers with restaurant details
+    // Fetch offers
     const offers = await Offer.find(query)
-      .populate("restaurant", "name restaurantId")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
+
+    const restaurantObjectIds = offers
+      .map((offer) => offer.restaurant)
+      .filter(Boolean);
+
+    const restaurants = restaurantObjectIds.length
+      ? await Restaurant.find({ _id: { $in: restaurantObjectIds } })
+          .select("name restaurantId")
+          .lean()
+      : [];
+    const restaurantMap = new Map(
+      restaurants.map((restaurant) => [String(restaurant._id), restaurant]),
+    );
 
     // Get total count
     const total = await Offer.countDocuments(query);
 
     // Flatten offers to show each item separately
     const offerItems = [];
-    offers.forEach((offer, offerIndex) => {
+    offers.forEach((offer) => {
+      const hasRestaurantScope = Boolean(offer.restaurant);
+      const restaurantMeta = hasRestaurantScope
+        ? restaurantMap.get(String(offer.restaurant))
+        : null;
+
       if (offer.items && offer.items.length > 0) {
         offer.items.forEach((item, itemIndex) => {
           // Apply search filter if provided
           if (search) {
             const searchLower = search.toLowerCase();
             const matchesSearch =
-              offer.restaurant?.name?.toLowerCase().includes(searchLower) ||
+              restaurantMeta?.name?.toLowerCase().includes(searchLower) ||
               item.itemName?.toLowerCase().includes(searchLower) ||
               item.couponCode?.toLowerCase().includes(searchLower);
 
@@ -2343,21 +2392,30 @@ export const getAllOffers = asyncHandler(async (req, res) => {
           offerItems.push({
             sl: skip + offerItems.length + 1,
             offerId: offer._id.toString(),
-            restaurantName: offer.restaurant?.name || "Unknown Restaurant",
+            restaurantName: hasRestaurantScope
+              ? restaurantMeta?.name || "Unknown Restaurant"
+              : "All Restaurants (Universal)",
             restaurantId:
-              offer.restaurant?.restaurantId ||
-              offer.restaurant?._id?.toString() ||
-              "N/A",
+              restaurantMeta?.restaurantId ||
+              (hasRestaurantScope ? String(offer.restaurant) : null) ||
+              "ALL",
+            restaurantObjectId: hasRestaurantScope
+              ? String(offer.restaurant)
+              : null,
             dishName: item.itemName || "Unknown Dish",
             dishId: item.itemId || "N/A",
+            itemIndex,
             couponCode: item.couponCode || "N/A",
             discountType: offer.discountType || "percentage",
             discountPercentage: item.discountPercentage || 0,
             originalPrice: item.originalPrice || 0,
             discountedPrice: item.discountedPrice || 0,
+            minOrderValue: offer.minOrderValue || 0,
             status: offer.status || "active",
             startDate: offer.startDate || null,
             endDate: offer.endDate || null,
+            scopeType: hasRestaurantScope ? "restaurant" : "universal",
+            appliesToAllDishes: String(item.itemId) === UNIVERSAL_ITEM_ID,
             createdAt: offer.createdAt || new Date(),
           });
         });
@@ -2389,6 +2447,392 @@ export const getAllOffers = asyncHandler(async (req, res) => {
       error: error.stack,
     });
     return errorResponse(res, 500, "Failed to fetch offers");
+  }
+});
+
+/**
+ * Get all foods for Admin Foods list
+ * GET /api/admin/foods
+ */
+export const getAllFoods = asyncHandler(async (req, res) => {
+  try {
+    const Menu = (await import("../../restaurant/models/Menu.js")).default;
+    const menus = await Menu.find({ isActive: true })
+      .populate("restaurant", "name restaurantId")
+      .select("restaurant sections")
+      .lean();
+
+    const foods = extractFoodsFromMenus(menus);
+
+    return successResponse(res, 200, "Foods retrieved successfully", {
+      foods,
+      total: foods.length,
+    });
+  } catch (error) {
+    logger.error(`Error fetching foods: ${error.message}`);
+    return errorResponse(res, 500, "Failed to fetch foods");
+  }
+});
+
+/**
+ * Create Restaurant Offer (Admin)
+ * POST /api/admin/offers
+ */
+export const createAdminOffer = asyncHandler(async (req, res) => {
+  try {
+    const {
+      restaurantId,
+      applyToAllDishes = true,
+      dishId,
+      dishName,
+      originalPrice,
+      discountType = "percentage",
+      discountValue,
+      couponCode,
+      minOrderValue = 0,
+      startDate,
+      endDate,
+      status = "active",
+    } = req.body;
+
+    const isUniversalCoupon = Boolean(applyToAllDishes);
+    if (!isUniversalCoupon) {
+      return errorResponse(
+        res,
+        400,
+        "Admin can create only universal coupons",
+      );
+    }
+
+    if (discountValue === undefined || !couponCode) {
+      return errorResponse(
+        res,
+        400,
+        "discountValue and couponCode are required",
+      );
+    }
+    if (!isUniversalCoupon && !restaurantId) {
+      return errorResponse(
+        res,
+        400,
+        "restaurantId is required when applyToAllDishes is false",
+      );
+    }
+
+    if (!["percentage", "flat-price"].includes(discountType)) {
+      return errorResponse(res, 400, "discountType must be percentage or flat-price");
+    }
+
+    let restaurant = null;
+    if (restaurantId) {
+      if (mongoose.Types.ObjectId.isValid(restaurantId)) {
+        restaurant = await Restaurant.findById(restaurantId);
+      }
+      if (!restaurant) {
+        restaurant = await Restaurant.findOne({ restaurantId: String(restaurantId) });
+      }
+      if (!restaurant) {
+        return errorResponse(res, 404, "Restaurant not found");
+      }
+    }
+
+    const numericMinOrderValue = Number(minOrderValue);
+    if (!Number.isFinite(numericMinOrderValue) || numericMinOrderValue < 0) {
+      return errorResponse(res, 400, "minOrderValue must be a valid non-negative number");
+    }
+
+    if (!isUniversalCoupon && (!dishId || !dishName || originalPrice === undefined)) {
+      return errorResponse(
+        res,
+        400,
+        "dishId, dishName, and originalPrice are required when applyToAllDishes is false",
+      );
+    }
+
+    const numericOriginalPrice = isUniversalCoupon
+      ? Number(originalPrice || 0)
+      : Number(originalPrice);
+    const numericDiscountValue = Number(discountValue);
+    if (!isUniversalCoupon && (!Number.isFinite(numericOriginalPrice) || numericOriginalPrice <= 0)) {
+      return errorResponse(res, 400, "originalPrice must be greater than 0");
+    }
+    if (!Number.isFinite(numericDiscountValue) || numericDiscountValue < 0) {
+      return errorResponse(res, 400, "discountValue must be a valid non-negative number");
+    }
+
+    let discountPercentage = 0;
+    let discountedPrice = numericOriginalPrice;
+    let itemOriginalPrice = numericOriginalPrice;
+    let itemId = String(dishId || "");
+    let itemName = String(dishName || "").trim();
+
+    if (discountType === "percentage") {
+      if (numericDiscountValue > 100) {
+        return errorResponse(res, 400, "For percentage discount, discountValue must be between 0 and 100");
+      }
+      discountPercentage = numericDiscountValue;
+      if (isUniversalCoupon) {
+        // For universal percentage coupons, we apply % on cart subtotal at checkout time.
+        itemOriginalPrice = 100;
+        discountedPrice = Number((100 * (1 - discountPercentage / 100)).toFixed(2));
+      } else {
+        discountedPrice = Math.max(0, numericOriginalPrice * (1 - discountPercentage / 100));
+      }
+    } else {
+      if (isUniversalCoupon) {
+        // For universal flat-price coupons, treat discountValue as fixed amount OFF on subtotal.
+        itemOriginalPrice = numericDiscountValue;
+        discountedPrice = 0;
+        discountPercentage = 0;
+      } else {
+        discountedPrice = numericDiscountValue;
+        if (discountedPrice > numericOriginalPrice) {
+          return errorResponse(res, 400, "For flat-price discount, discounted price cannot exceed originalPrice");
+        }
+        discountPercentage = numericOriginalPrice > 0
+          ? Number((((numericOriginalPrice - discountedPrice) / numericOriginalPrice) * 100).toFixed(2))
+          : 0;
+      }
+    }
+
+    if (isUniversalCoupon) {
+      itemId = "__ALL__";
+      itemName = "All Dishes";
+    }
+
+    const validStatuses = ["draft", "active", "paused", "expired", "cancelled"];
+    if (!validStatuses.includes(status)) {
+      return errorResponse(res, 400, "Invalid status value");
+    }
+
+    const normalizedCouponCode = String(couponCode).trim().toUpperCase();
+    if (!normalizedCouponCode) {
+      return errorResponse(res, 400, "couponCode is required");
+    }
+
+    const offer = await Offer.create({
+      restaurant: restaurant?._id || null,
+      goalId: "increase-value",
+      discountType,
+      status,
+      startDate: startDate ? new Date(startDate) : new Date(),
+      endDate: endDate ? new Date(endDate) : null,
+      minOrderValue: numericMinOrderValue,
+      items: [
+        {
+          itemId,
+          itemName,
+          originalPrice: Number(itemOriginalPrice.toFixed(2)),
+          discountPercentage,
+          discountedPrice: Number(discountedPrice.toFixed(2)),
+          couponCode: normalizedCouponCode,
+        },
+      ],
+    });
+
+    return successResponse(res, 201, "Offer created successfully", { offer });
+  } catch (error) {
+    logger.error(`Error creating admin offer: ${error.message}`, {
+      error: error.stack,
+    });
+    return errorResponse(res, 500, "Failed to create offer");
+  }
+});
+
+/**
+ * Update an offer row (admin)
+ * PUT /api/admin/offers/:id
+ */
+export const updateAdminOffer = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      itemId,
+      itemIndex,
+      couponCode,
+      discountType,
+      discountValue,
+      minOrderValue,
+      startDate,
+      endDate,
+      status,
+    } = req.body;
+
+    const offer = await Offer.findById(id);
+    if (!offer) {
+      return errorResponse(res, 404, "Offer not found");
+    }
+
+    const validStatuses = ["draft", "active", "paused", "expired", "cancelled"];
+    if (status !== undefined) {
+      if (!validStatuses.includes(status)) {
+        return errorResponse(res, 400, "Invalid status value");
+      }
+      offer.status = status;
+    }
+
+    if (startDate !== undefined) {
+      offer.startDate = startDate ? new Date(startDate) : null;
+    }
+    if (endDate !== undefined) {
+      offer.endDate = endDate ? new Date(endDate) : null;
+    }
+    if (minOrderValue !== undefined) {
+      const numericMinOrderValue = Number(minOrderValue);
+      if (!Number.isFinite(numericMinOrderValue) || numericMinOrderValue < 0) {
+        return errorResponse(
+          res,
+          400,
+          "minOrderValue must be a valid non-negative number",
+        );
+      }
+      offer.minOrderValue = numericMinOrderValue;
+    }
+
+    const resolvedItemIndex =
+      Number.isInteger(itemIndex) && itemIndex >= 0
+        ? itemIndex
+        : offer.items.findIndex((it) => String(it.itemId) === String(itemId));
+
+    if (resolvedItemIndex < 0 || resolvedItemIndex >= offer.items.length) {
+      return errorResponse(res, 404, "Offer item not found");
+    }
+
+    const currentItem = offer.items[resolvedItemIndex];
+    const nextDiscountType = discountType || offer.discountType;
+    if (!["percentage", "flat-price"].includes(nextDiscountType)) {
+      return errorResponse(
+        res,
+        400,
+        "discountType must be percentage or flat-price",
+      );
+    }
+
+    if (couponCode !== undefined) {
+      const normalizedCouponCode = String(couponCode || "").trim().toUpperCase();
+      if (!normalizedCouponCode) {
+        return errorResponse(res, 400, "couponCode cannot be empty");
+      }
+      currentItem.couponCode = normalizedCouponCode;
+    }
+
+    if (discountType !== undefined) {
+      offer.discountType = nextDiscountType;
+    }
+
+    if (discountValue !== undefined || discountType !== undefined) {
+      const isUniversalDishCoupon =
+        String(currentItem.itemId) === UNIVERSAL_ITEM_ID;
+      if (isUniversalDishCoupon) {
+        if (!Number.isFinite(Number(discountValue))) {
+          return errorResponse(
+            res,
+            400,
+            "discountValue is required for universal offer update",
+          );
+        }
+
+        if (nextDiscountType === "percentage") {
+          const pct = Number(discountValue);
+          if (pct < 0 || pct > 100) {
+            return errorResponse(
+              res,
+              400,
+              "For percentage discount, discountValue must be between 0 and 100",
+            );
+          }
+          currentItem.originalPrice = 100;
+          currentItem.discountPercentage = Number(pct.toFixed(2));
+          currentItem.discountedPrice = Number((100 - pct).toFixed(2));
+        } else {
+          const flatOff = Number(discountValue);
+          if (flatOff < 0) {
+            return errorResponse(
+              res,
+              400,
+              "discountValue must be a valid non-negative number",
+            );
+          }
+          currentItem.originalPrice = Number(flatOff.toFixed(2));
+          currentItem.discountPercentage = 0;
+          currentItem.discountedPrice = 0;
+        }
+      } else {
+        const currentOriginalPrice = Number(currentItem.originalPrice || 0);
+        const targetDiscountValue =
+          discountValue !== undefined
+            ? Number(discountValue)
+            : nextDiscountType === "percentage"
+              ? Number(currentItem.discountPercentage || 0)
+              : Number(currentItem.discountedPrice || 0);
+
+        if (!Number.isFinite(targetDiscountValue) || targetDiscountValue < 0) {
+          return errorResponse(
+            res,
+            400,
+            "discountValue must be a valid non-negative number",
+          );
+        }
+
+        const normalized = normalizeOfferDiscount(
+          nextDiscountType,
+          targetDiscountValue,
+          currentOriginalPrice,
+        );
+        currentItem.originalPrice = normalized.originalPrice;
+        currentItem.discountPercentage = normalized.discountPercentage;
+        currentItem.discountedPrice = normalized.discountedPrice;
+      }
+    }
+
+    await offer.save();
+    return successResponse(res, 200, "Offer updated successfully", { offer });
+  } catch (error) {
+    logger.error(`Error updating admin offer: ${error.message}`, {
+      error: error.stack,
+    });
+    return errorResponse(res, 500, "Failed to update offer");
+  }
+});
+
+/**
+ * Delete an offer row (admin)
+ * DELETE /api/admin/offers/:id
+ * Query params: itemId, itemIndex
+ */
+export const deleteAdminOffer = asyncHandler(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { itemId, itemIndex } = req.query;
+
+    const offer = await Offer.findById(id);
+    if (!offer) {
+      return errorResponse(res, 404, "Offer not found");
+    }
+
+    const resolvedItemIndex =
+      itemIndex !== undefined
+        ? Number(itemIndex)
+        : offer.items.findIndex((it) => String(it.itemId) === String(itemId));
+
+    const hasValidItemIndex =
+      Number.isInteger(resolvedItemIndex) &&
+      resolvedItemIndex >= 0 &&
+      resolvedItemIndex < offer.items.length;
+
+    if (hasValidItemIndex && offer.items.length > 1) {
+      offer.items.splice(resolvedItemIndex, 1);
+      await offer.save();
+      return successResponse(res, 200, "Offer item deleted successfully");
+    }
+
+    await Offer.findByIdAndDelete(id);
+    return successResponse(res, 200, "Offer deleted successfully");
+  } catch (error) {
+    logger.error(`Error deleting admin offer: ${error.message}`, {
+      error: error.stack,
+    });
+    return errorResponse(res, 500, "Failed to delete offer");
   }
 });
 

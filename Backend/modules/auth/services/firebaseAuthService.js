@@ -1,8 +1,5 @@
 import admin from "firebase-admin";
 import winston from "winston";
-import fs from "fs";
-import path from "path";
-import mongoose from "mongoose";
 import { getFirebaseCredentials } from "../../../shared/utils/envService.js";
 
 const logger = winston.createLogger({
@@ -28,93 +25,14 @@ class FirebaseAuthService {
     if (this.initialized) return;
 
     try {
-      if (admin.apps.length) {
-        this.initialized = true;
-        logger.info("Firebase Admin already initialized, reusing existing app");
-        return;
-      }
-
-      if (mongoose.connection.readyState !== 1) {
-        await new Promise((resolve) => {
-          let settled = false;
-
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            mongoose.connection.off("connected", finish);
-            mongoose.connection.off("error", finish);
-            mongoose.connection.off("disconnected", finish);
-            resolve();
-          };
-
-          mongoose.connection.once("connected", finish);
-          mongoose.connection.once("error", finish);
-          mongoose.connection.once("disconnected", finish);
-          setTimeout(finish, 15000);
-        });
-      }
-
-      if (admin.apps.length) {
-        this.initialized = true;
-        logger.info("Firebase Admin already initialized, reusing existing app");
-        return;
-      }
-
       const dbCredentials = await getFirebaseCredentials();
-      let projectId =
-        dbCredentials.projectId || process.env.FIREBASE_PROJECT_ID;
-      let clientEmail =
-        dbCredentials.clientEmail || process.env.FIREBASE_CLIENT_EMAIL;
-      let privateKey =
-        dbCredentials.privateKey || process.env.FIREBASE_PRIVATE_KEY;
-
-      // Fallback: read from firebaseconfig.json in backend root or config folder if env vars are not set
-      if (!projectId || !clientEmail || !privateKey) {
-        try {
-          // Try config folder first (if service account file is there)
-          const configFolderPath = path.resolve(
-            process.cwd(),
-            "config",
-            "serviceAccountKey.json",
-          );
-          const legacyConfigFolderPath = path.resolve(
-            process.cwd(),
-            "config",
-            "zomato-607fa-firebase-adminsdk-fbsvc-f5f782c2cc.json",
-          );
-          const rootPath = path.resolve(process.cwd(), "firebaseconfig.json");
-
-          let serviceAccountPath = null;
-          if (fs.existsSync(configFolderPath)) {
-            serviceAccountPath = configFolderPath;
-          } else if (fs.existsSync(legacyConfigFolderPath)) {
-            serviceAccountPath = legacyConfigFolderPath;
-          } else if (fs.existsSync(rootPath)) {
-            serviceAccountPath = rootPath;
-          }
-
-          if (serviceAccountPath) {
-            const raw = fs.readFileSync(serviceAccountPath, "utf-8");
-            const json = JSON.parse(raw);
-            projectId = projectId || json.project_id;
-            clientEmail = clientEmail || json.client_email;
-            privateKey = privateKey || json.private_key;
-          }
-        } catch (err) {
-          logger.warn(`Failed to read firebaseconfig.json: ${err.message}`);
-        }
-      }
+      const projectId = dbCredentials.projectId;
+      const clientEmail = dbCredentials.clientEmail;
+      let privateKey = dbCredentials.privateKey;
 
       if (!projectId || !clientEmail || !privateKey) {
-        if (mongoose.connection.readyState !== 1) {
-          logger.info(
-            "Firebase Admin auth initialization deferred until MongoDB-backed credentials are available.",
-          );
-          return;
-        }
-
         logger.warn(
-          "Firebase Admin not fully configured. Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in ENV Setup or .env or provide firebaseconfig.json in backend root to enable Firebase auth.",
+          "Firebase Admin not fully configured. Add FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY in Admin → Environment Variables.",
         );
         return;
       }
@@ -139,7 +57,9 @@ class FirebaseAuthService {
         // If already initialized, ignore the "app exists" error
         if (error?.code === "app/duplicate-app") {
           this.initialized = true;
-          logger.info("Firebase Admin already initialized, reusing existing app");
+          logger.warn(
+            "Firebase Admin already initialized, reusing existing instance",
+          );
           return;
         }
 
@@ -161,12 +81,8 @@ class FirebaseAuthService {
    */
   async verifyIdToken(idToken) {
     if (!this.initialized) {
-      await this.init();
-    }
-
-    if (!this.initialized) {
       throw new Error(
-        "Firebase Admin is not configured. Please set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in ENV Setup or connect MongoDB so DB-backed credentials can be loaded.",
+        "Firebase Admin is not configured. Please set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in .env",
       );
     }
 

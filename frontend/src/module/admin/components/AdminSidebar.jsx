@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from "react"
 import { Link, useLocation } from "react-router-dom"
-import { getModuleToken } from "@/lib/utils/auth"
 import {
   Search,
   FileText,
@@ -12,7 +11,6 @@ import {
   UtensilsCrossed,
   Building2,
   FolderTree,
-  CheckCircle2,
   Plus,
   Utensils,
   Megaphone,
@@ -51,20 +49,7 @@ import { Input } from "@/components/ui/input"
 import { sidebarMenuData } from "../data/sidebarMenu"
 import { getCachedSettings, loadBusinessSettings } from "@/lib/utils/businessSettings"
 import { DEFAULT_LOGO_PLACEHOLDER } from "@/lib/constants/defaultLogo"
-
-// Get current admin/hub role from token
-function getAdminRole() {
-  try {
-    const token = getModuleToken("admin")
-    if (!token) return null
-    const parts = token.split(".")
-    if (parts.length !== 3) return null
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")))
-    return payload?.hubRole || payload?.adminRole || payload?.role || null
-  } catch {
-    return null
-  }
-}
+import { decodeToken, getModuleToken } from "@/lib/utils/auth"
 
 // Icon mapping
 const iconMap = {
@@ -112,6 +97,36 @@ export default function AdminSidebar({ isOpen = false, onClose, onCollapseChange
   const [searchQuery, setSearchQuery] = useState("")
   const [logoUrl, setLogoUrl] = useState(null)
   const [companyName, setCompanyName] = useState(null)
+
+  const adminRole = useMemo(() => {
+    const token = getModuleToken("admin")
+    const decoded = decodeToken(token)
+    return decoded?.adminRole || decoded?.role || null
+  }, [])
+
+  const visibleMenuData = useMemo(() => {
+    const isSuperAdmin = adminRole === "super_admin"
+
+    return sidebarMenuData
+      .map((item) => {
+        if (item.type !== "section") {
+          return item
+        }
+
+        const filteredItems = item.items.filter((subItem) => {
+          if (subItem.type === "link" && subItem.path === "/admin/hubs") {
+            return isSuperAdmin
+          }
+          return true
+        })
+
+        return {
+          ...item,
+          items: filteredItems,
+        }
+      })
+      .filter((item) => item.type !== "section" || item.items.length > 0)
+  }, [adminRole])
 
   // Load business settings logo
   useEffect(() => {
@@ -185,8 +200,6 @@ export default function AdminSidebar({ isOpen = false, onClose, onCollapseChange
   }
 
   const [isCollapsed, setIsCollapsed] = useState(getInitialCollapsedState)
-  const userRole = getAdminRole()
-  const isHubManager = userRole === "hub_manager"
 
   // Save collapsed state to localStorage and notify parent
   useEffect(() => {
@@ -236,45 +249,16 @@ export default function AdminSidebar({ isOpen = false, onClose, onCollapseChange
 
   const [expandedSections, setExpandedSections] = useState(getInitialExpandedState)
 
-  // Filter menu items based on role and search query
+  // Filter menu items based on search query
   const filteredMenuData = useMemo(() => {
-    let data = sidebarMenuData
-
-    // Hub Manager: only show items with hubManagerAllowed; hide allowedRoles (super_admin only) sections
-    if (isHubManager) {
-      data = data.filter((item) => {
-        if (item.allowedRoles?.includes("super_admin")) return false
-        if (item.hubManagerAllowed) return true
-        if (item.type === "section" && item.items) {
-          const filteredItems = item.items.filter(
-            (sub) => sub.hubManagerAllowed !== false
-          )
-          if (filteredItems.length === 0) return false
-          return true
-        }
-        return false
-      })
-    } else {
-      // Non-hub: hide super_admin only sections from non-super_admin
-      const isSuperAdmin = userRole === "super_admin"
-      if (!isSuperAdmin) {
-        data = data.filter(
-          (item) =>
-            !item.allowedRoles ||
-            item.allowedRoles.length === 0 ||
-            item.allowedRoles.includes(userRole)
-        )
-      }
-    }
-
     if (!searchQuery.trim()) {
-      return data
+      return visibleMenuData
     }
 
     const query = searchQuery.toLowerCase().trim()
     const filtered = []
 
-    data.forEach((item) => {
+    visibleMenuData.forEach((item) => {
       if (item.type === "link") {
         if (item.label.toLowerCase().includes(query)) {
           filtered.push(item)
@@ -312,7 +296,7 @@ export default function AdminSidebar({ isOpen = false, onClose, onCollapseChange
     })
 
     return filtered
-  }, [searchQuery, isHubManager, userRole])
+  }, [searchQuery, visibleMenuData])
 
   // Auto-expand sections with matches when searching
   useEffect(() => {
@@ -322,7 +306,7 @@ export default function AdminSidebar({ isOpen = false, onClose, onCollapseChange
       setExpandedSections((prev) => {
         const newExpandedState = { ...prev }
 
-        sidebarMenuData.forEach((item) => {
+        visibleMenuData.forEach((item) => {
           if (item.type === "section") {
             item.items.forEach((subItem) => {
               if (subItem.type === "expandable") {
@@ -343,7 +327,7 @@ export default function AdminSidebar({ isOpen = false, onClose, onCollapseChange
         return newExpandedState
       })
     }
-  }, [searchQuery])
+  }, [searchQuery, visibleMenuData])
 
   const isActive = (path, allPaths = []) => {
     if (path === "/admin") {

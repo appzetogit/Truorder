@@ -7,6 +7,10 @@ import {
 } from "../../../shared/utils/response.js";
 import asyncHandler from "../../../shared/middleware/asyncHandler.js";
 import winston from "winston";
+import {
+  RESTAURANT_NOTIFICATION_EVENTS,
+  sendNotificationToRestaurant,
+} from "../services/restaurantNotificationService.js";
 
 const logger = winston.createLogger({
   level: "info",
@@ -220,28 +224,6 @@ export const getAllWithdrawalRequests = asyncHandler(async (req, res) => {
     const { status, page = 1, limit = 20, search } = req.query;
 
     const query = {};
-
-    // Hub Manager: filter by restaurants in assigned zones
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      const Order = (await import("../../order/models/Order.js")).default;
-      const restaurantIds = await Order.distinct("restaurantId", {
-        "assignmentInfo.zoneId": { $in: req.user.assignedZoneIds },
-      });
-      if (restaurantIds.length === 0) {
-        return successResponse(res, 200, "Withdrawal requests retrieved successfully", {
-          requests: [],
-          pagination: { page: 1, limit: parseInt(limit), total: 0, pages: 0 },
-        });
-      }
-      if (restaurantIds.length === 0) {
-        return successResponse(res, 200, "Withdrawal requests retrieved successfully", {
-          requests: [],
-          pagination: { page: 1, limit: parseInt(limit), total: 0, pages: 0 },
-        });
-      }
-      query.restaurantId = { $in: restaurantIds };
-    }
-
     if (
       status &&
       ["Pending", "Approved", "Rejected", "Processed"].includes(status)
@@ -315,7 +297,7 @@ export const getAllWithdrawalRequests = asyncHandler(async (req, res) => {
  */
 export const approveWithdrawalRequest = asyncHandler(async (req, res) => {
   try {
-    const admin = req.admin || req.user;
+    const admin = req.admin;
     const { id } = req.params;
 
     if (!admin || !admin._id) {
@@ -327,19 +309,6 @@ export const approveWithdrawalRequest = asyncHandler(async (req, res) => {
 
     if (!withdrawalRequest) {
       return errorResponse(res, 404, "Withdrawal request not found");
-    }
-
-    // Hub Manager: verify restaurant is in assigned zones
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      const Order = (await import("../../order/models/Order.js")).default;
-      const restaurantId = withdrawalRequest.restaurantId?._id?.toString() || withdrawalRequest.restaurantId?.toString();
-      const hasOrderInZone = await Order.exists({
-        restaurantId: restaurantId || withdrawalRequest.restaurantId,
-        "assignmentInfo.zoneId": { $in: req.user.assignedZoneIds },
-      });
-      if (!hasOrderInZone) {
-        return errorResponse(res, 403, "You can only approve withdrawals for restaurants in your assigned zones");
-      }
     }
 
     if (withdrawalRequest.status !== "Pending") {
@@ -401,6 +370,19 @@ export const approveWithdrawalRequest = asyncHandler(async (req, res) => {
     await wallet.save();
 
     logger.info(`Withdrawal request approved: ${id} by admin: ${admin._id}`);
+
+    await sendNotificationToRestaurant({
+      restaurantId: withdrawalRequest.restaurantId._id || withdrawalRequest.restaurantId,
+      type: RESTAURANT_NOTIFICATION_EVENTS.PAYOUT_UPDATED,
+      payoutId: withdrawalRequest._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.PAYOUT_UPDATED}:${withdrawalRequest._id}:approved`,
+      redirectUrl: "/restaurant/hub-finance",
+      metadata: {
+        amount: withdrawalRequest.amount,
+        status: withdrawalRequest.status,
+      },
+      source: "withdrawalController.approveWithdrawalRequest",
+    });
 
     // Send email notification to restaurant
     try {
@@ -547,6 +529,20 @@ export const rejectWithdrawalRequest = asyncHandler(async (req, res) => {
     logger.info(
       `Withdrawal request rejected: ${id} by admin: ${admin._id}. Balance refunded.`,
     );
+
+    await sendNotificationToRestaurant({
+      restaurantId: withdrawalRequest.restaurantId._id || withdrawalRequest.restaurantId,
+      type: RESTAURANT_NOTIFICATION_EVENTS.PAYOUT_UPDATED,
+      payoutId: withdrawalRequest._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.PAYOUT_UPDATED}:${withdrawalRequest._id}:rejected`,
+      redirectUrl: "/restaurant/hub-finance",
+      metadata: {
+        amount: withdrawalRequest.amount,
+        status: withdrawalRequest.status,
+        rejectionReason: withdrawalRequest.rejectionReason,
+      },
+      source: "withdrawalController.rejectWithdrawalRequest",
+    });
 
     // Send email notification to restaurant
     try {

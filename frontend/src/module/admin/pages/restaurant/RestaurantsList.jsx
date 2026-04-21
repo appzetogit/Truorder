@@ -11,7 +11,34 @@ import locationIcon from "../../assets/Dashboard-icons/image1.png"
 import restaurantIcon from "../../assets/Dashboard-icons/image2.png"
 import inactiveIcon from "../../assets/Dashboard-icons/image3.png"
 
-export default function RestaurantsList({ isHub = false }) {
+function RestaurantLogo({ src, name, sizeClass = "w-10 h-10", roundedClass = "rounded-full" }) {
+  const [showImage, setShowImage] = useState(Boolean(src))
+
+  useEffect(() => {
+    setShowImage(Boolean(src))
+  }, [src])
+
+  const initial = (name || "R").trim().charAt(0).toUpperCase()
+
+  return (
+    <div className={`${sizeClass} ${roundedClass} overflow-hidden bg-slate-100 flex items-center justify-center flex-shrink-0`}>
+      {showImage ? (
+        <img
+          src={src}
+          alt={name || "Restaurant"}
+          className="w-full h-full object-cover"
+          loading="lazy"
+          decoding="async"
+          onError={() => setShowImage(false)}
+        />
+      ) : (
+        <span className="text-slate-500 font-semibold text-sm">{initial}</span>
+      )}
+    </div>
+  )
+}
+
+export default function RestaurantsList() {
   const navigate = useNavigate()
   const [searchQuery, setSearchQuery] = useState("")
   const [restaurants, setRestaurants] = useState([])
@@ -118,7 +145,7 @@ export default function RestaurantsList({ isHub = false }) {
               : (restaurant.cuisine || "N/A"),
             status: restaurant.isActive !== false, // Default to true if not set
             rating: restaurant.ratings?.average || restaurant.rating || 0,
-            logo: restaurant.profileImage?.url || restaurant.logo || "https://via.placeholder.com/40",
+            logo: restaurant.profileImage?.url || restaurant.logo || null,
             diningCommissionPercentage: restaurant.diningCommissionPercentage ?? 0,
             // Preserve original restaurant data for details modal
             originalData: restaurant,
@@ -490,7 +517,7 @@ export default function RestaurantsList({ isHub = false }) {
 
             <div className="flex items-center gap-3">
               <button
-                onClick={() => navigate(isHub ? "/hub/restaurants/add" : "/admin/restaurants/add")}
+                onClick={() => navigate("/admin/restaurants/add")}
                 className="px-4 py-2.5 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2 transition-all"
               >
                 <Plus className="w-4 h-4" />
@@ -649,16 +676,7 @@ export default function RestaurantsList({ isHub = false }) {
                         {visibleColumns.restaurantInfo && (
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 rounded-full overflow-hidden bg-slate-100 flex items-center justify-center flex-shrink-0">
-                                <img
-                                  src={restaurant.logo}
-                                  alt={restaurant.name}
-                                  className="w-full h-full object-cover"
-                                  onError={(e) => {
-                                    e.target.src = "https://via.placeholder.com/40"
-                                  }}
-                                />
-                              </div>
+                              <RestaurantLogo src={restaurant.logo} name={restaurant.name} />
                               <div className="flex flex-col">
                                 <span className="text-sm font-medium text-slate-900">{restaurant.name}</span>
                                 <span className="text-xs text-slate-500">ID #{formatRestaurantId(restaurant.originalData?.restaurantId || restaurant.originalData?._id || restaurant._id || restaurant.id)}</span>
@@ -740,44 +758,30 @@ export default function RestaurantsList({ isHub = false }) {
                                 </button>
                               </div>
                             ) : (
-                              isHub ? (
-                                <span className="text-sm text-slate-700">
-                                  {restaurant.diningCommissionPercentage ?? 0}%
-                                </span>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => setEditingDiningCommission({ id: restaurant.id, value: restaurant.diningCommissionPercentage ?? 0 })}
-                                  className="text-sm text-slate-700 hover:text-blue-600 hover:underline"
-                                >
-                                  {restaurant.diningCommissionPercentage ?? 0}%
-                                </button>
-                              )
+                              <button
+                                type="button"
+                                onClick={() => setEditingDiningCommission({ id: restaurant.id, value: restaurant.diningCommissionPercentage ?? 0 })}
+                                className="text-sm text-slate-700 hover:text-blue-600 hover:underline"
+                              >
+                                {restaurant.diningCommissionPercentage ?? 0}%
+                              </button>
                             )}
                           </td>
                         )}
                         {visibleColumns.status && (
                           <td className="px-6 py-4 whitespace-nowrap">
-                            {isHub ? (
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                restaurant.status ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
-                              }`}>
-                                {restaurant.status ? "Active" : "Inactive"}
-                              </span>
-                            ) : (
-                              <button
-                                onClick={() => handleToggleStatus(restaurant.id)}
-                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                                  restaurant.status ? "bg-blue-600" : "bg-slate-300"
+                            <button
+                              onClick={() => handleToggleStatus(restaurant.id)}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                                restaurant.status ? "bg-blue-600" : "bg-slate-300"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                  restaurant.status ? "translate-x-6" : "translate-x-1"
                                 }`}
-                              >
-                                <span
-                                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                                    restaurant.status ? "translate-x-6" : "translate-x-1"
-                                  }`}
-                                />
-                              </button>
-                            )}
+                              />
+                            </button>
                           </td>
                         )}
                         {visibleColumns.action && (
@@ -790,28 +794,24 @@ export default function RestaurantsList({ isHub = false }) {
                             >
                               <Eye className="w-4 h-4" />
                             </button>
-                            {!isHub && (
-                              <>
-                                <button
-                                  onClick={() => handleBanRestaurant(restaurant)}
-                                  className={`p-1.5 rounded transition-colors ${
-                                    !restaurant.status
-                                      ? "text-green-600 hover:bg-green-50"
-                                      : "text-red-600 hover:bg-red-50"
-                                  }`}
-                                  title={!restaurant.status ? "Unban Restaurant" : "Ban Restaurant"}
-                                >
-                                  <ShieldX className="w-4 h-4" />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteRestaurant(restaurant)}
-                                  className="p-1.5 rounded text-red-600 hover:bg-red-50 transition-colors"
-                                  title="Delete Restaurant"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </>
-                            )}
+                            <button
+                              onClick={() => handleBanRestaurant(restaurant)}
+                              className={`p-1.5 rounded transition-colors ${
+                                !restaurant.status
+                                  ? "text-green-600 hover:bg-green-50"
+                                  : "text-red-600 hover:bg-red-50"
+                              }`}
+                              title={!restaurant.status ? "Unban Restaurant" : "Ban Restaurant"}
+                            >
+                              <ShieldX className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteRestaurant(restaurant)}
+                              className="p-1.5 rounded text-red-600 hover:bg-red-50 transition-colors"
+                              title="Delete Restaurant"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
                         </td>
                         )}
@@ -852,16 +852,12 @@ export default function RestaurantsList({ isHub = false }) {
                 <div className="space-y-6">
                   {/* Restaurant Basic Info */}
                   <div className="flex items-start gap-6 pb-6 border-b border-slate-200">
-                    <div className="w-24 h-24 rounded-lg overflow-hidden bg-slate-100 flex-shrink-0">
-                      <img
-                        src={restaurantDetails?.profileImage?.url || restaurantDetails?.logo || selectedRestaurant?.logo || selectedRestaurant?.originalData?.profileImage?.url || "https://via.placeholder.com/96"}
-                        alt={restaurantDetails?.name || selectedRestaurant?.name || "Restaurant"}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          e.target.src = "https://via.placeholder.com/96"
-                        }}
-                      />
-                    </div>
+                    <RestaurantLogo
+                      src={restaurantDetails?.profileImage?.url || restaurantDetails?.logo || selectedRestaurant?.logo || selectedRestaurant?.originalData?.profileImage?.url || null}
+                      name={restaurantDetails?.name || selectedRestaurant?.name || "Restaurant"}
+                      sizeClass="w-24 h-24"
+                      roundedClass="rounded-lg"
+                    />
                     <div className="flex-1">
                       <h3 className="text-2xl font-bold text-slate-900 mb-2">
                         {restaurantDetails?.name || selectedRestaurant?.name || "N/A"}

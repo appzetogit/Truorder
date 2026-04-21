@@ -149,11 +149,20 @@ export const API_ENDPOINTS = {
     PREFERENCES: "/user/preferences",
     WALLET: "/user/wallet",
     ORDERS: "/user/orders",
+    NOTIFICATIONS: "/user/notifications",
+    NOTIFICATIONS_UNREAD_COUNT: "/user/notifications/unread-count",
+    NOTIFICATION_READ: "/user/notifications/:notificationId/read",
+    NOTIFICATIONS_DELETE_ALL: "/user/notifications",
+    NOTIFICATIONS_READ_ALL: "/user/notifications/read-all",
     ORDER_CHAT: "/order/:orderId/chat",
     ORDER_CHAT_MESSAGES: "/order/:orderId/chat/messages",
     LOCATION: "/user/location",
     COMPLAINTS: "/user/complaints",
     COMPLAINT_BY_ID: "/user/complaints/:id",
+  },
+  CART: {
+    ROOT: "/cart",
+    MERGE_GUEST: "/cart/merge-guest",
   },
   // Location endpoints
   LOCATION: {
@@ -162,6 +171,7 @@ export const API_ENDPOINTS = {
   },
   // Zone endpoints
   ZONE: {
+    ACTIVE: "/zones/active",
     DETECT: "/zones/detect", // Public endpoint for zone detection
   },
   // Restaurant endpoints
@@ -169,6 +179,8 @@ export const API_ENDPOINTS = {
     AUTH: {
       SEND_OTP: "/restaurant/auth/send-otp",
       VERIFY_OTP: "/restaurant/auth/verify-otp",
+      COMPLETE_REGISTRATION_WITH_REFERRAL:
+        "/restaurant/auth/complete-registration-with-referral",
       REGISTER: "/restaurant/auth/register",
       LOGIN: "/restaurant/auth/login",
       FIREBASE_GOOGLE_LOGIN: "/restaurant/auth/firebase/google-login",
@@ -225,6 +237,10 @@ export const API_ENDPOINTS = {
     WALLET_STATS: "/restaurant/wallet/stats",
     WITHDRAWAL_REQUEST: "/restaurant/withdrawal/request",
     WITHDRAWAL_REQUESTS: "/restaurant/withdrawal/requests",
+    NOTIFICATIONS: "/restaurant/notifications",
+    NOTIFICATIONS_UNREAD_COUNT: "/restaurant/notifications/unread-count",
+    NOTIFICATION_READ: "/restaurant/notifications/:notificationId/read",
+    NOTIFICATIONS_READ_ALL: "/restaurant/notifications/read-all",
     COMPLAINTS: "/restaurant/complaints",
     COMPLAINT_BY_ID: "/restaurant/complaints/:id",
     COMPLAINT_RESPOND: "/restaurant/complaints/:id/respond",
@@ -239,6 +255,8 @@ export const API_ENDPOINTS = {
     AUTH: {
       SEND_OTP: "/delivery/auth/send-otp",
       VERIFY_OTP: "/delivery/auth/verify-otp",
+      COMPLETE_REGISTRATION_WITH_REFERRAL:
+        "/delivery/auth/complete-registration-with-referral",
       REFRESH_TOKEN: "/delivery/auth/refresh-token",
       LOGOUT: "/delivery/auth/logout",
       ME: "/delivery/auth/me",
@@ -280,17 +298,13 @@ export const API_ENDPOINTS = {
     EMERGENCY_HELP: "/delivery/emergency-help",
     SUPPORT_TICKETS: "/delivery/support-tickets",
     SUPPORT_TICKET_BY_ID: "/delivery/support-tickets/:id",
+    NOTIFICATIONS: "/delivery/notifications",
+    NOTIFICATIONS_UNREAD_COUNT: "/delivery/notifications/unread-count",
+    NOTIFICATION_READ: "/delivery/notifications/:notificationId/read",
+    NOTIFICATIONS_READ_ALL: "/delivery/notifications/read-all",
   },
-  // Referral endpoints (public verify)
   REFERRAL: {
     VERIFY: "/referral/verify",
-  },
-  // Admin referral endpoints
-  ADMIN_REFERRAL: {
-    CREATE: "/admin/referral/create",
-    LIST: "/admin/referral/list",
-    STATUS: "/admin/referral/status",
-    DELETE: "/admin/referral",
   },
   // Admin endpoints
   ADMIN: {
@@ -298,6 +312,7 @@ export const API_ENDPOINTS = {
       SIGNUP: "/admin/auth/signup",
       SIGNUP_OTP: "/admin/auth/signup/otp",
       LOGIN: "/admin/auth/login",
+      REFRESH_TOKEN: "/admin/auth/refresh-token",
       LOGOUT: "/admin/auth/logout",
       ME: "/admin/auth/me",
     },
@@ -404,10 +419,6 @@ export const API_ENDPOINTS = {
     DELIVERY_SUPPORT_TICKETS: "/admin/delivery-support-tickets",
     DELIVERY_SUPPORT_TICKET_BY_ID: "/admin/delivery-support-tickets/:id",
     DELIVERY_SUPPORT_TICKETS_STATS: "/admin/delivery-support-tickets/stats",
-    // Hub self-profile (Hub Manager)
-    HUB_ME: "/admin/hub/me",
-    HUB_ME_UPDATE: "/admin/hub/me",
-    HUB_ME_CHANGE_PASSWORD: "/admin/hub/me/change-password",
     RESTAURANT_COMMISSION: "/admin/restaurant-commission",
     RESTAURANT_COMMISSION_APPROVED_RESTAURANTS:
       "/admin/restaurant-commission/approved-restaurants",
@@ -421,19 +432,25 @@ export const API_ENDPOINTS = {
     RESTAURANT_COMPLAINT_STATUS: "/admin/restaurant-complaints/:id/status",
     RESTAURANT_COMPLAINT_NOTES: "/admin/restaurant-complaints/:id/notes",
     FOOD_APPROVALS: "/admin/food-approvals",
+    FOODS: "/admin/foods",
     FOOD_APPROVAL_APPROVE: "/admin/food-approvals/:id/approve",
     FOOD_APPROVAL_REJECT: "/admin/food-approvals/:id/reject",
     OFFERS: "/admin/offers",
+    OFFER_BY_ID: "/admin/offers/:id",
     ZONES: "/admin/zones",
     ZONE_BY_ID: "/admin/zones/:id",
+    ZONE_STATUS: "/admin/zones/:id/status",
+    HUB_ME: "/admin/hub/me",
+    HUB_ME_UPDATE: "/admin/hub/me",
+    HUB_ME_CHANGE_PASSWORD: "/admin/hub/me/change-password",
     HUBS: "/admin/hubs",
     HUB_BY_ID: "/admin/hubs/:id",
     HUB_ZONES: "/admin/hubs/:id/zones",
     HUB_RESET_PASSWORD: "/admin/hubs/:id/reset-password",
     HUB_DISABLE: "/admin/hubs/:id/disable",
     HUB_ENABLE: "/admin/hubs/:id/enable",
-    ZONE_STATUS: "/admin/zones/:id/status",
     PUSH_NOTIFICATION: "/admin/push-notification",
+    PUSH_NOTIFICATIONS: "/admin/push-notifications",
   },
   // Order endpoints
   ORDER: {
@@ -443,6 +460,7 @@ export const API_ENDPOINTS = {
     UPDATE_STATUS: "/order/:id/status",
     UPDATE_DELIVERY_DETAILS: "/order/:id/update-delivery-details",
     VERIFY_PAYMENT: "/order/verify-payment",
+    PAYMENT_FAILED: "/order/payment-failed",
     CALCULATE: "/order/calculate",
     CANCEL: "/order/:id/cancel",
   },
@@ -484,6 +502,7 @@ export const API_ENDPOINTS = {
     MUST_TRIES: "/dining/must-tries",
     OFFER_BANNERS: "/dining/offer-banners",
     STORIES: "/dining/stories",
+    BOOKING_AVAILABILITY: "/dining/bookings/availability",
     BOOKING_CREATE: "/dining/bookings",
     BOOKING_MY: "/dining/bookings/my",
     BOOKING_RESTAURANT: "/dining/bookings/restaurant/:restaurantId",

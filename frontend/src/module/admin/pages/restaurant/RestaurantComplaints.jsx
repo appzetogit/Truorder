@@ -30,7 +30,7 @@ const COMPLAINT_TYPE_OPTIONS = [
   { value: 'other', label: 'Other' },
 ]
 
-export default function RestaurantComplaints({ isHub = false }) {
+export default function RestaurantComplaints() {
   const [complaints, setComplaints] = useState([])
   const [loading, setLoading] = useState(true)
   const [updatingStatusId, setUpdatingStatusId] = useState(null)
@@ -217,29 +217,22 @@ export default function RestaurantComplaints({ isHub = false }) {
                       </div>
                     </div>
                   </div>
-                  {isHub ? (
-                    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium ${getStatusColor(complaint.status)}`}>
-                      {getStatusIcon(complaint.status)}
-                      {complaint.status === 'in_progress' ? 'In Progress' : complaint.status.charAt(0).toUpperCase() + complaint.status.slice(1)}
-                    </span>
-                  ) : (
-                    <Select
-                      value={complaint.status}
-                      onValueChange={(value) => handleStatusChange(complaint._id, value)}
-                      disabled={updatingStatusId === complaint._id}
-                    >
-                      <SelectTrigger className="w-[140px] shrink-0">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {STATUS_OPTIONS.filter((o) => o.value !== 'all').map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
+                  <Select
+                    value={complaint.status}
+                    onValueChange={(value) => handleStatusChange(complaint._id, value)}
+                    disabled={updatingStatusId === complaint._id}
+                  >
+                    <SelectTrigger className="w-[140px] shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {STATUS_OPTIONS.filter((o) => o.value !== 'all').map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <p className="text-sm text-gray-700 mb-3">{complaint.description}</p>
                 {complaint.restaurantResponse && (

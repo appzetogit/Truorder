@@ -48,7 +48,6 @@ const restaurantSchema = new mongoose.Schema(
       required: function () {
         return !this.phone && !this.googleId;
       },
-      unique: true,
       lowercase: true,
       trim: true,
       sparse: true, // Allow multiple null values in unique index
@@ -58,8 +57,6 @@ const restaurantSchema = new mongoose.Schema(
       required: function () {
         return !this.email && !this.googleId;
       },
-      unique: true,
-      sparse: true,
       trim: true,
     },
     phoneVerified: {
@@ -72,8 +69,6 @@ const restaurantSchema = new mongoose.Schema(
     },
     googleId: {
       type: String,
-      unique: true,
-      sparse: true,
     },
     googleEmail: {
       type: String,
@@ -88,15 +83,6 @@ const restaurantSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: null,
-    },
-    referralCodeId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "ReferralCode",
-      default: null,
-    },
-    referralCounted: {
-      type: Boolean,
-      default: false,
     },
     trulifeAffiliateRegistered: {
       type: Boolean,
@@ -199,10 +185,6 @@ const restaurantSchema = new mongoose.Schema(
       default: null,
     },
     fcmTokenAndroid: {
-      type: String,
-      default: null,
-    },
-    fcmTokenWindows: {
       type: String,
       default: null,
     },
@@ -390,7 +372,13 @@ const restaurantSchema = new mongoose.Schema(
   },
 );
 
-// Indexes for authentication and geo search
+// Indexes for authentication
+restaurantSchema.index({ email: 1 }, { unique: true, sparse: true });
+restaurantSchema.index({ phone: 1 }, { unique: true, sparse: true });
+restaurantSchema.index({ googleId: 1 }, { unique: true, sparse: true });
+// Geospatial index for nearby restaurant search
+restaurantSchema.index({ "location.coordinates": "2dsphere" });
+
 // Hash password before saving
 restaurantSchema.pre("save", async function (next) {
   // Generate restaurantId FIRST (before any validation)
@@ -431,12 +419,12 @@ restaurantSchema.pre("save", async function (next) {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
 
+    // Ensure slug is not empty
     if (!baseSlug) {
-      baseSlug = "restaurant";
+      baseSlug = `restaurant-${this.restaurantId}`;
     }
 
-    const suffix = this.restaurantId || this._id?.toString().slice(-6) || Math.random().toString(36).slice(2, 8);
-    this.slug = `${baseSlug}-${suffix}`;
+    this.slug = baseSlug;
   }
 
   // CRITICAL: For phone signups, ensure email field is completely unset (not null/undefined)

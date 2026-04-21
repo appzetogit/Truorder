@@ -5,7 +5,8 @@ const gourmetRestaurantSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Restaurant',
     required: true,
-    unique: true
+    unique: true,
+    index: true
   },
   order: {
     type: Number,
@@ -29,5 +30,7 @@ const gourmetRestaurantSchema = new mongoose.Schema({
 
 // Indexes for faster queries
 gourmetRestaurantSchema.index({ order: 1, isActive: 1 });
+gourmetRestaurantSchema.index({ restaurant: 1, isActive: 1 });
 
 export default mongoose.model('GourmetRestaurant', gourmetRestaurantSchema);
+

@@ -13,7 +13,8 @@ class JWTService {
     this.secret = secret;
     this.accessTokenExpiry = process.env.JWT_ACCESS_EXPIRY || '24h';
     this.refreshTokenExpiry = process.env.JWT_REFRESH_EXPIRY || '7d';
-    
+    this.referralTempTokenExpiry =
+      process.env.JWT_REFERRAL_TEMP_EXPIRY || "30m";
   }
 
   /**
@@ -67,6 +68,20 @@ class JWTService {
     };
   }
 
+  generateReferralTempToken(payload) {
+    return jwt.sign(
+      {
+        ...payload,
+        type: "referral_temp",
+        registrationType: payload.type || payload.registrationType,
+      },
+      this.secret,
+      {
+        expiresIn: this.referralTempTokenExpiry
+      }
+    );
+  }
+
   /**
    * Verify Token
    * @param {string} token - JWT token
@@ -111,43 +126,8 @@ class JWTService {
     return this.verifyToken(token, 'refresh');
   }
 
-  /**
-   * Generate short-lived referral temp token (for OTP-verified, referral-pending state)
-   * @param {Object} payload - { phone, name?, type: 'delivery_partner'|'restaurant', email? }
-   * @param {string} expiry - e.g. '10m'
-   * @returns {string} - JWT token
-   */
-  generateReferralTempToken(payload, expiry = '10m') {
-    const { type: registrationType, ...rest } = payload;
-    return jwt.sign(
-      {
-        ...rest,
-        registrationType,
-        type: 'referral_temp',
-      },
-      this.secret,
-      { expiresIn: expiry },
-    );
-  }
-
-  /**
-   * Verify referral temp token
-   * @param {string} token - Referral temp JWT
-   * @returns {Object} - Decoded payload
-   */
   verifyReferralTempToken(token) {
-    try {
-      const decoded = jwt.verify(token, this.secret);
-      if (decoded.type !== 'referral_temp') {
-        throw new Error('Invalid token type');
-      }
-      return decoded;
-    } catch (error) {
-      if (error.name === 'TokenExpiredError') {
-        throw new Error('Referral session expired. Please verify OTP again.');
-      }
-      throw error;
-    }
+    return this.verifyToken(token, "referral_temp");
   }
 }
 

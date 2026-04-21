@@ -1,10 +1,19 @@
-import { Routes, Route, Navigate, useLocation } from "react-router-dom"
+import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom"
 import ProtectedRoute from "@/components/ProtectedRoute"
 import AuthRedirect from "@/components/AuthRedirect"
-import HubProtectedRoute from "@/module/hub/components/HubProtectedRoute"
 
-import { Suspense, lazy } from "react"
+import { Suspense, lazy, useEffect, useRef } from "react"
 import Loader from "@/components/Loader"
+import { UserGeoLocationProvider } from "@/module/user/hooks/useLocation"
+import DeliverySignIn from "@/module/delivery/pages/auth/SignIn"
+import DeliverySignup from "@/module/delivery/pages/auth/Signup"
+import DeliveryOTP from "@/module/delivery/pages/auth/OTP"
+import DeliveryReferralCode from "@/module/delivery/pages/auth/ReferralCode"
+import DeliveryTermsAndConditions from "@/module/delivery/pages/TermsAndConditions"
+import DeliveryPrivacyPolicy from "@/module/delivery/pages/PrivacyPolicy"
+import DeliverySignupStep1 from "@/module/delivery/pages/auth/SignupStep1"
+import DeliverySignupStep2 from "@/module/delivery/pages/auth/SignupStep2"
+import DeliveryWelcome from "@/module/delivery/pages/auth/Welcome"
 
 // Lazy Loading Components
 const UserRouter = lazy(() => import("@/module/user/components/UserRouter"))
@@ -105,6 +114,7 @@ const PhoneNumbersPage = lazy(() => import("@/module/restaurant/pages/PhoneNumbe
 const DownloadReport = lazy(() => import("@/module/restaurant/pages/DownloadReport"))
 const ToHub = lazy(() => import("@/module/restaurant/pages/ToHub"))
 const ManageOutlets = lazy(() => import("@/module/restaurant/pages/ManageOutlets"))
+const AddOutletRequest = lazy(() => import("@/module/restaurant/pages/AddOutletRequest"))
 const UpdateBankDetails = lazy(() => import("@/module/restaurant/pages/UpdateBankDetails"))
 const ZoneSetup = lazy(() => import("@/module/restaurant/pages/ZoneSetup"))
 const DiningReservations = lazy(() => import("@/module/restaurant/pages/DiningReservations"))
@@ -114,22 +124,15 @@ const AdminRouter = lazy(() => import("@/module/admin/components/AdminRouter"))
 const AdminLogin = lazy(() => import("@/module/admin/pages/auth/AdminLogin"))
 const AdminSignup = lazy(() => import("@/module/admin/pages/auth/AdminSignup"))
 const AdminForgotPassword = lazy(() => import("@/module/admin/pages/auth/AdminForgotPassword"))
-
-// Hub Module
 const HubRouter = lazy(() => import("@/module/hub/components/HubRouter"))
 const HubLogin = lazy(() => import("@/module/hub/pages/HubLogin"))
+const HubProtectedRoute = lazy(() => import("@/module/hub/components/HubProtectedRoute"))
 
 // Delivery Module
 const DeliveryRouter = lazy(() => import("@/module/delivery/components/DeliveryRouter"))
-const DeliverySignIn = lazy(() => import("@/module/delivery/pages/auth/SignIn"))
-const DeliverySignup = lazy(() => import("@/module/delivery/pages/auth/Signup"))
-const DeliveryOTP = lazy(() => import("@/module/delivery/pages/auth/OTP"))
-const DeliveryReferralCode = lazy(() => import("@/module/delivery/pages/auth/ReferralCode"))
-const DeliveryTermsAndConditions = lazy(() => import("@/module/delivery/pages/TermsAndConditions"))
-const DeliveryPrivacyPolicy = lazy(() => import("@/module/delivery/pages/PrivacyPolicy"))
-const DeliverySignupStep1 = lazy(() => import("@/module/delivery/pages/auth/SignupStep1"))
-const DeliverySignupStep2 = lazy(() => import("@/module/delivery/pages/auth/SignupStep2"))
-const DeliveryWelcome = lazy(() => import("@/module/delivery/pages/auth/Welcome"))
+
+// Truorder Page
+const TruorderPage = lazy(() => import("@/pages/TruorderPage"))
 
 function UserPathRedirect() {
   const location = useLocation()
@@ -138,10 +141,70 @@ function UserPathRedirect() {
   return <Navigate to={to} replace />
 }
 
+// Persist and restore last visited route across refreshes
+function RoutePersistence({ children }) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const hasRestoredRef = useRef(false)
+
+  // On initial load, if user hits bare domain "/", restore lastRoute if available
+  useEffect(() => {
+    if (hasRestoredRef.current) return
+    hasRestoredRef.current = true
+
+    try {
+      const saved = window.sessionStorage?.getItem("lastRoute")
+      const currentPath =
+        window.location.pathname +
+        window.location.search +
+        window.location.hash
+
+      // Only redirect when landing on a generic root and we have a meaningful saved route
+      if (
+        saved &&
+        typeof saved === "string" &&
+        saved !== "/" &&
+        (currentPath === "/" || currentPath === "" || currentPath === "/user")
+      ) {
+        navigate(saved, { replace: true })
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }, [navigate])
+
+  // On every route change, remember the current location (for all modules)
+  useEffect(() => {
+    try {
+      const path = location.pathname + location.search + location.hash
+
+      // Ignore pure auth/login routes so we don't always bounce back to them
+      const ignoredPrefixes = [
+        "/user/auth/",
+        "/admin/auth/",
+        "/delivery/auth/",
+        "/restaurant/auth/",
+      ]
+      const shouldIgnore = ignoredPrefixes.some((p) =>
+        location.pathname.startsWith(p),
+      )
+      if (!shouldIgnore) {
+        window.sessionStorage?.setItem("lastRoute", path)
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }, [location])
+
+  return children
+}
+
 export default function App() {
   return (
     <Suspense fallback={<Loader />}>
-      <Routes>
+      <RoutePersistence>
+        <UserGeoLocationProvider>
+        <Routes>
         <Route path="/user" element={<Navigate to="/" replace />} />
         <Route path="/user/*" element={<UserPathRedirect />} />
         {/* Removed /routes route - Home should be accessed through UserRouter */}
@@ -154,7 +217,7 @@ export default function App() {
         <Route path="/restaurant/signup-email" element={<AuthRedirect module="restaurant"><RestaurantSignupEmail /></AuthRedirect>} />
         <Route path="/restaurant/forgot-password" element={<AuthRedirect module="restaurant"><RestaurantForgotPassword /></AuthRedirect>} />
         <Route path="/restaurant/otp" element={<AuthRedirect module="restaurant"><RestaurantOTP /></AuthRedirect>} />
-        <Route path="/restaurant/referral-code" element={<RestaurantReferralCode />} />
+        <Route path="/restaurant/referral" element={<AuthRedirect module="restaurant"><RestaurantReferralCode /></AuthRedirect>} />
         <Route path="/restaurant/auth/google-callback" element={<AuthRedirect module="restaurant"><RestaurantGoogleCallback /></AuthRedirect>} />
 
         {/* Restaurant Protected Routes */}
@@ -179,6 +242,9 @@ export default function App() {
         <Route path="/usermain/orders/:orderId" element={<OrderDetailsPage />} />
         <Route path="/usermain/orders/:orderId/chat" element={<OrderChatScreen />} />
         <Route path="/usermain/wishlist" element={<WishlistPage />} />
+
+        {/* Truorder Page */}
+        <Route path="/truorder" element={<TruorderPage />} />
 
         {/* Restaurant Protected Routes - Old Routes */}
         <Route
@@ -774,6 +840,14 @@ export default function App() {
           }
         />
         <Route
+          path="/restaurant/add-outlet-request"
+          element={
+            <ProtectedRoute requiredRole="restaurant" loginPath="/restaurant/login">
+              <AddOutletRequest />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/restaurant/update-bank-details"
           element={
             <ProtectedRoute requiredRole="restaurant" loginPath="/restaurant/login">
@@ -801,7 +875,7 @@ export default function App() {
         <Route path="/delivery/sign-in" element={<AuthRedirect module="delivery"><DeliverySignIn /></AuthRedirect>} />
         <Route path="/delivery/signup" element={<DeliverySignup />} />
         <Route path="/delivery/otp" element={<DeliveryOTP />} />
-        <Route path="/delivery/referral-code" element={<DeliveryReferralCode />} />
+        <Route path="/delivery/referral" element={<DeliveryReferralCode />} />
         <Route path="/delivery/terms" element={<DeliveryTermsAndConditions />} />
         <Route path="/delivery/privacy" element={<DeliveryPrivacyPolicy />} />
         <Route path="/delivery/welcome" element={<AuthRedirect module="delivery"><DeliveryWelcome /></AuthRedirect>} />
@@ -838,8 +912,6 @@ export default function App() {
         <Route path="/admin/login" element={<AuthRedirect module="admin"><AdminLogin /></AuthRedirect>} />
         <Route path="/admin/signup" element={<AuthRedirect module="admin"><AdminSignup /></AuthRedirect>} />
         <Route path="/admin/forgot-password" element={<AuthRedirect module="admin"><AdminForgotPassword /></AuthRedirect>} />
-
-        {/* Hub Public & Protected Routes */}
         <Route path="/hub/login" element={<HubLogin />} />
         <Route
           path="/hub/*"
@@ -864,7 +936,9 @@ export default function App() {
           path="/*"
           element={<UserRouter />}
         />
-      </Routes>
+        </Routes>
+        </UserGeoLocationProvider>
+      </RoutePersistence>
     </Suspense>
   )
 }

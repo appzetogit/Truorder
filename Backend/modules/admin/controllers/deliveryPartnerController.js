@@ -1,6 +1,7 @@
 import Delivery from '../../delivery/models/Delivery.js';
 import { successResponse, errorResponse } from '../../../shared/utils/response.js';
 import { asyncHandler } from '../../../shared/middleware/asyncHandler.js';
+import { getDeliveryZoneFilter } from "../utils/hubZoneFilter.js";
 import mongoose from 'mongoose';
 import winston from 'winston';
 
@@ -33,11 +34,6 @@ export const getJoinRequests = asyncHandler(async (req, res) => {
 
     // Build query
     const query = {};
-    
-    // Hub Manager: filter by assigned zones
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      query['availability.zones'] = { $in: req.user.assignedZoneIds };
-    }
     
     // Status filter
     if (status === 'pending') {
@@ -387,16 +383,12 @@ export const getDeliveryPartners = asyncHandler(async (req, res) => {
       isActive,
       includeAvailability
     } = req.query;
+    const assignedZoneIds = req.zoneFilter?.zoneIds || [];
 
     // Build query - only get approved/active delivery partners for list
     const query = {
       status: { $in: ['approved', 'active'] } // Only show approved/active partners
     };
-
-    // Hub Manager: filter by assigned zones (delivery partners working in those zones)
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      query['availability.zones'] = { $in: req.user.assignedZoneIds };
-    }
     
     // Status filter (if provided, override default)
     if (status) {
@@ -416,6 +408,10 @@ export const getDeliveryPartners = asyncHandler(async (req, res) => {
         { phone: { $regex: search, $options: 'i' } },
         { deliveryId: { $regex: search, $options: 'i' } }
       ];
+    }
+
+    if (assignedZoneIds.length > 0) {
+      Object.assign(query, getDeliveryZoneFilter(assignedZoneIds));
     }
 
     // Calculate pagination

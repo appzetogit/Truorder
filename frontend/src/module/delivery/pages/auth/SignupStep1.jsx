@@ -322,15 +322,7 @@ export default function SignupStep1() {
       {/* Header */}
       <div className="bg-white px-4 py-3 flex items-center gap-4 border-b border-gray-200">
         <button
-          onClick={() => {
-            if (window.confirm("You must complete your profile to continue. Do you want to sign out instead?")) {
-              localStorage.removeItem("delivery_accessToken")
-              localStorage.removeItem("delivery_authenticated")
-              localStorage.removeItem("delivery_user")
-              localStorage.removeItem("delivery_needsSignup")
-              navigate("/delivery/sign-in", { replace: true })
-            }
-          }}
+          onClick={() => navigate(-1)}
           className="p-2 hover:bg-gray-100 rounded-full transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />

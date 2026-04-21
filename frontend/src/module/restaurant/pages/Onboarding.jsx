@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
-import { Image as ImageIcon, Upload, Clock, Calendar as CalendarIcon, Sparkles, ArrowLeft, Camera } from "lucide-react"
+import { Image as ImageIcon, Upload, Clock, Calendar as CalendarIcon, Sparkles, ArrowLeft, Camera, Trash2, X } from "lucide-react"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar } from "@/components/ui/calendar"
 import {
@@ -117,6 +117,14 @@ const timeToString = (date) => {
   return `${hours}:${minutes}`
 }
 
+const getUploadPreview = (upload, fallbackName = "Uploaded image") => {
+  if (!upload) return { url: null, name: fallbackName }
+  if (upload instanceof File) return { url: URL.createObjectURL(upload), name: upload.name || fallbackName }
+  if (upload?.url) return { url: upload.url, name: upload.name || fallbackName }
+  if (typeof upload === "string") return { url: upload, name: fallbackName }
+  return { url: null, name: upload.name || fallbackName }
+}
+
 function TimeSelector({ label, value, onChange }) {
   const timeValue = stringToTime(value)
 
@@ -178,8 +186,6 @@ export default function RestaurantOnboarding() {
   const [saving, setSaving] = useState(false)
   const mainContentRef = useRef(null)
   const [error, setError] = useState("")
-  const menuCameraInputRef = useRef(null)
-  const profileCameraInputRef = useRef(null)
   const panCameraInputRef = useRef(null)
   const fssaiCameraInputRef = useRef(null)
   const gstCameraInputRef = useRef(null)
@@ -235,6 +241,10 @@ export default function RestaurantOnboarding() {
   })
 
   const [step3Errors, setStep3Errors] = useState({})
+  const menuGalleryInputRef = useRef(null)
+  const menuCameraInputRef = useRef(null)
+  const profileGalleryInputRef = useRef(null)
+  const profileCameraInputRef = useRef(null)
 
   const validateStep3Field = (field, value, allStep3 = step3) => {
     const s = { ...allStep3, [field]: value }
@@ -308,6 +318,102 @@ export default function RestaurantOnboarding() {
   const handleStep3Blur = (field) => {
     const err = validateStep3Field(field, step3[field])
     setStep3Errors((prev) => ({ ...prev, [field]: err || null }))
+  }
+
+  const appendMenuImages = (files = []) => {
+    if (!files.length) return
+    setStep2((prev) => ({
+      ...prev,
+      menuImages: [...(prev.menuImages || []), ...files],
+    }))
+  }
+
+  const removeMenuImage = (indexToRemove) => {
+    setStep2((prev) => ({
+      ...prev,
+      menuImages: (prev.menuImages || []).filter((_, index) => index !== indexToRemove),
+    }))
+  }
+
+  const removeProfileImage = () => {
+    setStep2((prev) => ({
+      ...prev,
+      profileImage: null,
+    }))
+  }
+
+  const removeStep3Image = (field) => {
+    setStep3((prev) => ({
+      ...prev,
+      [field]: null,
+    }))
+    setStep3Errors((prev) => ({ ...prev, [field]: null }))
+  }
+
+  const handleMenuGallerySelection = (e) => {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
+    console.log("Menu images selected from gallery:", files.length)
+    appendMenuImages(files)
+    e.target.value = ""
+  }
+
+  const handleMenuCameraSelection = async () => {
+    if (hasFlutterCameraBridge()) {
+      const { success, file } = await openCameraViaFlutter()
+      if (success && file) {
+        appendMenuImages([file])
+      }
+      return
+    }
+
+    menuCameraInputRef.current?.click()
+  }
+
+  const handleMenuCameraInputChange = (e) => {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
+    console.log("Menu images captured from camera:", files.length)
+    appendMenuImages(files)
+    e.target.value = ""
+  }
+
+  const setProfileImageFile = (file) => {
+    if (!file) return
+    setStep2((prev) => ({
+      ...prev,
+      profileImage: file,
+    }))
+  }
+
+  const handleProfileGallerySelection = (e) => {
+    const file = e.target.files?.[0] || null
+    if (file) {
+      console.log("Profile image selected from gallery:", file.name)
+      setProfileImageFile(file)
+    }
+    e.target.value = ""
+  }
+
+  const handleProfileCameraSelection = async () => {
+    if (hasFlutterCameraBridge()) {
+      const { success, file } = await openCameraViaFlutter()
+      if (success && file) {
+        setProfileImageFile(file)
+      }
+      return
+    }
+
+    profileCameraInputRef.current?.click()
+  }
+
+  const handleProfileCameraInputChange = (e) => {
+    const file = e.target.files?.[0] || null
+    if (file) {
+      console.log("Profile image captured from camera:", file.name)
+      setProfileImageFile(file)
+    }
+    e.target.value = ""
   }
 
   // Load from localStorage on mount and check URL parameter
@@ -527,24 +633,6 @@ export default function RestaurantOnboarding() {
       console.error("Upload error:", errorMsg, err)
       throw new Error(`Image upload failed: ${errorMsg}`)
     }
-  }
-
-  const openOnboardingCamera = async ({ fallbackInputRef, onFile }) => {
-    if (hasFlutterCameraBridge()) {
-      const { success, file, error } = await openCameraViaFlutter({ source: "camera" })
-      if (success && file) {
-        onFile(file)
-        return
-      }
-
-      if (error) {
-        console.error("Onboarding camera bridge failed:", error)
-      }
-      toast.error("Could not open camera. Please try again.")
-      return
-    }
-
-    fallbackInputRef.current?.click()
   }
 
   // Validation functions for each step
@@ -843,6 +931,36 @@ export default function RestaurantOnboarding() {
     </div>
   )
 
+  const UploadedImageSummary = ({ image, label, onRemove }) => {
+    if (!image) return null
+
+    const { url, name } = getUploadPreview(image, label)
+
+    return (
+      <div className="mt-2 flex items-center gap-3 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-2">
+        <div className="h-10 w-10 shrink-0 overflow-hidden rounded-md bg-white flex items-center justify-center">
+          {url ? (
+            <img src={url} alt={label} className="h-full w-full object-cover" />
+          ) : (
+            <ImageIcon className="h-4 w-4 text-gray-500" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-medium text-gray-900">{name}</p>
+          <p className="text-[11px] text-gray-500">{label} selected</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:border-red-200 hover:text-red-600"
+          aria-label={`Remove ${label}`}
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+    )
+  }
+
   const handleNext = async () => {
     setError("")
 
@@ -902,7 +1020,12 @@ export default function RestaurantOnboarding() {
           }
         }
         // If menuImages already have URLs (from previous save), include them
-        const existingMenuUrls = step2.menuImages.filter((img) => !(img instanceof File) && (img?.url || (typeof img === 'string' && img.startsWith('http'))))
+        const existingMenuUrls = step2.menuImages
+          .filter((img) => !(img instanceof File) && (img?.url || (typeof img === 'string' && img.startsWith('http'))))
+          .map((img) => {
+            if (typeof img === "string") return { url: img }
+            return img
+          })
         const allMenuUrls = [...existingMenuUrls, ...menuUploads]
 
         // Verify we have at least one menu image
@@ -1133,8 +1256,9 @@ export default function RestaurantOnboarding() {
         }, 800)
       }
     } catch (err) {
-      const msg =
-        err?.response?.data?.message ||
+      const msg = err?.code === "ERR_NETWORK"
+        ? "Cannot connect to backend server. Please start backend and try again."
+        : err?.response?.data?.message ||
         err?.response?.data?.error ||
         err?.message ||
         "Failed to save onboarding data"
@@ -1333,50 +1457,31 @@ export default function RestaurantOnboarding() {
                 </span>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2 w-full">
-              <label
-                htmlFor="menuImagesInput"
-                className="inline-flex justify-center items-center gap-1.5 px-3 py-1.5 rounded-sm bg-white text-black border border-gray-200 text-xs font-medium cursor-pointer hover:bg-gray-50"
-              >
-                <Upload className="w-4.5 h-4.5" />
-                <span>Gallery</span>
-              </label>
-              <button
-                type="button"
-                className="inline-flex justify-center items-center gap-1.5 px-3 py-1.5 rounded-sm bg-white text-black border border-gray-200 text-xs font-medium cursor-pointer hover:bg-gray-50"
-                onClick={() => {
-                  openOnboardingCamera({
-                    fallbackInputRef: menuCameraInputRef,
-                    onFile: (file) => {
-                      setStep2((prev) => ({
-                        ...prev,
-                        menuImages: [...(prev.menuImages || []), file],
-                      }))
-                    },
-                  })
-                }}
-              >
-                <Camera className="w-4.5 h-4.5" />
-                <span>Camera</span>
-              </button>
-            </div>
+            <label
+              htmlFor="menuImagesInput"
+              onClick={async (e) => {
+                if (hasFlutterCameraBridge()) {
+                  e.preventDefault()
+                  const { success, file } = await openCameraViaFlutter()
+                  if (success && file) {
+                    setStep2((prev) => ({
+                      ...prev,
+                      menuImages: [...(prev.menuImages || []), file],
+                    }))
+                  }
+                }
+              }}
+              className="hidden"
+            >
+            </label>
             <input
               id="menuImagesInput"
+              ref={menuGalleryInputRef}
               type="file"
               multiple
               accept="image/*"
               className="hidden"
-              onChange={(e) => {
-                const files = Array.from(e.target.files || [])
-                if (!files.length) return
-                console.log('📸 Menu images selected:', files.length, 'files')
-                setStep2((prev) => ({
-                  ...prev,
-                  menuImages: [...(prev.menuImages || []), ...files], // Append new files to existing ones
-                }))
-                // Reset input to allow selecting same file again
-                e.target.value = ''
-              }}
+              onChange={handleMenuGallerySelection}
             />
             <input
               ref={menuCameraInputRef}
@@ -1385,44 +1490,49 @@ export default function RestaurantOnboarding() {
               accept="image/*"
               capture="environment"
               className="hidden"
-              onChange={(e) => {
-                const files = Array.from(e.target.files || [])
-                if (!files.length) return
-                console.log('ðŸ“¸ Menu camera images selected:', files.length, 'files')
-                setStep2((prev) => ({
-                  ...prev,
-                  menuImages: [...(prev.menuImages || []), ...files],
-                }))
-                e.target.value = ''
-              }}
+              onChange={handleMenuCameraInputChange}
             />
+            <div className="grid w-full grid-cols-2 gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full justify-center gap-1.5"
+                onClick={() => menuGalleryInputRef.current?.click()}
+              >
+                <Upload className="w-4.5 h-4.5" />
+                <span>Gallery</span>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full justify-center gap-1.5"
+                onClick={handleMenuCameraSelection}
+              >
+                <Camera className="w-4.5 h-4.5" />
+                <span>Camera</span>
+              </Button>
+            </div>
           </div>
 
           {/* Menu image previews */}
           {!!step2.menuImages.length && (
             <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
               {step2.menuImages.map((file, idx) => {
-                // Handle both File objects and URL objects
-                let imageUrl = null
-                let imageName = `Image ${idx + 1}`
-
-                if (file instanceof File) {
-                  imageUrl = URL.createObjectURL(file)
-                  imageName = file.name
-                } else if (file?.url) {
-                  // If it's an object with url property (from backend)
-                  imageUrl = file.url
-                  imageName = file.name || `Image ${idx + 1}`
-                } else if (typeof file === 'string') {
-                  // If it's a direct URL string
-                  imageUrl = file
-                }
+                const { url: imageUrl, name: imageName } = getUploadPreview(file, `Image ${idx + 1}`)
 
                 return (
                   <div
                     key={idx}
                     className="relative aspect-[4/5] rounded-md overflow-hidden bg-gray-100"
                   >
+                    <button
+                      type="button"
+                      onClick={() => removeMenuImage(idx)}
+                      className="absolute right-1.5 top-1.5 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md bg-black/75 text-white hover:bg-red-600 transition-colors"
+                      aria-label={`Remove menu image ${idx + 1}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                     {imageUrl ? (
                       <img
                         src={imageUrl}
@@ -1450,27 +1560,27 @@ export default function RestaurantOnboarding() {
         <div className="space-y-2">
           <Label className="text-xs font-medium text-gray-700">Restaurant profile image</Label>
           <div className="flex items-center gap-4">
-            <div className="h-16 w-16 rounded-full bg-gray-100 flex items-center justify-center overflow-hidden">
+            <div className="relative h-16 w-16 rounded-full bg-gray-100 flex items-center justify-center overflow-hidden">
               {step2.profileImage ? (
                 (() => {
-                  let imageSrc = null;
-
-                  if (step2.profileImage instanceof File) {
-                    imageSrc = URL.createObjectURL(step2.profileImage);
-                  } else if (step2.profileImage?.url) {
-                    // If it's an object with url property (from backend)
-                    imageSrc = step2.profileImage.url;
-                  } else if (typeof step2.profileImage === 'string') {
-                    // If it's a direct URL string
-                    imageSrc = step2.profileImage;
-                  }
+                  const { url: imageSrc } = getUploadPreview(step2.profileImage, "Restaurant profile")
 
                   return imageSrc ? (
-                    <img
-                      src={imageSrc}
-                      alt="Restaurant profile"
-                      className="w-full h-full object-cover"
-                    />
+                    <>
+                      <img
+                        src={imageSrc}
+                        alt="Restaurant profile"
+                        className="w-full h-full object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={removeProfileImage}
+                        className="absolute right-0 top-0 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/75 text-white hover:bg-red-600 transition-colors"
+                        aria-label="Remove restaurant profile image"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </>
                   ) : (
                     <ImageIcon className="w-6 h-6 text-gray-500" />
                   );
@@ -1490,47 +1600,27 @@ export default function RestaurantOnboarding() {
             </div>
 
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <label
-              htmlFor="profileImageInput"
-              className="inline-flex justify-center items-center gap-1.5 px-3 py-1.5 rounded-sm bg-white text-black border border-gray-200 text-xs font-medium cursor-pointer hover:bg-gray-50"
-            >
-              <Upload className="w-4.5 h-4.5" />
-              <span>Gallery</span>
-            </label>
-            <button
-              type="button"
-              className="inline-flex justify-center items-center gap-1.5 px-3 py-1.5 rounded-sm bg-white text-black border border-gray-200 text-xs font-medium cursor-pointer hover:bg-gray-50"
-              onClick={() => {
-                openOnboardingCamera({
-                  fallbackInputRef: profileCameraInputRef,
-                  onFile: (file) => {
-                    setStep2((prev) => ({ ...prev, profileImage: file }))
-                  },
-                })
-              }}
-            >
-              <Camera className="w-4.5 h-4.5" />
-              <span>Camera</span>
-            </button>
-          </div>
+          <label
+            htmlFor="profileImageInput"
+            onClick={async (e) => {
+              if (hasFlutterCameraBridge()) {
+                e.preventDefault()
+                const { success, file } = await openCameraViaFlutter()
+                if (success && file) {
+                  setStep2((prev) => ({ ...prev, profileImage: file }))
+                }
+              }
+            }}
+            className="hidden"
+          >
+          </label>
           <input
             id="profileImageInput"
+            ref={profileGalleryInputRef}
             type="file"
             accept="image/*"
             className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0] || null
-              if (file) {
-                console.log('📸 Profile image selected:', file.name)
-                setStep2((prev) => ({
-                  ...prev,
-                  profileImage: file,
-                }))
-              }
-              // Reset input to allow selecting same file again
-              e.target.value = ''
-            }}
+            onChange={handleProfileGallerySelection}
           />
           <input
             ref={profileCameraInputRef}
@@ -1538,18 +1628,28 @@ export default function RestaurantOnboarding() {
             accept="image/*"
             capture="environment"
             className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0] || null
-              if (file) {
-                console.log('ðŸ“¸ Profile camera image selected:', file.name)
-                setStep2((prev) => ({
-                  ...prev,
-                  profileImage: file,
-                }))
-              }
-              e.target.value = ''
-            }}
+            onChange={handleProfileCameraInputChange}
           />
+          <div className="grid w-full grid-cols-2 gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full justify-center gap-1.5"
+              onClick={() => profileGalleryInputRef.current?.click()}
+            >
+              <Upload className="w-4.5 h-4.5" />
+              <span>Gallery</span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full justify-center gap-1.5"
+              onClick={handleProfileCameraSelection}
+            >
+              <Camera className="w-4.5 h-4.5" />
+              <span>Camera</span>
+            </Button>
+          </div>
         </div>
       </section>
 
@@ -1681,6 +1781,7 @@ export default function RestaurantOnboarding() {
                 onChange={(e) => {
                   setStep3({ ...step3, panImage: e.target.files?.[0] || null })
                   setStep3Errors((p) => ({ ...p, panImage: null }))
+                  e.target.value = ""
                 }}
               />
             </label>
@@ -1697,24 +1798,31 @@ export default function RestaurantOnboarding() {
                   e.target.value = ""
                 }}
               />
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-md bg-white text-sm cursor-pointer hover:bg-gray-50"
-                  onClick={() => {
-                    openOnboardingCamera({
-                      fallbackInputRef: panCameraInputRef,
-                      onFile: (file) => {
-                        setStep3({ ...step3, panImage: file })
-                        setStep3Errors((p) => ({ ...p, panImage: null }))
-                      },
-                    })
-                  }}
-                >
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-md bg-white text-sm cursor-pointer hover:bg-gray-50"
+                onClick={async () => {
+                  if (hasFlutterCameraBridge()) {
+                    const { success, file } = await openCameraViaFlutter()
+                    if (success && file) {
+                      setStep3({ ...step3, panImage: file })
+                      setStep3Errors((p) => ({ ...p, panImage: null }))
+                    }
+                  } else {
+                    panCameraInputRef.current?.click()
+                  }
+                }}
+              >
                 <Camera className="w-4 h-4" />
                 <span>Camera</span>
               </button>
             </>
           </div>
+          <UploadedImageSummary
+            image={step3.panImage}
+            label="PAN image"
+            onRemove={() => removeStep3Image("panImage")}
+          />
           {step3Errors.panImage && <p className="text-xs text-red-500 mt-1">{step3Errors.panImage}</p>}
         </div>
       </section>
@@ -1791,6 +1899,7 @@ export default function RestaurantOnboarding() {
                   onChange={(e) => {
                     setStep3({ ...step3, gstImage: e.target.files?.[0] || null })
                     setStep3Errors((p) => ({ ...p, gstImage: null }))
+                    e.target.value = ""
                   }}
                   className="hidden"
                 />
@@ -1811,14 +1920,16 @@ export default function RestaurantOnboarding() {
                 <button
                   type="button"
                   className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-md bg-white text-sm cursor-pointer hover:bg-gray-50"
-                  onClick={() => {
-                    openOnboardingCamera({
-                      fallbackInputRef: gstCameraInputRef,
-                      onFile: (file) => {
+                  onClick={async () => {
+                    if (hasFlutterCameraBridge()) {
+                      const { success, file } = await openCameraViaFlutter()
+                      if (success && file) {
                         setStep3({ ...step3, gstImage: file })
                         setStep3Errors((p) => ({ ...p, gstImage: null }))
-                      },
-                    })
+                      }
+                    } else {
+                      gstCameraInputRef.current?.click()
+                    }
                   }}
                 >
                   <Camera className="w-4 h-4" />
@@ -1826,6 +1937,11 @@ export default function RestaurantOnboarding() {
                 </button>
               </>
             </div>
+            <UploadedImageSummary
+              image={step3.gstImage}
+              label="GST image"
+              onRemove={() => removeStep3Image("gstImage")}
+            />
             {step3Errors.gstImage && <p className="text-xs text-red-500 mt-1">{step3Errors.gstImage}</p>}
           </div>
         )}
@@ -1902,6 +2018,7 @@ export default function RestaurantOnboarding() {
               onChange={(e) => {
                 setStep3({ ...step3, fssaiImage: e.target.files?.[0] || null })
                 setStep3Errors((p) => ({ ...p, fssaiImage: null }))
+                e.target.value = ""
               }}
             />
           </label>
@@ -1921,14 +2038,16 @@ export default function RestaurantOnboarding() {
             <button
               type="button"
               className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-md bg-white text-sm cursor-pointer hover:bg-gray-50"
-              onClick={() => {
-                openOnboardingCamera({
-                  fallbackInputRef: fssaiCameraInputRef,
-                  onFile: (file) => {
+              onClick={async () => {
+                if (hasFlutterCameraBridge()) {
+                  const { success, file } = await openCameraViaFlutter()
+                  if (success && file) {
                     setStep3({ ...step3, fssaiImage: file })
                     setStep3Errors((p) => ({ ...p, fssaiImage: null }))
-                  },
-                })
+                  }
+                } else {
+                  fssaiCameraInputRef.current?.click()
+                }
               }}
             >
               <Camera className="w-4 h-4" />
@@ -1936,6 +2055,11 @@ export default function RestaurantOnboarding() {
             </button>
           </>
         </div>
+        <UploadedImageSummary
+          image={step3.fssaiImage}
+          label="FSSAI image"
+          onRemove={() => removeStep3Image("fssaiImage")}
+        />
         {step3Errors.fssaiImage && <p className="text-xs text-red-500 mt-1">{step3Errors.fssaiImage}</p>}
       </section>
 
@@ -2093,7 +2217,7 @@ export default function RestaurantOnboarding() {
             <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-white" />
             </div>
-            <div className="text-sm font-bold text-black tracking-tight">Truorder Onboarding</div>
+            <div className="text-sm font-bold text-black tracking-tight">Tastizo Onboarding</div>
           </div>
           <div className="flex items-center gap-3">
             {import.meta.env.DEV && (

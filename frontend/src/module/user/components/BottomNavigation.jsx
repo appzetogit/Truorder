@@ -1,8 +1,28 @@
 import { Link, useLocation } from "react-router-dom"
 import { UtensilsCrossed, Tag, User, Truck } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
 
 export default function BottomNavigation() {
   const location = useLocation()
+  const [isHidden, setIsHidden] = useState(false)
+  const lastScrollY = useRef(0)
+
+  useEffect(() => {
+    lastScrollY.current = window.scrollY || 0
+
+    const handleScroll = () => {
+      const currentScrollY = window.scrollY || 0
+      const scrollDelta = currentScrollY - lastScrollY.current
+
+      if (Math.abs(scrollDelta) < 8) return
+
+      setIsHidden(currentScrollY > 24 && scrollDelta > 0)
+      lastScrollY.current = currentScrollY
+    }
+
+    window.addEventListener("scroll", handleScroll, { passive: true })
+    return () => window.removeEventListener("scroll", handleScroll)
+  }, [])
 
   // Check active routes - support both /user/* and /* paths
   const isDining = location.pathname === "/dining" || location.pathname === "/user/dining"
@@ -12,31 +32,23 @@ export default function BottomNavigation() {
 
   return (
     <div
-      className="md:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-[#1a1a1a] border-t border-gray-200 dark:border-gray-800 z-50 shadow-lg"
+      className={`md:hidden fixed bottom-[-1px] left-0 right-0 bg-white dark:bg-[#1a1a1a] border-t border-gray-200 dark:border-gray-800 z-50 shadow-lg pb-6 transition-transform duration-300 ease-in-out ${isHidden ? "translate-y-full" : "translate-y-0"}`}
     >
       <div className="flex items-center justify-around h-auto px-4 sm:px-6">
         {/* Delivery Tab */}
         <Link
           to="/"
-          className={`flex flex-col items-center gap-1.5 px-4 sm:px-5 py-2 transition-all duration-200 relative ${
-            isDelivery ? "text-[#1FCAD3]" : "text-gray-600 dark:text-gray-400"
-          }`}
+          className={`flex flex-col items-center gap-1.5 px-4 sm:px-5 py-2 transition-all duration-200 relative ${isDelivery
+            ? "text-[#2A9C64]"
+            : "text-gray-600 dark:text-gray-400"
+            }`}
         >
-          <Truck
-            className={`h-5 w-5 ${
-              isDelivery ? "text-[#1FCAD3] fill-[#1FCAD3]" : "text-gray-600 dark:text-gray-400"
-            }`}
-            strokeWidth={2}
-          />
-          <span
-            className={`text-xs sm:text-sm font-medium ${
-              isDelivery ? "text-[#1FCAD3] font-semibold" : "text-gray-600 dark:text-gray-400"
-            }`}
-          >
+          <Truck className={`h-5 w-5 ${isDelivery ? "text-[#2A9C64] fill-[#2A9C64]" : "text-gray-600 dark:text-gray-400"}`} strokeWidth={2} />
+          <span className={`text-xs sm:text-sm font-medium ${isDelivery ? "text-[#2A9C64] font-semibold" : "text-gray-600 dark:text-gray-400"}`}>
             Delivery
           </span>
           {isDelivery && (
-            <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#1FCAD3] rounded-b-full" />
+            <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#2A9C64] rounded-b-full" />
           )}
         </Link>
 
@@ -46,25 +58,17 @@ export default function BottomNavigation() {
         {/* Under 250 Tab */}
         <Link
           to="/under-250"
-          className={`flex flex-col items-center gap-1.5 px-4 sm:px-5 py-2 transition-all duration-200 relative ${
-            isUnder250 ? "text-[#1FCAD3]" : "text-gray-600 dark:text-gray-400"
-          }`}
+          className={`flex flex-col items-center gap-1.5 px-4 sm:px-5 py-2 transition-all duration-200 relative ${isUnder250
+            ? "text-[#2A9C64]"
+            : "text-gray-600 dark:text-gray-400"
+            }`}
         >
-          <Tag
-            className={`h-5 w-5 ${
-              isUnder250 ? "text-[#1FCAD3] fill-[#1FCAD3]" : "text-gray-600 dark:text-gray-400"
-            }`}
-            strokeWidth={2}
-          />
-          <span
-            className={`text-xs sm:text-sm font-medium ${
-              isUnder250 ? "text-[#1FCAD3] font-semibold" : "text-gray-600 dark:text-gray-400"
-            }`}
-          >
+          <Tag className={`h-5 w-5 ${isUnder250 ? "text-[#2A9C64] fill-[#2A9C64]" : "text-gray-600 dark:text-gray-400"}`} strokeWidth={2} />
+          <span className={`text-xs sm:text-sm font-medium ${isUnder250 ? "text-[#2A9C64] font-semibold" : "text-gray-600 dark:text-gray-400"}`}>
             Under 200
           </span>
           {isUnder250 && (
-            <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#1FCAD3] rounded-b-full" />
+            <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#2A9C64] rounded-b-full" />
           )}
         </Link>
 
@@ -74,25 +78,17 @@ export default function BottomNavigation() {
         {/* Dining Tab */}
         <Link
           to="/user/dining"
-          className={`flex flex-col items-center gap-1.5 px-4 sm:px-5 py-2 transition-all duration-200 relative ${
-            isDining ? "text-[#1FCAD3]" : "text-gray-600 dark:text-gray-400"
-          }`}
+          className={`flex flex-col items-center gap-1.5 px-4 sm:px-5 py-2 transition-all duration-200 relative ${isDining
+            ? "text-[#2A9C64]"
+            : "text-gray-600 dark:text-gray-400"
+            }`}
         >
-          <UtensilsCrossed
-            className={`h-5 w-5 ${
-              isDining ? "text-[#1FCAD3] fill-[#1FCAD3]" : "text-gray-600 dark:text-gray-400"
-            }`}
-            strokeWidth={2}
-          />
-          <span
-            className={`text-xs sm:text-sm font-medium ${
-              isDining ? "text-[#1FCAD3] font-semibold" : "text-gray-600 dark:text-gray-400"
-            }`}
-          >
+          <UtensilsCrossed className={`h-5 w-5 ${isDining ? "text-[#2A9C64] fill-[#2A9C64]" : "text-gray-600 dark:text-gray-400"}`} strokeWidth={2} />
+          <span className={`text-xs sm:text-sm font-medium ${isDining ? "text-[#2A9C64] font-semibold" : "text-gray-600 dark:text-gray-400"}`}>
             Dining
           </span>
           {isDining && (
-            <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#1FCAD3] rounded-b-full" />
+            <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#2A9C64] rounded-b-full" />
           )}
         </Link>
 
@@ -102,24 +98,17 @@ export default function BottomNavigation() {
         {/* Profile Tab */}
         <Link
           to="/user/profile"
-          className={`flex flex-col items-center gap-1.5 px-4 sm:px-5 py-2 transition-all duration-200 relative ${
-            isProfile ? "text-[#1FCAD3]" : "text-gray-600 dark:text-gray-400"
-          }`}
+          className={`flex flex-col items-center gap-1.5 px-4 sm:px-5 py-2 transition-all duration-200 relative ${isProfile
+            ? "text-[#2A9C64]"
+            : "text-gray-600 dark:text-gray-400"
+            }`}
         >
-          <User
-            className={`h-5 w-5 ${
-              isProfile ? "text-[#1FCAD3] fill-[#1FCAD3]" : "text-gray-600 dark:text-gray-400"
-            }`}
-          />
-          <span
-            className={`text-xs sm:text-sm font-medium ${
-              isProfile ? "text-[#1FCAD3] font-semibold" : "text-gray-600 dark:text-gray-400"
-            }`}
-          >
+          <User className={`h-5 w-5 ${isProfile ? "text-[#2A9C64] fill-[#2A9C64]" : "text-gray-600 dark:text-gray-400"}`} />
+          <span className={`text-xs sm:text-sm font-medium ${isProfile ? "text-[#2A9C64] font-semibold" : "text-gray-600 dark:text-gray-400"}`}>
             Profile
           </span>
           {isProfile && (
-            <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#1FCAD3] rounded-b-full" />
+            <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#2A9C64] rounded-b-full" />
           )}
         </Link>
       </div>

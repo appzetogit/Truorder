@@ -27,9 +27,33 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { restaurantAPI } from "@/lib/api"
 import { toast } from "sonner"
-import { openCameraViaFlutter, hasFlutterCameraBridge } from "@/lib/utils/cameraBridge"
+import { openCameraViaFlutter, openGalleryViaFlutter, hasFlutterCameraBridge } from "@/lib/utils/cameraBridge"
+import tastizoLogo from "@/assets/tastizologo.png"
 
 const CUISINES_STORAGE_KEY = "restaurant_cuisines"
+const DEFAULT_RESTAURANT_IMAGE = tastizoLogo
+
+const resolveProfileImageUrl = (restaurant) => {
+  if (!restaurant) return null
+
+  if (typeof restaurant.profileImage === "string" && restaurant.profileImage.trim()) {
+    return restaurant.profileImage
+  }
+
+  if (restaurant.profileImage?.url) {
+    return restaurant.profileImage.url
+  }
+
+  if (typeof restaurant.profileImageUrl === "string" && restaurant.profileImageUrl.trim()) {
+    return restaurant.profileImageUrl
+  }
+
+  if (restaurant.profileImageUrl?.url) {
+    return restaurant.profileImageUrl.url
+  }
+
+  return null
+}
 
 export default function OutletInfo() {
   const navigate = useNavigate()
@@ -40,8 +64,8 @@ export default function OutletInfo() {
   const [restaurantName, setRestaurantName] = useState("")
   const [cuisineTags, setCuisineTags] = useState("")
   const [address, setAddress] = useState("")
-  const [mainImage, setMainImage] = useState("https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=800&h=400&fit=crop")
-  const [thumbnailImage, setThumbnailImage] = useState("https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=200&h=200&fit=crop")
+  const [mainImage, setMainImage] = useState(DEFAULT_RESTAURANT_IMAGE)
+  const [thumbnailImage, setThumbnailImage] = useState(DEFAULT_RESTAURANT_IMAGE)
   const [coverImages, setCoverImages] = useState([]) // Array of cover images (separate from menu images)
   const [showEditNameDialog, setShowEditNameDialog] = useState(false)
   const [editNameValue, setEditNameValue] = useState("")
@@ -50,8 +74,11 @@ export default function OutletInfo() {
   const [uploadingImage, setUploadingImage] = useState(false)
   const [imageType, setImageType] = useState(null) // 'profile' or 'menu'
   const [uploadingCount, setUploadingCount] = useState(0) // Track how many images are being uploaded
+  const [showImageSourceDialog, setShowImageSourceDialog] = useState(false)
+  const [imageActionTarget, setImageActionTarget] = useState(null) // 'profile' | 'cover'
   const profileImageInputRef = useRef(null)
   const menuImageInputRef = useRef(null)
+  const hasCustomProfileImage = thumbnailImage && thumbnailImage !== DEFAULT_RESTAURANT_IMAGE
 
   // Format address from location object
   const formatAddress = (location) => {
@@ -117,8 +144,11 @@ export default function OutletInfo() {
           }
           
           // Set images
-          if (data.profileImage?.url) {
-            setThumbnailImage(data.profileImage.url)
+          const resolvedProfileImage = resolveProfileImageUrl(data)
+          if (resolvedProfileImage) {
+            setThumbnailImage(resolvedProfileImage)
+          } else {
+            setThumbnailImage(DEFAULT_RESTAURANT_IMAGE)
           }
           // Use coverImages if available, otherwise fallback to menuImages for backward compatibility
           if (data.coverImages && Array.isArray(data.coverImages) && data.coverImages.length > 0) {
@@ -139,6 +169,7 @@ export default function OutletInfo() {
             setMainImage(data.menuImages[0].url)
           } else {
             setCoverImages([])
+            setMainImage(DEFAULT_RESTAURANT_IMAGE)
           }
         }
       } catch (error) {
@@ -241,8 +272,9 @@ export default function OutletInfo() {
         const data = response?.data?.data?.restaurant || response?.data?.restaurant
         if (data) {
           setRestaurantData(data)
-          if (data.profileImage?.url) {
-            setThumbnailImage(data.profileImage.url)
+          const resolvedProfileImage = resolveProfileImageUrl(data)
+          if (resolvedProfileImage) {
+            setThumbnailImage(resolvedProfileImage)
           } else if (uploadedImage.url) {
             // Fallback to uploaded image URL
             setThumbnailImage(uploadedImage.url)
@@ -265,30 +297,56 @@ export default function OutletInfo() {
     }
   }
 
-  // Bridge-aware handler for editing profile photo
-  const handleEditPhotoClick = async () => {
-    if (!hasFlutterCameraBridge()) {
-      profileImageInputRef.current?.click()
+  const handleRemoveProfilePhoto = async () => {
+    if (!hasCustomProfileImage || uploadingImage) return
+    if (!window.confirm("Are you sure you want to remove the profile photo?")) {
       return
     }
 
     try {
-      const result = await openCameraViaFlutter()
+      setUploadingImage(true)
+      setImageType("profile")
+      setShowImageSourceDialog(false)
 
-      if (result?.success && result.file) {
-        const syntheticEvent = { target: { files: [result.file] } }
-        await handleProfileImageReplace(syntheticEvent)
-      } else if (result && !result.success) {
-        console.error("Flutter camera returned unsuccessful result:", result)
-        toast.error("Failed to capture image from camera")
-      } else {
-        console.log("Camera cancelled by user or no result returned")
+      await restaurantAPI.updateProfile({ profileImage: null })
+
+      setThumbnailImage(DEFAULT_RESTAURANT_IMAGE)
+      setRestaurantData((prev) =>
+        prev
+          ? {
+              ...prev,
+              profileImage: null,
+              profileImageUrl: null,
+            }
+          : prev,
+      )
+
+      try {
+        const response = await restaurantAPI.getCurrentRestaurant()
+        const data = response?.data?.data?.restaurant || response?.data?.restaurant
+        if (data) {
+          setRestaurantData(data)
+          const resolvedProfileImage = resolveProfileImageUrl(data)
+          setThumbnailImage(resolvedProfileImage || DEFAULT_RESTAURANT_IMAGE)
+        }
+      } catch (refreshError) {
+        console.error("Error refreshing restaurant after removing profile image:", refreshError)
       }
     } catch (error) {
-      console.error("Error opening camera for profile image:", error)
-      toast.error("Failed to open camera. Please try again.")
-      profileImageInputRef.current?.click()
+      console.error("Error removing profile image:", error)
+      alert(error?.response?.data?.message || error?.message || "Failed to remove profile photo. Please try again.")
+    } finally {
+      setUploadingImage(false)
+      setImageType(null)
+      if (profileImageInputRef.current) {
+        profileImageInputRef.current.value = null
+      }
     }
+  }
+
+  const openImageSourceDialog = (target) => {
+    setImageActionTarget(target)
+    setShowImageSourceDialog(true)
   }
 
   // Handle multiple cover images addition (separate from menu images)
@@ -427,31 +485,103 @@ export default function OutletInfo() {
     }
   }
 
-  // Bridge-aware handler for adding cover images
-  const handleAddCoverImageClick = async () => {
-    if (!hasFlutterCameraBridge()) {
-      menuImageInputRef.current?.click()
+  const openNativeFilePicker = (target, useCamera) => {
+    const inputRef = target === "profile" ? profileImageInputRef : menuImageInputRef
+    const input = inputRef.current
+    if (!input) return
+
+    if (useCamera) {
+      input.setAttribute("capture", "environment")
+      input.removeAttribute("multiple")
+    } else {
+      input.removeAttribute("capture")
+      if (target === "cover") {
+        input.setAttribute("multiple", "multiple")
+      } else {
+        input.removeAttribute("multiple")
+      }
+    }
+    input.click()
+  }
+
+  const handleImageSourceSelect = async (source) => {
+    const target = imageActionTarget
+    setShowImageSourceDialog(false)
+    if (!target) return
+
+    if (source === "gallery") {
+      if (hasFlutterCameraBridge()) {
+        const flutterResult = await openGalleryViaFlutter()
+        if (flutterResult?.success && flutterResult.file) {
+          const syntheticEvent = { target: { files: [flutterResult.file] } }
+          if (target === "profile") {
+            await handleProfileImageReplace(syntheticEvent)
+          } else {
+            await handleCoverImageAdd(syntheticEvent)
+          }
+          return
+        }
+      }
+      openNativeFilePicker(target, false)
       return
     }
 
-    try {
-      const result = await openCameraViaFlutter()
-
-      if (result?.success && result.file) {
-        const syntheticEvent = { target: { files: [result.file] } }
-        await handleCoverImageAdd(syntheticEvent)
-      } else if (result && !result.success) {
-        console.error("Flutter camera returned unsuccessful result for cover image:", result)
-        toast.error("Failed to capture image from camera")
-      } else {
-        console.log("Cover image camera cancelled by user or no result returned")
+    if (source === "camera") {
+      if (hasFlutterCameraBridge()) {
+        try {
+          const result = await openCameraViaFlutter()
+          if (result?.success && result.file) {
+            const syntheticEvent = { target: { files: [result.file] } }
+            if (target === "profile") {
+              await handleProfileImageReplace(syntheticEvent)
+            } else {
+              await handleCoverImageAdd(syntheticEvent)
+            }
+            return
+          }
+        } catch (error) {
+          console.error("Error opening camera via Flutter:", error)
+        }
       }
-    } catch (error) {
-      console.error("Error opening camera for cover image:", error)
-      toast.error("Failed to open camera. Please try again.")
-      menuImageInputRef.current?.click()
+      openNativeFilePicker(target, true)
     }
   }
+
+  // Bridge-aware handler for editing profile photo
+  const handleEditPhotoClick = async () => {
+    openImageSourceDialog("profile")
+  }
+
+  // Bridge-aware handler for adding cover images
+  const handleAddCoverImageClick = async () => {
+    openImageSourceDialog("cover")
+  }
+
+  const closeImageSourceDialog = () => {
+    setShowImageSourceDialog(false)
+    setImageActionTarget(null)
+  }
+
+  useEffect(() => {
+    if (!showImageSourceDialog) return
+    const onEsc = (event) => {
+      if (event.key === "Escape") closeImageSourceDialog()
+    }
+    window.addEventListener("keydown", onEsc)
+    return () => window.removeEventListener("keydown", onEsc)
+  }, [showImageSourceDialog])
+
+  useEffect(() => {
+    if (!showImageSourceDialog) {
+      setImageActionTarget(null)
+    }
+  }, [showImageSourceDialog])
+
+  // Keep menu input behavior aligned with selected mode
+  useEffect(() => {
+    if (!menuImageInputRef.current) return
+    menuImageInputRef.current.setAttribute("multiple", "multiple")
+  }, [])
 
   // Handle cover image deletion
   const handleCoverImageDelete = async (indexToDelete) => {
@@ -475,7 +605,7 @@ export default function OutletInfo() {
         setMainImage(updatedImages[0].url)
       } else if (updatedImages.length === 0) {
         // If no images left, set default
-        setMainImage("https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=800&h=400&fit=crop")
+        setMainImage(DEFAULT_RESTAURANT_IMAGE)
       }
 
       // Update backend - convert coverImages back to menuImages format for API
@@ -671,7 +801,7 @@ export default function OutletInfo() {
         <img 
           src={mainImage}
           alt="Restaurant banner"
-          className="w-full h-full object-cover"
+          className={`w-full h-full ${mainImage === DEFAULT_RESTAURANT_IMAGE ? "object-contain bg-[#18a05e] p-6" : "object-cover"}`}
         />
         
         {/* Add Image Button - Black background with white text */}
@@ -738,7 +868,7 @@ export default function OutletInfo() {
             <img 
               src={thumbnailImage}
               alt="Restaurant thumbnail"
-              className="w-full h-full rounded-xl object-cover"
+              className={`w-full h-full rounded-xl ${thumbnailImage === DEFAULT_RESTAURANT_IMAGE ? "object-contain bg-white p-2" : "object-cover"}`}
             />
           </div>
           <button
@@ -937,6 +1067,44 @@ export default function OutletInfo() {
               Save
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showImageSourceDialog} onOpenChange={(open) => {
+        if (!open) closeImageSourceDialog()
+      }}>
+        <DialogContent className="sm:max-w-sm p-4 w-[90%]">
+          <DialogHeader>
+            <DialogTitle>Select image source</DialogTitle>
+            <DialogDescription>
+              Choose how you want to upload your image.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-1 gap-3 py-2">
+            <Button
+              type="button"
+              onClick={() => handleImageSourceSelect("camera")}
+              className="bg-black text-white hover:bg-black/90"
+            >
+              Camera
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => handleImageSourceSelect("gallery")}
+            >
+              Gallery
+            </Button>
+            {imageActionTarget === "profile" && hasCustomProfileImage && (
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={handleRemoveProfilePhoto}
+              >
+                Remove photo
+              </Button>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

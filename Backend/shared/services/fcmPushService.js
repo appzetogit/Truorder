@@ -43,7 +43,9 @@ async function getFcmTokens(sendTo, zone) {
       .lean();
     deliveries.forEach(addTokens);
   } else if (sendTo === "Restaurant") {
-    const query = { status: "approved" };
+    // Restaurant approval is stored as isActive (see admin approveRestaurant),
+    // not status: "approved". Match active restaurants only.
+    const query = { isActive: true };
     const restaurants = await Restaurant.find(query)
       .select("fcmTokenWeb fcmTokenAndroid fcmTokenIos")
       .lean();
@@ -65,40 +67,30 @@ async function sendToToken(token, payload) {
       return { success: false, error: "Firebase Admin not initialized" };
     }
 
-    const { title, body, image } = payload;
+    const { title, body, image, data = {}, link = "/" } = payload;
+    const stringData = Object.entries(data).reduce((acc, [key, value]) => {
+      if (value !== undefined && value !== null) {
+        acc[key] = String(value);
+      }
+      return acc;
+    }, {});
     const message = {
       token,
+      data: stringData,
       notification: {
-        title: title || "TruOrder",
+        title: title || "Notification",
         body: body || "",
         ...(image && { image }),
       },
       webpush: {
-        notification: {
-          title: title || "TruOrder",
-          body: body || "",
-          icon: "/notification-icon.png",
-          badge: "/notification-icon.png",
-          ...(image && { image }),
-          requireInteraction: false,
-          vibrate: [200, 100, 200],
-          actions: [
-            { action: "open", title: "View" },
-            { action: "dismiss", title: "Dismiss" },
-          ],
-        },
         fcmOptions: {
-          link: "/",
+          link,
         },
       },
       android: {
         notification: {
-          title: title || "TruOrder",
+          title: title || "Notification",
           body: body || "",
-          color: "#FF6B35",
-          icon: "ic_notification",
-          sound: "default",
-          channelId: "truorder_orders",
           ...(image && { imageUrl: image }),
         },
       },
@@ -106,11 +98,10 @@ async function sendToToken(token, payload) {
         payload: {
           aps: {
             alert: {
-              title: title || "TruOrder",
+              title: title || "Notification",
               body: body || "",
             },
             sound: "default",
-            badge: 1,
           },
         },
         fcmOptions: {
@@ -134,42 +125,30 @@ async function sendToToken(token, payload) {
   }
 }
 
-/**
- * Send FCM push to a single entity (user/restaurant/delivery) by ID.
- * Silently returns on any failure so it never blocks the caller.
- * @param {"user"|"restaurant"|"delivery"} role
- * @param {string} entityId - MongoDB _id
- * @param {{ title: string, body: string, image?: string, data?: object }} payload
- * @returns {Promise<{ sent: number, failed: number }>}
- */
-export async function sendPushToEntity(role, entityId, { title, body, image, data } = {}) {
-  const result = { sent: 0, failed: 0 };
-  try {
-    if (!admin.apps.length || !entityId) return result;
+export async function sendPushToTokens(tokens = [], payload = {}) {
+  const result = { sent: 0, failed: 0, total: 0, errors: [] };
 
-    const select = "fcmTokenWeb fcmTokenAndroid fcmTokenIos";
-    let entity;
-    if (role === "user") {
-      entity = await User.findById(entityId).select(select).lean();
-    } else if (role === "restaurant") {
-      entity = await Restaurant.findById(entityId).select(select).lean();
-    } else if (role === "delivery") {
-      entity = await Delivery.findById(entityId).select(select).lean();
-    }
-    if (!entity) return result;
+  const uniqueTokens = [...new Set((tokens || []).filter(Boolean))];
+  result.total = uniqueTokens.length;
 
-    const tokens = [entity.fcmTokenWeb, entity.fcmTokenAndroid, entity.fcmTokenIos].filter(Boolean);
-    if (tokens.length === 0) return result;
-
-    const msg = { title: title || "Notification", body: body || "", image: image || undefined };
-    for (const token of tokens) {
-      const res = await sendToToken(token, msg);
-      if (res.success) result.sent++;
-      else result.failed++;
-    }
-  } catch (err) {
-    console.error(`[FCM] sendPushToEntity(${role}, ${entityId}) error:`, err.message);
+  if (!admin.apps.length) {
+    result.errors.push("Firebase Admin not initialized");
+    result.failed = uniqueTokens.length;
+    return result;
   }
+
+  for (const token of uniqueTokens) {
+    const res = await sendToToken(token, payload);
+    if (res.success) {
+      result.sent++;
+    } else {
+      result.failed++;
+      if (res.error && res.error !== "invalid_token") {
+        result.errors.push(res.error);
+      }
+    }
+  }
+
   return result;
 }
 

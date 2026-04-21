@@ -1,9 +1,8 @@
 import { useSearchParams, Link, useNavigate } from "react-router-dom"
 import React, { useRef, useEffect, useState, useMemo, useCallback } from "react"
 import { createPortal } from "react-dom"
-import Lenis from "lenis"
-import { Star, Clock, MapPin, Heart, Search, Tag, Flame, ShoppingBag, ShoppingCart, Mic, SlidersHorizontal, CheckCircle2, Bookmark, BadgePercent, X, ArrowDownUp, Timer, CalendarClock, ShieldCheck, IndianRupee, UtensilsCrossed, Leaf, AlertCircle, Loader2, Plus, Check, Share2 } from "lucide-react"
-import { motion, AnimatePresence } from "framer-motion"
+import { Star, Clock, MapPin, Heart, Search, Tag, Flame, ShoppingBag, ShoppingCart, Mic, SlidersHorizontal, CheckCircle2, Bookmark, BadgePercent, X, ArrowDownUp, Timer, CalendarClock, ShieldCheck, IndianRupee, UtensilsCrossed, Leaf, AlertCircle, Loader2, Plus, Check, Share2, ChevronDown, ArrowRight, ImageOff } from "lucide-react"
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion"
 import Footer from "../components/Footer"
 import AddToCartButton from "../components/AddToCartButton"
 import StickyCartCard from "../components/StickyCartCard"
@@ -20,6 +19,7 @@ import { Switch } from "@/components/ui/switch"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useSearchOverlay, useLocationSelector } from "../components/UserLayout"
 import PageNavbar from "../components/PageNavbar"
+import StickySearchShell from "../components/StickySearchShell"
 
 // Import shared food images - prevents duplication
 import { foodImages } from "@/constants/images"
@@ -35,8 +35,17 @@ import { useLocation } from "../hooks/useLocation"
 import { useZone } from "../hooks/useZone"
 import offerImage from "@/assets/offerimage.png"
 import api, { restaurantAPI } from "@/lib/api"
-import { API_BASE_URL } from "@/lib/api/config"
 import OptimizedImage from "@/components/OptimizedImage"
+import {
+  clearHomeDiscoveryCache,
+  getHomeDiscoveryCache,
+  patchHomeDiscoveryCache,
+  serializeHomeFilters,
+  sessionRouteGet,
+  sessionRouteSet,
+  SESSION_KEYS,
+} from "@/lib/cache/userNavSessionCache"
+import { pickNavbarLocationLines } from "@/lib/userLocationDisplay"
 // Explore More Icons
 import exploreOffers from "@/assets/explore more icons/offers.png"
 import exploreGourmet from "@/assets/explore more icons/gourmet.png"
@@ -57,8 +66,7 @@ const placeholders = [
   "Search \"dosa\""
 ]
 
-// Default placeholder for restaurant/dish when image is missing or invalid
-const RESTAURANT_PLACEHOLDER_IMAGE = "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&h=600&fit=crop"
+const MOBILE_STICKY_SEARCH_HEIGHT = 60
 
 // Restaurant Image Carousel Component
 const RestaurantImageCarousel = React.memo(({ restaurant, priority = false }) => {
@@ -76,16 +84,9 @@ const RestaurantImageCarousel = React.memo(({ restaurant, priority = false }) =>
 
   if (!images || images.length === 0) {
     return (
-      <div className="relative h-48 sm:h-56 md:h-60 lg:h-64 xl:h-72 w-full overflow-hidden rounded-t-md flex-shrink-0 bg-gray-200">
-        <OptimizedImage
-          src={RESTAURANT_PLACEHOLDER_IMAGE}
-          alt={restaurant.name}
-          className="w-full h-full rounded-t-2xl sm:rounded-t-3xl"
-          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-          objectFit="cover"
-          placeholder="blur"
-          priority={priority}
-        />
+      <div className="relative h-48 sm:h-56 md:h-60 lg:h-64 xl:h-72 w-full overflow-hidden rounded-t-md flex-shrink-0 bg-gray-100 dark:bg-gray-800 flex flex-col items-center justify-center">
+        <ImageOff className="w-10 h-10 text-gray-300 dark:text-gray-600 mb-2" />
+        <span className="text-sm text-gray-400 dark:text-gray-500 font-medium">No image available</span>
       </div>
     )
   }
@@ -131,7 +132,6 @@ const RestaurantImageCarousel = React.memo(({ restaurant, priority = false }) =>
 
   const currentSrc = images[currentIndex]
   const showPlaceholder = currentError || !currentSrc
-  const displaySrc = showPlaceholder ? RESTAURANT_PLACEHOLDER_IMAGE : currentSrc
 
   // Reset error when switching to another image in carousel
   useEffect(() => {
@@ -140,22 +140,29 @@ const RestaurantImageCarousel = React.memo(({ restaurant, priority = false }) =>
 
   return (
     <div
-      className="relative h-48 sm:h-56 md:h-60 lg:h-64 xl:h-72 w-full overflow-hidden rounded-t-2xl sm:rounded-t-3xl flex-shrink-0 group"
+      className="relative h-48 sm:h-56 md:h-60 lg:h-64 xl:h-72 w-full overflow-hidden rounded-t-2xl sm:rounded-t-3xl flex-shrink-0 group bg-gray-100 dark:bg-gray-800"
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
-      <div className="absolute inset-0 transition-transform duration-500 ease-out group-hover:scale-110">
-        <OptimizedImage
-          src={displaySrc}
-          alt={restaurant.featuredDish ? `${restaurant.name} - ${restaurant.featuredDish}` : `${restaurant.name} - Image ${currentIndex + 1}`}
-          className="w-full h-full rounded-t-2xl sm:rounded-t-3xl"
-          priority={priority && currentIndex === 0}
-          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-          objectFit="cover"
-          placeholder="blur"
-          onError={() => setCurrentError(true)}
-        />
+      <div className={`absolute inset-0 transition-transform duration-500 ease-out group-hover:scale-110 ${showPlaceholder ? 'flex flex-col items-center justify-center' : ''}`}>
+        {showPlaceholder ? (
+          <>
+            <ImageOff className="w-10 h-10 text-gray-300 dark:text-gray-600 mb-2" />
+            <span className="text-sm text-gray-400 dark:text-gray-500 font-medium">No image available</span>
+          </>
+        ) : (
+          <OptimizedImage
+            src={currentSrc}
+            alt={restaurant.featuredDish ? `${restaurant.name} - ${restaurant.featuredDish}` : `${restaurant.name} - Image ${currentIndex + 1}`}
+            className="w-full h-full rounded-t-2xl sm:rounded-t-3xl"
+            priority={priority && currentIndex === 0}
+            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+            objectFit="cover"
+            placeholder="blur"
+            onError={() => setCurrentError(true)}
+          />
+        )}
       </div>
 
       {/* Image Indicators - only show if more than 1 image */}
@@ -193,6 +200,7 @@ const RestaurantImageCarousel = React.memo(({ restaurant, priority = false }) =>
 })
 
 export default function Home() {
+  const prefersReducedMotion = useReducedMotion()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const query = searchParams.get("q") || ""
@@ -208,9 +216,148 @@ export default function Home() {
   const [isSwitchingOffVegMode, setIsSwitchingOffVegMode] = useState(false)
   const [popupPosition, setPopupPosition] = useState({ top: 0, right: 0 })
   const vegModeToggleRef = useRef(null)
+  /** Desktop hero veg switch lives outside the mobile-only block; needs its own ref for popup anchor */
+  const vegModeDesktopToggleRef = useRef(null)
+
+  const mobileStickySearchRef = useRef(null)
+  const mobileStickySentinelRef = useRef(null)
+  const desktopStickySearchRef = useRef(null)
+  const ENABLE_STICKY_SEARCH = false
+  const [isStickySearch, setIsStickySearch] = useState(false)
+  const [isStickySearchSolid, setIsStickySearchSolid] = useState(false)
+  const [mobileStickyBgOpacity, setMobileStickyBgOpacity] = useState(0)
+  const [isDesktop, setIsDesktop] = useState(window.matchMedia("(min-width: 1024px)").matches)
+  const [mobileStickyHeaderHeight, setMobileStickyHeaderHeight] = useState(MOBILE_STICKY_SEARCH_HEIGHT)
+
+  useEffect(() => {
+    const mm = window.matchMedia("(min-width: 1024px)")
+    const onChange = (e) => setIsDesktop(e.matches)
+    mm.addEventListener("change", onChange)
+    return () => mm.removeEventListener("change", onChange)
+  }, [])
+
+  useEffect(() => {
+    if (isDesktop || !ENABLE_STICKY_SEARCH) return
+    const el = mobileStickySearchRef.current
+    if (!el) return
+
+    const updateHeight = () => {
+      const nextHeight = Math.ceil(el.getBoundingClientRect().height || MOBILE_STICKY_SEARCH_HEIGHT)
+      setMobileStickyHeaderHeight(nextHeight)
+    }
+
+    updateHeight()
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateHeight()
+    })
+    resizeObserver.observe(el)
+    window.addEventListener("resize", updateHeight)
+
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener("resize", updateHeight)
+    }
+  }, [isDesktop, isSearchOpen])
+
+  // Detect when the sticky search has reached its sticky threshold so categories can shift down smoothly.
+  useEffect(() => {
+    if (!ENABLE_STICKY_SEARCH) {
+      setIsStickySearch(false)
+      setIsStickySearchSolid(false)
+      setMobileStickyBgOpacity(0)
+      return
+    }
+
+    let raf = 0
+    const last = { stuck: false, solid: false, opacity: -1 }
+
+    const update = () => {
+      const isDesktop = window.matchMedia("(min-width: 1024px)").matches
+      const el = isDesktop ? desktopStickySearchRef.current : mobileStickySentinelRef.current
+      if (!el) return
+
+      const rootFontSize =
+        parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+
+      // `UserLayout` adds `md:pt-[4.5rem]` to the main content when desktop navbar is shown.
+      const desktopPaddingTopPx = 4.5 * rootFontSize
+      const topClassPx = 0
+      const desiredViewportTop = isDesktop ? desktopPaddingTopPx + topClassPx : topClassPx
+      const rectTop = el.getBoundingClientRect().top
+      const stuck = rectTop <= desiredViewportTop + 1
+      const fadeDistance = Math.max(48, mobileStickyHeaderHeight * 0.6)
+      const progress = isDesktop
+        ? rectTop <= desiredViewportTop
+          ? 1
+          : 0
+        : Math.min(1, Math.max(0, (desiredViewportTop - rectTop) / fadeDistance))
+      const solid = progress >= 0.55
+
+      if (last.stuck !== stuck) {
+        last.stuck = stuck
+        setIsStickySearch(stuck)
+      }
+      if (!isDesktop && Math.abs(last.opacity - progress) > 0.025) {
+        last.opacity = progress
+        setMobileStickyBgOpacity(progress)
+      }
+      if (isDesktop && last.opacity !== 0) {
+        last.opacity = 0
+        setMobileStickyBgOpacity(0)
+      }
+      if (last.solid !== solid) {
+        last.solid = solid
+        setIsStickySearchSolid(solid)
+      }
+    }
+
+    const onScroll = () => {
+      if (raf) return
+      raf = window.requestAnimationFrame(() => {
+        raf = 0
+        update()
+      })
+    }
+
+    update()
+    window.addEventListener("scroll", onScroll, { passive: true })
+    window.addEventListener("resize", update)
+
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      window.removeEventListener("scroll", onScroll)
+      window.removeEventListener("resize", update)
+    }
+  }, [mobileStickyHeaderHeight])
+
+  const getVegModeToggleRect = () => {
+    const el = vegModeDesktopToggleRef.current || vegModeToggleRef.current
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) return null
+    return rect
+  }
+  /** False after unmount so we skip setState, but API results still write to session cache */
+  const homeMountRef = useRef(true)
+  useEffect(() => {
+    homeMountRef.current = true
+    return () => {
+      homeMountRef.current = false
+    }
+  }, [])
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0)
   const [heroBannerImages, setHeroBannerImages] = useState([])
   const [heroBannersData, setHeroBannersData] = useState([]) // Store full banner data with linked restaurants
+  /** Large screens: only show uploaded desktop assets, never mobile (phone) banner art */
+  const showDesktopHeroCarousel = useMemo(
+    () =>
+      heroBannerImages.length > 0 &&
+      heroBannersData.some(
+        (b) => b && typeof b === "object" && Boolean(b.desktopImageUrl),
+      ),
+    [heroBannerImages.length, heroBannersData],
+  )
   const [loadingBanners, setLoadingBanners] = useState(true)
   const [landingCategories, setLandingCategories] = useState([])
   const [landingExploreMore, setLandingExploreMore] = useState([])
@@ -247,13 +394,14 @@ export default function Home() {
 
     if (newValue && !prevVegMode) {
       // Veg mode was just turned ON
-      // Calculate popup position relative to toggle
-      if (vegModeToggleRef.current) {
-        const rect = vegModeToggleRef.current.getBoundingClientRect()
+      const rect = getVegModeToggleRect()
+      if (rect) {
         setPopupPosition({
           top: rect.bottom + 10,
           right: window.innerWidth - rect.right
         })
+      } else {
+        setPopupPosition({ top: 120, right: 24 })
       }
       setShowVegModePopup(true)
       // Don't update context yet - wait for user to apply or cancel
@@ -274,8 +422,8 @@ export default function Home() {
     if (!showVegModePopup) return
 
     const updatePosition = () => {
-      if (vegModeToggleRef.current) {
-        const rect = vegModeToggleRef.current.getBoundingClientRect()
+      const rect = getVegModeToggleRect()
+      if (rect) {
         setPopupPosition({
           top: rect.bottom + 10,
           right: window.innerWidth - rect.right
@@ -292,95 +440,171 @@ export default function Home() {
     }
   }, [showVegModePopup])
 
-  // Fetch hero banners from API
+  // Hero + categories + landing in parallel. Cache is written even if this effect cleaned up
+  // (Strict Mode / fast navigate) so revisiting Home does not repeat the same API calls.
   useEffect(() => {
-    const fetchHeroBanners = async () => {
-      try {
-        setLoadingBanners(true)
-        const response = await api.get('/hero-banners/public')
-        if (response.data.success && response.data.data.banners) {
-          const banners = response.data.data.banners
-          setHeroBannersData(banners)
-          // Extract image URLs for display, ensuring they are strings
-          setHeroBannerImages(banners.map(b => (typeof b === 'string' ? b : b.imageUrl)).filter(Boolean))
+    let cancelled = false
+
+    const disc = getHomeDiscoveryCache()
+    const sharedCats = sessionRouteGet(SESSION_KEYS.categoriesPublic)
+
+    const allFromCache =
+      disc?.heroLoaded &&
+      disc?.landingLoaded &&
+      (sharedCats !== undefined || disc?.realCategoriesList !== undefined)
+
+    if (allFromCache) {
+      setHeroBannersData(disc.heroBannersData ?? [])
+      setHeroBannerImages(disc.heroBannerImages ?? [])
+      setLandingCategories(disc.landingCategories ?? [])
+      setLandingExploreMore(disc.landingExploreMore ?? [])
+      setExploreMoreHeading(disc.exploreMoreHeading ?? "Explore More")
+      setRealCategories(sharedCats ?? disc.realCategoriesList ?? [])
+      setLoadingBanners(false)
+      setLoadingRealCategories(false)
+      setLoadingLandingConfig(false)
+      // Hero is still refetched: admin may add desktop images after first visit; cache would hide them.
+      ;(async () => {
+        try {
+          const response = await api.get("/hero-banners/public")
+          if (cancelled || !homeMountRef.current) return
+          if (response.data?.success && response.data.data?.banners) {
+            const banners = response.data.data.banners
+            const heroBannerImagesNext = banners
+              .map((b) => (typeof b === "string" ? b : b.imageUrl))
+              .filter(Boolean)
+            patchHomeDiscoveryCache({
+              heroLoaded: true,
+              heroBannersData: banners,
+              heroBannerImages: heroBannerImagesNext,
+            })
+            setHeroBannersData(banners)
+            setHeroBannerImages(heroBannerImagesNext)
+          }
+        } catch (e) {
+          console.error("Error refreshing hero banners:", e)
         }
-      } catch (error) {
-        console.error('Error fetching hero banners:', error)
-        // Fallback to empty array if API fails
-        setHeroBannerImages([])
-        setHeroBannersData([])
-      } finally {
-        setLoadingBanners(false)
+      })()
+      return () => {
+        cancelled = true
       }
     }
 
-    fetchHeroBanners()
-  }, [])
+    setLoadingBanners(true)
+    setLoadingRealCategories(true)
+    setLoadingLandingConfig(true)
 
-  // Fetch real categories from backend API
-  useEffect(() => {
-    const fetchRealCategories = async () => {
-      try {
-        setLoadingRealCategories(true)
-        const response = await api.get('/categories/public')
-        if (response.data.success && response.data.data.categories) {
-          const adminCategories = response.data.data.categories.map(cat => ({
-            id: cat.id,
-            name: cat.name,
-            image: cat.image || foodImages[0], // Fallback to default image if not provided
-            slug: cat.slug || cat.name.toLowerCase().replace(/\s+/g, '-'),
-            label: cat.name // For compatibility with existing code
-          }))
-          setRealCategories(adminCategories)
-        } else {
-          setRealCategories([])
+    const run = async () => {
+      const [bOutcome, cOutcome, lOutcome] = await Promise.allSettled([
+        api.get("/hero-banners/public"),
+        sharedCats !== undefined
+          ? Promise.resolve({ data: { __fromCache: true } })
+          : api.get("/categories/public"),
+        api.get("/hero-banners/landing/public"),
+      ])
+
+      let heroBannersDataNext = []
+      let heroBannerImagesNext = []
+      if (bOutcome.status === "fulfilled") {
+        const response = bOutcome.value
+        try {
+          if (response.data?.success && response.data.data?.banners) {
+            const banners = response.data.data.banners
+            heroBannersDataNext = banners
+            heroBannerImagesNext = banners
+              .map((b) => (typeof b === "string" ? b : b.imageUrl))
+              .filter(Boolean)
+          }
+        } catch {
+          /* keep empty */
         }
-      } catch (error) {
-        console.error('Error fetching real categories:', error)
-        setRealCategories([])
-      } finally {
-        setLoadingRealCategories(false)
+      } else {
+        console.error("Error fetching hero banners:", bOutcome.reason)
       }
-    }
+      patchHomeDiscoveryCache({
+        heroLoaded: true,
+        heroBannersData: heroBannersDataNext,
+        heroBannerImages: heroBannerImagesNext,
+      })
 
-    fetchRealCategories()
-  }, [])
+      let realCategoriesNext = []
+      if (sharedCats !== undefined) {
+        realCategoriesNext = sharedCats
+      } else if (cOutcome.status === "fulfilled") {
+        const response = cOutcome.value
+        try {
+          if (response.data?.success && response.data.data?.categories) {
+            realCategoriesNext = response.data.data.categories.map((cat) => ({
+              id: cat.id,
+              name: cat.name,
+              image: cat.image || foodImages[0],
+              slug: cat.slug || cat.name.toLowerCase().replace(/\s+/g, "-"),
+              label: cat.name,
+            }))
+            sessionRouteSet(SESSION_KEYS.categoriesPublic, realCategoriesNext)
+          } else {
+            realCategoriesNext = []
+            sessionRouteSet(SESSION_KEYS.categoriesPublic, [])
+          }
+        } catch {
+          realCategoriesNext = []
+          sessionRouteSet(SESSION_KEYS.categoriesPublic, [])
+        }
+      } else {
+        console.error("Error fetching real categories:", cOutcome.reason)
+      }
+      patchHomeDiscoveryCache({
+        realCategoriesCached: true,
+        realCategoriesList: realCategoriesNext,
+      })
 
-  // Fetch landing page config (categories, explore more, settings)
-  useEffect(() => {
-    const fetchLandingConfig = async () => {
-      try {
-        setLoadingLandingConfig(true)
-        const response = await api.get('/hero-banners/landing/public')
-        if (response.data.success && response.data.data) {
-          const apiCategories = response.data.data.categories || []
-          const apiExploreMore = response.data.data.exploreMore || []
-
-          // Extra safety: only keep active items and ensure order ascending
-          setLandingCategories(
-            apiCategories
+      let landingCatsNext = []
+      let landingExploreNext = []
+      let exploreHeadingNext = "Explore More"
+      if (lOutcome.status === "fulfilled") {
+        const response = lOutcome.value
+        try {
+          if (response.data?.success && response.data.data) {
+            const apiCategories = response.data.data.categories || []
+            const apiExploreMore = response.data.data.exploreMore || []
+            landingCatsNext = apiCategories
               .filter((c) => c.isActive !== false)
               .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          )
-          setLandingExploreMore(
-            apiExploreMore
+            landingExploreNext = apiExploreMore
               .filter((e) => e.isActive !== false)
               .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          )
-          setExploreMoreHeading(response.data.data.settings?.exploreMoreHeading || "Explore More")
+            exploreHeadingNext = response.data.data.settings?.exploreMoreHeading || "Explore More"
+          }
+        } catch {
+          /* defaults */
         }
-      } catch (error) {
-        console.error('Error fetching landing config:', error)
-        // Fallback to empty arrays and default heading
-        setLandingCategories([])
-        setLandingExploreMore([])
-        setExploreMoreHeading("Explore More")
-      } finally {
-        setLoadingLandingConfig(false)
+      } else {
+        console.error("Error fetching landing config:", lOutcome.reason)
       }
+      patchHomeDiscoveryCache({
+        landingLoaded: true,
+        landingCategories: landingCatsNext,
+        landingExploreMore: landingExploreNext,
+        exploreMoreHeading: exploreHeadingNext,
+      })
+
+      if (cancelled || !homeMountRef.current) return
+
+      setHeroBannersData(heroBannersDataNext)
+      setHeroBannerImages(heroBannerImagesNext)
+      setRealCategories(realCategoriesNext)
+      setLandingCategories(landingCatsNext)
+      setLandingExploreMore(landingExploreNext)
+      setExploreMoreHeading(exploreHeadingNext)
+      setLoadingBanners(false)
+      setLoadingRealCategories(false)
+      setLoadingLandingConfig(false)
     }
 
-    fetchLandingConfig()
+    run()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Auto-cycle hero banner images
@@ -400,22 +624,7 @@ export default function Home() {
     }
   }, [heroBannerImages.length])
 
-  // Lenis disabled on Home so the sticky categories+filters bar doesn't shake with transform-based smooth scroll
-  // (sticky + Lenis transform conflict on scroll)
-  // useEffect(() => {
-  //   const lenis = new Lenis({
-  //     duration: 1.2,
-  //     easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
-  //     smoothWheel: true,
-  //     smoothTouch: false,
-  //   })
-  //   function raf(time) {
-  //     lenis.raf(time)
-  //     requestAnimationFrame(raf)
-  //   }
-  //   requestAnimationFrame(raf)
-  //   return () => { lenis.destroy() }
-  // }, [])
+  // Smooth scroll is provided by Lenis in UserLayout (native root scroll; works with sticky header).
 
   // Helper function to reset auto-slide timer
   const resetAutoSlide = useCallback(() => {
@@ -556,7 +765,17 @@ export default function Home() {
   } = profileContext
   const { addToCart, cart } = useCart()
   const { location, loading, requestLocation } = useLocation()
-  const { zoneId, zoneStatus, isInService, isOutOfService, loading: zoneLoading } = useZone(location)
+  const {
+    zoneId,
+    zoneStatus,
+    isInService,
+    isOutOfService,
+    loading: zoneLoading,
+    currentLocation,
+    lastFetchedLocation,
+    locationRefreshKey,
+    accuracyWarning,
+  } = useZone()
   const [showToast, setShowToast] = useState(false)
   const [showManageCollections, setShowManageCollections] = useState(false)
   const [selectedRestaurantSlug, setSelectedRestaurantSlug] = useState(null)
@@ -571,6 +790,29 @@ export default function Home() {
 
   const cityName = location?.city || "Select"
   const stateName = location?.state || "Location"
+  const { main: desktopLocMain, sub: desktopLocSub } = pickNavbarLocationLines(location)
+
+  const desktopExploreItems = useMemo(() => {
+    const filtered = (landingExploreMore || []).filter(
+      (item) => item.id !== "giftcard" && item.label?.toLowerCase() !== "gift card"
+    )
+    if (filtered.length > 0) {
+      return filtered.map((item) => ({
+        id: item._id,
+        title: (item.label || "Explore").toUpperCase(),
+        sub: "FROM TASTIZO",
+        tag: "DISCOVER",
+        image: item.imageUrl,
+        href: item.link || "/",
+      }))
+    }
+    return [
+      { id: "u250", title: "UNDER ₹250", sub: "MEALS ON A BUDGET", tag: "FLAT DEALS", image: offerImage, href: "/under-250" },
+      { id: "offers", title: "OFFERS", sub: "NEAR YOU", tag: "SAVE MORE", image: exploreOffers, href: "/user/offers" },
+      { id: "gourmet", title: "GOURMET", sub: "PREMIUM PICKS", tag: "TOP RATED", image: exploreGourmet, href: "/user/gourmet" },
+      { id: "top10", title: "TOP 10", sub: "MOST LOVED", tag: "CURATED", image: exploreTop10, href: "/user/top-10" },
+    ]
+  }, [landingExploreMore])
 
   // Mock points value - replace with actual points from context/store
   const userPoints = 99
@@ -625,25 +867,42 @@ export default function Home() {
     return () => observer.disconnect()
   }, [isFilterOpen])
 
-  // Fetch restaurants from API with filters
-  const fetchRestaurants = useCallback(async (filters = {}) => {
-    try {
-      setLoadingRestaurants(true)
+  useEffect(() => {
+    if (!isFilterOpen) return undefined
 
-      // First, test backend connection
-      try {
-        // Use API_BASE_URL from config (supports both dev and production)
-        const backendUrl = API_BASE_URL.replace('/api', '')
-        const healthCheck = await fetch(`${backendUrl}/health`)
-        if (!healthCheck.ok) {
-          throw new Error(`Backend health check failed: ${healthCheck.status}`)
-        }
-        console.log('✅ Backend connection successful')
-      } catch (healthError) {
-        // Backend connection error - handled silently, toast notifications shown via axios interceptor
-        setRestaurantsData([])
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [isFilterOpen])
+
+  // Fetch restaurants from API with filters (no extra /health round-trip — saves latency)
+  const fetchRestaurants = useCallback(async (filters = {}) => {
+    const filtersKey = serializeHomeFilters(filters)
+    const locationKey = lastFetchedLocation
+      ? `${Number(lastFetchedLocation.latitude).toFixed(4)},${Number(lastFetchedLocation.longitude).toFixed(4)}`
+      : "no-location"
+    const disc = getHomeDiscoveryCache()
+    if (
+      disc?.restaurantsLoaded &&
+      disc.restaurantsZoneId === zoneId &&
+      disc.restaurantsFiltersKey === filtersKey &&
+      disc.restaurantsLocationKey === locationKey &&
+      Array.isArray(disc.restaurantsData)
+    ) {
+      if (homeMountRef.current) {
+        setRestaurantsData(disc.restaurantsData)
         setLoadingRestaurants(false)
-        return
+      }
+      return
+    }
+
+    try {
+      if (homeMountRef.current) {
+        setLoadingRestaurants(true)
+        setRestaurantsData([])
       }
 
       // Build query parameters from filters
@@ -701,24 +960,48 @@ export default function Home() {
         params.trusted = 'true'
       }
 
-      // Optional: Add zoneId if available (for sorting/filtering, but show all restaurants)
+      // Enforce zone-specific restaurant visibility for the user.
       if (zoneId) {
         params.zoneId = zoneId
       }
-      // Note: We show all restaurants regardless of zone, but apply grayscale styling if user is out of service
+      if (currentLocation?.latitude && currentLocation?.longitude) {
+        params.lat = currentLocation.latitude
+        params.lng = currentLocation.longitude
+      }
 
-      console.log('Fetching restaurants with params:', params)
+      if (zoneLoading) return
+      if (!zoneId) {
+        patchHomeDiscoveryCache({
+          restaurantsLoaded: true,
+          restaurantsZoneId: null,
+          restaurantsFiltersKey: filtersKey,
+          restaurantsLocationKey: locationKey,
+          restaurantsData: [],
+        })
+        if (homeMountRef.current) {
+          setRestaurantsData([])
+          setLoadingRestaurants(false)
+        }
+        return
+      }
+
       const response = await restaurantAPI.getRestaurants(params)
-      console.log('Restaurants API response:', response.data)
 
       if (response.data && response.data.success && response.data.data && response.data.data.restaurants) {
         const restaurantsArray = response.data.data.restaurants
-        console.log(`Fetched ${restaurantsArray.length} restaurants from API`)
 
         if (restaurantsArray.length === 0) {
-          console.warn('No restaurants found in API response')
-          setRestaurantsData([])
-          setLoadingRestaurants(false)
+          patchHomeDiscoveryCache({
+            restaurantsLoaded: true,
+            restaurantsZoneId: zoneId,
+            restaurantsFiltersKey: filtersKey,
+            restaurantsLocationKey: locationKey,
+            restaurantsData: [],
+          })
+          if (homeMountRef.current) {
+            setRestaurantsData([])
+            setLoadingRestaurants(false)
+          }
           return
         }
 
@@ -811,13 +1094,8 @@ export default function Home() {
           // Filter out any invalid/undefined images
           allImages = allImages.filter(img => typeof img === 'string' && img.trim().length > 0)
           
-          // Ensure we have at least one image
-          if (allImages.length === 0) {
-            allImages = ["https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&h=600&fit=crop"]
-          }
-
           // Keep single image for backward compatibility
-          const image = allImages[0]
+          const image = allImages[0] || null
 
           const rawRating = typeof restaurant.rating === "number"
             ? restaurant.rating
@@ -872,28 +1150,44 @@ export default function Home() {
           })
         }
 
-        console.log('Transformed and sorted restaurants:', transformedRestaurants)
-        setRestaurantsData(transformedRestaurants)
+        patchHomeDiscoveryCache({
+          restaurantsLoaded: true,
+          restaurantsZoneId: zoneId,
+          restaurantsFiltersKey: filtersKey,
+          restaurantsLocationKey: locationKey,
+          restaurantsData: transformedRestaurants,
+        })
+        if (homeMountRef.current) {
+          setRestaurantsData(transformedRestaurants)
+        }
       } else {
-        console.warn('Invalid API response structure:', response.data)
-        setRestaurantsData([])
+        patchHomeDiscoveryCache({
+          restaurantsLoaded: true,
+          restaurantsZoneId: zoneId,
+          restaurantsFiltersKey: filtersKey,
+          restaurantsLocationKey: locationKey,
+          restaurantsData: [],
+        })
+        if (homeMountRef.current) {
+          setRestaurantsData([])
+        }
       }
     } catch (error) {
       console.error('Error fetching restaurants:', error)
-      console.error('Error details:', error.response?.data || error.message)
-      // Don't set hardcoded data here - let the useMemo fallback handle it
-      // This way, if API succeeds later, it will show the real data
-      setRestaurantsData([])
+      if (homeMountRef.current) {
+        setRestaurantsData([])
+      }
     } finally {
-      setLoadingRestaurants(false)
-      console.log('Restaurant loading completed. restaurantsData length:', restaurantsData.length)
+      if (homeMountRef.current) {
+        setLoadingRestaurants(false)
+      }
     }
-  }, [zoneId, location?.latitude, location?.longitude])
+  }, [currentLocation?.latitude, currentLocation?.longitude, lastFetchedLocation, zoneId, zoneLoading])
 
   // Fetch restaurants when appliedFilters change
   useEffect(() => {
     fetchRestaurants(appliedFilters)
-  }, [appliedFilters, fetchRestaurants])
+  }, [appliedFilters, fetchRestaurants, locationRefreshKey])
 
   // Recalculate distances when user location updates
   useEffect(() => {
@@ -1119,7 +1413,7 @@ export default function Home() {
   )
 
   return (
-    <div className="relative min-h-screen bg-white dark:bg-[#0a0a0a] pb-28 md:pb-24">
+    <div className="relative min-h-screen min-h-[100dvh] bg-white dark:bg-[#0a0a0a] pb-28 md:pb-24 overflow-x-clip">
       {/* Unified Background for Entire Page - Vibrant Food Theme */}
       <div className="absolute top-0 left-0 right-0 bottom-0 pointer-events-none overflow-hidden z-0">
         {/* Main Background */}
@@ -1230,191 +1524,474 @@ export default function Home() {
         `}</style>
       </div>
 
-      {/* Compact top layout: white header + search row + rounded banner card */}
-      <div className="relative w-full">
+      {/* Unified Navbar & Hero Section - rounded bottom on mobile for green area */}
+      <div className="relative w-full overflow-visible lg:overflow-hidden lg:min-h-[min(58vh,640px)] pt-[max(0.45rem,env(safe-area-inset-top,0px))] sm:pt-4 md:pt-0 rounded-b-2xl md:rounded-b-none lg:rounded-b-none bg-white lg:bg-transparent dark:bg-[#0a0a0a]">
+        {/* Mobile/tablet: phone banners. Desktop: separate block — desktop uploads only, never mobile art */}
+        {heroBannerImages.length > 0 ? (
+          <div
+            className="hidden"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+          >
+            <motion.div
+              className="flex h-full transform-gpu"
+              animate={{
+                x: `-${(currentBannerIndex * 100) / Math.max(heroBannerImages.length, 1)}%`
+              }}
+              transition={
+                prefersReducedMotion
+                  ? { type: "tween", duration: 0.2, ease: "linear" }
+                  : {
+                      type: "tween",
+                      duration: 1.05,
+                      ease: [0.16, 1, 0.3, 1],
+                    }
+              }
+              style={{
+                width: `${heroBannerImages.length * 100}%`,
+                willChange: "transform",
+              }}
+            >
+              {heroBannerImages.map((image, index) => {
+                const bannerData = heroBannersData[index]
+                const linkedRestaurants = bannerData?.linkedRestaurants || []
+                const hasLinkedRestaurants = linkedRestaurants.length > 0
+
+                return (
+                  <div
+                    key={index}
+                    className="h-full flex-shrink-0 sm:px-4 lg:px-6"
+                    style={{
+                      width: `${100 / Math.max(heroBannerImages.length, 1)}%`,
+                      cursor: hasLinkedRestaurants ? "pointer" : "default",
+                    }}
+                    onClick={() => {
+                      if (hasLinkedRestaurants) {
+                        // Redirect to first linked restaurant
+                        const firstRestaurant = linkedRestaurants[0]
+                        const restaurantSlug = firstRestaurant.slug || firstRestaurant.restaurantId || firstRestaurant._id
+                        navigate(`/restaurants/${restaurantSlug}`)
+                      }
+                    }}
+                  >
+                    <OptimizedImage
+                      src={image}
+                      alt={`Hero Banner ${index + 1}`}
+                      className="w-full h-full rounded-b-4xl sm:rounded-2xl lg:rounded-3xl shadow-md"
+                      priority={index === 0}
+                      sizes="100vw"
+                      objectFit="cover"
+                      placeholder="blur"
+                    />
+                  </div>
+                )
+              })}
+            </motion.div>
+          </div>
+        ) : (
+          <div className="absolute top-0 left-0 right-0 bottom-0 z-0 bg-white rounded-b-2xl lg:hidden" />
+        )}
+
+        {showDesktopHeroCarousel && (
+          <div
+            className="absolute top-0 left-0 right-0 bottom-0 z-0 cursor-grab active:cursor-grabbing overflow-hidden hidden lg:block"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+          >
+            <motion.div
+              className="flex h-full transform-gpu"
+              animate={{
+                x: `-${(currentBannerIndex * 100) / Math.max(heroBannerImages.length, 1)}%`,
+              }}
+              transition={
+                prefersReducedMotion
+                  ? { type: "tween", duration: 0.2, ease: "linear" }
+                  : {
+                      type: "tween",
+                      duration: 1.05,
+                      ease: [0.16, 1, 0.3, 1],
+                    }
+              }
+              style={{
+                width: `${heroBannerImages.length * 100}%`,
+                willChange: "transform",
+              }}
+            >
+              {heroBannerImages.map((_, index) => {
+                const bannerData = heroBannersData[index]
+                const desktopSrc =
+                  bannerData && typeof bannerData === "object"
+                    ? bannerData.desktopImageUrl
+                    : null
+                const linkedRestaurants = bannerData?.linkedRestaurants || []
+                const hasLinkedRestaurants = linkedRestaurants.length > 0
+
+                return (
+                  <div
+                    key={`desktop-${index}`}
+                    className="h-full flex-shrink-0 lg:px-6"
+                    style={{
+                      width: `${100 / Math.max(heroBannerImages.length, 1)}%`,
+                      cursor: hasLinkedRestaurants ? "pointer" : "default",
+                    }}
+                    onClick={() => {
+                      if (hasLinkedRestaurants) {
+                        const firstRestaurant = linkedRestaurants[0]
+                        const restaurantSlug =
+                          firstRestaurant.slug ||
+                          firstRestaurant.restaurantId ||
+                          firstRestaurant._id
+                        navigate(`/restaurants/${restaurantSlug}`)
+                      }
+                    }}
+                  >
+                    {desktopSrc ? (
+                      <OptimizedImage
+                        src={desktopSrc}
+                        alt={`Hero Banner ${index + 1} (desktop)`}
+                        className="w-full h-full lg:rounded-3xl shadow-md"
+                        priority={index === 0}
+                        sizes="100vw"
+                        objectFit="cover"
+                        placeholder="blur"
+                      />
+                    ) : (
+                      <div
+                        className="w-full h-full lg:rounded-3xl bg-gradient-to-br from-[#2B9C64] via-[#259052] to-[#1a5c38]"
+                        aria-hidden
+                      />
+                    )}
+                  </div>
+                )
+              })}
+            </motion.div>
+          </div>
+        )}
+
+        {/* Desktop: green brand hero when no desktop-wide banners (never use phone/mobile art here) */}
+        {!showDesktopHeroCarousel && (
+          <>
+            <div
+              className="pointer-events-none hidden lg:block absolute inset-0 z-0 bg-gradient-to-br from-[#2B9C64] via-[#259052] to-[#1a5c38]"
+              aria-hidden
+            />
+            <div
+              className="pointer-events-none hidden lg:block absolute -right-32 top-16 h-[420px] w-[420px] rounded-full bg-white/[0.07] blur-3xl"
+              aria-hidden
+            />
+            <div
+              className="pointer-events-none hidden lg:block absolute -left-20 bottom-0 h-[280px] w-[280px] rounded-full bg-white/[0.06] blur-2xl"
+              aria-hidden
+            />
+          </>
+        )}
+
+        {/* Mobile sticky header */}
+        <div
+          ref={mobileStickySentinelRef}
+          className="lg:hidden"
+          style={{ height: isStickySearch ? `${mobileStickyHeaderHeight}px` : "auto" }}
+        >
+          <motion.div
+            ref={mobileStickySearchRef}
+            className={`${isStickySearch ? "fixed inset-x-0 top-0" : "relative"} z-50`}
+            style={{
+              boxShadow:
+                mobileStickyBgOpacity > 0.02
+                  ? `0 1px 2px rgba(0,0,0,${(0.1 * mobileStickyBgOpacity).toFixed(3)})`
+                  : "none",
+            }}
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
+          >
+            <div
+              className="absolute inset-0 pointer-events-none bg-white dark:bg-[#0a0a0a]"
+              style={{ opacity: mobileStickyBgOpacity }}
+              aria-hidden
+            />
+            <motion.div
+              initial={false}
+              animate={{
+                opacity: isStickySearch ? 0 : 1,
+                height: isStickySearch ? 0 : "auto",
+              }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              className="relative z-20 pt-1 sm:pt-3 px-1 sm:px-6 bg-transparent overflow-hidden"
+              style={{ pointerEvents: isStickySearch ? "none" : "auto" }}
+            >
+              <PageNavbar textColor="dark" zIndex={20} showBrandLogo={true} />
+            </motion.div>
+
+            <section className="relative z-20 w-full pt-2 pb-3 sm:pt-3 sm:pb-4">
+              <div className="relative z-20 max-w-2xl lg:max-w-4xl xl:max-w-5xl mx-auto px-3 sm:px-6 lg:px-8 lg:hidden">
+                <motion.div
+                  initial={false}
+                  animate={{
+                    height: isSearchOpen ? 0 : "auto",
+                    opacity: isSearchOpen ? 0 : 1,
+                    marginTop: isSearchOpen ? 0 : "inherit",
+                    marginBottom: isSearchOpen ? 0 : "inherit",
+                  }}
+                  transition={{
+                    duration: 0.4,
+                    ease: [0.16, 1, 0.3, 1]
+                  }}
+                  className="flex items-center gap-2.5 sm:gap-4 lg:gap-6 overflow-hidden bg-transparent py-1"
+                >
+                  <div className="flex-1 relative">
+                    <div className="relative bg-white dark:bg-[#1a1a1a] rounded-full shadow-sm border border-gray-200 dark:border-gray-800 p-1 sm:p-1.5 lg:p-2 transition-all duration-300">
+                      <div className="flex items-center gap-2 sm:gap-3 lg:gap-4">
+                        <Search className="h-4 w-4 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-gray-500 flex-shrink-0 ml-2 sm:ml-3 lg:ml-4" strokeWidth={2.5} />
+                        <div className="flex-1 relative">
+                          <div className="relative w-full">
+                            <Input
+                              value={heroSearch}
+                              onChange={(e) => setHeroSearch(e.target.value)}
+                              onFocus={handleSearchFocus}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && heroSearch.trim()) {
+                                  navigate(`/user/search?q=${encodeURIComponent(heroSearch.trim())}`)
+                                  closeSearch()
+                                  setHeroSearch("")
+                                }
+                              }}
+                              aria-label="Search restaurants and food"
+                              className="pl-0 pr-2 h-8 sm:h-9 lg:h-11 w-full bg-white dark:bg-[#1a1a1a] border-0 text-sm sm:text-base lg:text-lg font-semibold text-gray-700 dark:text-white focus-visible:ring-0 focus-visible:ring-offset-0 rounded-full placeholder:text-gray-500 dark:placeholder:text-gray-400"
+                            />
+                            {!heroSearch && (
+                              <div className="absolute left-0 top-1/2 -translate-y-1/2 pointer-events-none h-5 lg:h-6 overflow-hidden">
+                                <AnimatePresence mode="wait">
+                                  <motion.span
+                                    key={placeholderIndex}
+                                    initial={{ y: 16, opacity: 0 }}
+                                    animate={{ y: 0, opacity: 1 }}
+                                    exit={{ y: -16, opacity: 0 }}
+                                    transition={{ duration: 0.3 }}
+                                    className="text-sm sm:text-base lg:text-lg font-semibold text-gray-500 dark:text-gray-400 inline-block"
+                                  >
+                                    {placeholders[placeholderIndex]}
+                                  </motion.span>
+                                </AnimatePresence>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          aria-label="Voice Search"
+                          onClick={handleSearchFocus}
+                          className="flex-shrink-0 mr-2 sm:mr-3 lg:mr-4 p-1 lg:p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
+                        >
+                          <Mic className="h-4 w-4 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-gray-500 dark:text-gray-400" strokeWidth={2.5} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    ref={vegModeToggleRef}
+                    className="flex flex-col items-center gap-0.5 sm:gap-1 lg:gap-1.5 flex-shrink-0 relative"
+                  >
+                    <div className="flex flex-col items-center">
+                      <span className="text-[13px] sm:text-[11px] lg:text-sm font-black leading-none text-[#007f61] dark:text-green-400">VEG</span>
+                      <span className="text-[9.5px] sm:text-[10px] lg:text-xs font-black leading-none text-[#007f61] dark:text-green-400">MODE</span>
+                    </div>
+                    <Switch
+                      checked={vegMode}
+                      onCheckedChange={handleVegModeChange}
+                      aria-label="Toggle Veg Mode"
+                      className="data-[state=checked]:bg-green-600 data-[state=unchecked]:bg-gray-300 w-9 h-4 sm:w-10 sm:h-5 lg:w-12 lg:h-6 shadow-lg [&_[data-slot=switch-thumb]]:bg-white [&_[data-slot=switch-thumb]]:h-3 [&_[data-slot=switch-thumb]]:w-3 sm:[&_[data-slot=switch-thumb]]:h-4 sm:[&_[data-slot=switch-thumb]]:w-4 lg:[&_[data-slot=switch-thumb]]:h-5 lg:[&_[data-slot=switch-thumb]]:w-5 [&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-5 sm:[&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-5 lg:[&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-6 [&_[data-slot=switch-thumb]]:data-[state=unchecked]:translate-x-0"
+                    />
+                  </div>
+                </motion.div>
+              </div>
+            </section>
+
+            <section className="relative z-20 px-2 sm:px-6 pb-2 lg:hidden">
+              <div className="relative overflow-hidden rounded-xl bg-[#27bfd0] min-h-[188px] shadow-sm">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_34%_42%,rgba(255,255,255,0.34),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.18),transparent_48%)]" />
+                <div className="absolute left-4 top-5 h-1 w-1 rounded-full bg-white/80" />
+                <div className="absolute left-12 top-7 h-1.5 w-1.5 rounded-full bg-white/90" />
+                <div className="absolute right-14 top-4 h-1 w-1 rounded-full bg-white/80" />
+                <div className="absolute right-3 top-16 h-1.5 w-1.5 rounded-full bg-white/90" />
+                <div className="relative z-10 flex min-h-[188px] items-center justify-between gap-2 px-6 py-6">
+                  <div className="max-w-[58%]">
+                    <p className="text-[18px] font-black leading-[1.05] tracking-wide text-[#10344a]">
+                      Get FREE
+                      <span className="block text-[22px]">DELIVERY</span>
+                      <span className="block mt-2 text-[18px]">&amp; <span className="text-white">SALE OFFER</span></span>
+                    </p>
+                    <p className="mt-3 text-[13px] font-semibold text-[#0c2d3f]">
+                      on your first order under 7 KM
+                    </p>
+                  </div>
+
+                  <div className="relative h-32 flex-1 min-w-[128px]">
+                    <div className="absolute right-0 top-8 h-16 w-28 rotate-[-10deg] bg-[#ffe14b] shadow-lg flex flex-col items-center justify-center text-[#15303d]">
+                      <span className="text-[30px] font-black leading-none tracking-wide">30%</span>
+                      <span className="text-[18px] font-black leading-none">OFF</span>
+                    </div>
+                    <img
+                      src={offerImage}
+                      alt=""
+                      className="absolute -right-8 bottom-[-10px] h-24 w-36 object-contain opacity-80"
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
+          </motion.div>
+        </div>
+
         {/* Navbar */}
         <motion.div
-          className="relative z-20 pt-2 sm:pt-3 lg:pt-4 xl:pt-5"
+          className="relative z-20 pt-2 sm:pt-3 lg:pt-4 hidden lg:block"
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: "easeOut" }}
         >
-          <PageNavbar textColor="black" zIndex={20} />
+          <PageNavbar textColor="white" zIndex={20} showBrandLogo={false} />
         </motion.div>
 
-        <section className="relative z-20 w-full pt-2 pb-3 sm:pt-3 sm:pb-4 lg:pt-5 lg:pb-8 xl:pb-10">
-          <div className="relative z-20 max-w-2xl lg:max-w-7xl xl:max-w-[1420px] mx-auto px-3 sm:px-6 lg:px-8 xl:px-10 space-y-3 sm:space-y-4 lg:space-y-5">
-            {/* Search + veg mode row */}
-            <motion.div
-              className={`flex items-center gap-2.5 sm:gap-3 lg:gap-4 ${isSearchOpen ? "pointer-events-none opacity-0" : ""}`}
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.45, delay: 0.12, ease: "easeOut" }}
-            >
-              <div className="flex-1 relative">
-                <div className="relative bg-white dark:bg-[#1a1a1a] rounded-2xl lg:rounded-3xl shadow-sm lg:shadow-md border border-gray-200 dark:border-gray-800 px-2 py-1 lg:px-3 lg:py-2">
-                  <div className="flex items-center gap-2.5 lg:gap-3">
-                    <Search className="h-4 w-4 lg:h-5 lg:w-5 text-gray-500 flex-shrink-0 ml-2 lg:ml-3" strokeWidth={2.5} />
-                    <div className="flex-1 relative">
-                      <div className="relative w-full">
-                        <Input
-                          value={heroSearch}
-                          onChange={(e) => setHeroSearch(e.target.value)}
-                          onFocus={handleSearchFocus}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && heroSearch.trim()) {
-                              navigate(`/user/search?q=${encodeURIComponent(heroSearch.trim())}`)
-                              closeSearch()
-                              setHeroSearch("")
-                            }
-                          }}
-                          aria-label="Search restaurants and food"
-                          className="pl-0 pr-1 h-8 sm:h-9 lg:h-11 w-full bg-white dark:bg-[#1a1a1a] border-0 text-sm lg:text-base font-semibold text-gray-700 dark:text-white focus-visible:ring-0 focus-visible:ring-offset-0 rounded-full placeholder:text-gray-500 dark:placeholder:text-gray-400"
-                        />
-                        {!heroSearch && (
-                          <div className="absolute left-0 top-1/2 -translate-y-1/2 pointer-events-none h-5 overflow-hidden">
-                            <AnimatePresence mode="wait">
-                              <motion.span
-                                key={placeholderIndex}
-                                initial={{ y: 16, opacity: 0 }}
-                                animate={{ y: 0, opacity: 1 }}
-                                exit={{ y: -16, opacity: 0 }}
-                                transition={{ duration: 0.3 }}
-                                className="text-sm lg:text-base font-semibold text-gray-500 dark:text-gray-400 inline-block"
-                              >
-                                {placeholders[placeholderIndex]}
-                              </motion.span>
-                            </AnimatePresence>
-                          </div>
-                        )}
+        {/* Hero Section */}
+        <section className="relative z-20 w-full py-4 sm:py-6 md:py-12 lg:py-10 lg:pb-16">
+          {/* Large screens only: Swiggy-like headline + location strip + search (Tastizo branding) */}
+          <div
+            className={`relative z-20 hidden lg:block max-w-5xl xl:max-w-6xl mx-auto px-8 xl:px-12 ${isSearchOpen ? "pointer-events-none opacity-0" : ""}`}
+          >
+            <h1 className="text-center text-white text-4xl xl:text-[2.65rem] font-extrabold leading-tight tracking-tight drop-shadow-sm">
+              Order food &amp; more.
+              <span className="block mt-2 text-white/95 text-3xl xl:text-[2.1rem] font-bold">
+                Discover best restaurants — Tastizo it!
+              </span>
+            </h1>
+
+            <div className="mt-10">
+              <StickySearchShell
+                ref={desktopStickySearchRef}
+                topClass="top-0"
+                zIndexClass="z-50"
+                isSearchOpen={isSearchOpen}
+                isSticky={isStickySearch}
+                className="flex flex-row items-stretch gap-4 max-w-4xl mx-auto"
+              >
+              <button
+                type="button"
+                onClick={() => openLocationSelector()}
+                className="flex-shrink-0 w-[min(100%,300px)] rounded-2xl bg-white shadow-lg border border-white/30 px-4 py-3 text-left flex items-start gap-3 hover:bg-gray-50 transition-colors"
+              >
+                <MapPin className="h-5 w-5 text-[#2B9C64] shrink-0 mt-0.5" strokeWidth={2.5} />
+                <div className="min-w-0 flex-1">
+                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Delivery location
+                  </span>
+                  <p className="font-bold text-gray-900 truncate">
+                    {loading ? "Locating…" : desktopLocMain || "Enter your delivery location"}
+                  </p>
+                  {desktopLocSub ? (
+                    <p className="text-xs text-gray-500 truncate mt-0.5">{desktopLocSub}</p>
+                  ) : null}
+                </div>
+                <ChevronDown className="h-5 w-5 text-gray-400 shrink-0" />
+              </button>
+
+              <div className="flex-1 min-w-0 relative">
+                <div className="h-full rounded-2xl bg-white shadow-lg border border-white/30 p-2 flex items-center gap-3">
+                  <Search className="h-5 w-5 text-[#2B9C64] flex-shrink-0 ml-3" strokeWidth={2.5} />
+                  <div className="flex-1 relative min-h-[44px] flex items-center">
+                    <Input
+                      value={heroSearch}
+                      onChange={(e) => setHeroSearch(e.target.value)}
+                      onFocus={handleSearchFocus}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && heroSearch.trim()) {
+                          navigate(`/user/search?q=${encodeURIComponent(heroSearch.trim())}`)
+                          closeSearch()
+                          setHeroSearch("")
+                        }
+                      }}
+                      aria-label="Search restaurants and food"
+                      className="h-11 w-full bg-transparent border-0 text-base font-semibold text-gray-800 focus-visible:ring-0 focus-visible:ring-offset-0 rounded-lg pr-2"
+                    />
+                    {!heroSearch && (
+                      <div className="absolute left-0 top-1/2 -translate-y-1/2 pointer-events-none h-6 overflow-hidden">
+                        <AnimatePresence mode="wait">
+                          <motion.span
+                            key={placeholderIndex}
+                            initial={{ y: 16, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            exit={{ y: -16, opacity: 0 }}
+                            transition={{ duration: 0.3 }}
+                            className="text-base font-semibold text-gray-400 inline-block"
+                          >
+                            {placeholders[placeholderIndex]}
+                          </motion.span>
+                        </AnimatePresence>
                       </div>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Voice Search"
-                      onClick={handleSearchFocus}
-                      className="flex-shrink-0 mr-2 lg:mr-3 p-1 lg:p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
-                    >
-                      <Mic className="h-4 w-4 lg:h-5 lg:w-5 text-gray-500 dark:text-gray-400" strokeWidth={2.5} />
-                    </button>
+                    )}
                   </div>
+                  <button
+                    type="button"
+                    aria-label="Voice Search"
+                    onClick={handleSearchFocus}
+                    className="flex-shrink-0 mr-2 p-2 hover:bg-gray-100 rounded-full transition-colors"
+                  >
+                    <Mic className="h-5 w-5 text-gray-500" strokeWidth={2.5} />
+                  </button>
                 </div>
               </div>
 
-              <motion.div
-                ref={vegModeToggleRef}
-                className="flex flex-col items-center gap-1 lg:gap-1.5 flex-shrink-0"
-                initial={{ opacity: 0, scale: 0.86 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ duration: 0.42, delay: 0.2, ease: "easeOut" }}
+              <div
+                ref={vegModeDesktopToggleRef}
+                className="flex flex-col items-center justify-center gap-1 flex-shrink-0 w-[88px] relative"
               >
-                <div className="flex flex-col items-center">
-                  <span className="text-[#0f766e] text-[12px] sm:text-[11px] lg:text-[13px] font-black leading-none">VEG</span>
-                  <span className="text-[#0f766e] text-[10px] sm:text-[10px] lg:text-[11px] font-black leading-none">MODE</span>
-                </div>
+                <span className="text-white text-xs font-black leading-none">VEG</span>
+                <span className="text-white text-[10px] font-black leading-none">MODE</span>
                 <Switch
                   checked={vegMode}
                   onCheckedChange={handleVegModeChange}
                   aria-label="Toggle Veg Mode"
-                  className="data-[state=checked]:bg-cyan-500 data-[state=unchecked]:bg-gray-300 w-10 h-5 lg:w-12 lg:h-6 shadow-sm lg:shadow-md [&_[data-slot=switch-thumb]]:bg-white [&_[data-slot=switch-thumb]]:h-4 [&_[data-slot=switch-thumb]]:w-4 lg:[&_[data-slot=switch-thumb]]:h-5 lg:[&_[data-slot=switch-thumb]]:w-5 [&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-5 lg:[&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-6 [&_[data-slot=switch-thumb]]:data-[state=unchecked]:translate-x-0"
+                  className="data-[state=checked]:bg-green-600 data-[state=unchecked]:bg-gray-300 w-12 h-6 shadow-md [&_[data-slot=switch-thumb]]:bg-white [&_[data-slot=switch-thumb]]:h-5 [&_[data-slot=switch-thumb]]:w-5 [&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-6 [&_[data-slot=switch-thumb]]:data-[state=unchecked]:translate-x-0"
                 />
-              </motion.div>
-            </motion.div>
-
-            {/* Hero banner card */}
-            <div className="rounded-2xl lg:rounded-3xl overflow-hidden shadow-none lg:shadow-xl ring-0 lg:ring-1 lg:ring-black/5">
-              {loadingBanners ? (
-                <div className="h-[190px] sm:h-[220px] lg:h-[320px] xl:h-[360px] bg-gradient-to-br from-cyan-300 to-cyan-500 flex items-center justify-center">
-                  <div className="text-white text-center">
-                    <Loader2 className="w-7 h-7 animate-spin mx-auto mb-1.5" />
-                    <p className="text-sm">Loading banners...</p>
-                  </div>
-                </div>
-              ) : heroBannerImages.length > 0 ? (
-                <div
-                  className="cursor-grab active:cursor-grabbing overflow-hidden h-[190px] sm:h-[220px] lg:h-[320px] xl:h-[360px]"
-                  onTouchStart={handleTouchStart}
-                  onTouchMove={handleTouchMove}
-                  onTouchEnd={handleTouchEnd}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  onMouseLeave={handleMouseUp}
-                >
-                  <motion.div
-                    className="flex h-full"
-                    animate={{ x: `-${currentBannerIndex * 100}vw` }}
-                    transition={{ duration: 0.6, ease: "easeInOut" }}
-                    style={{ width: `${heroBannerImages.length * 100}vw` }}
-                  >
-                    {heroBannerImages.map((image, index) => {
-                      const bannerData = heroBannersData[index]
-                      const linkedRestaurants = bannerData?.linkedRestaurants || []
-                      const hasLinkedRestaurants = linkedRestaurants.length > 0
-
-                      return (
-                        <div
-                          key={index}
-                          className="h-full flex-shrink-0"
-                          style={{ width: '100vw', cursor: hasLinkedRestaurants ? 'pointer' : 'default' }}
-                          onClick={() => {
-                            if (hasLinkedRestaurants) {
-                              const firstRestaurant = linkedRestaurants[0]
-                              const restaurantSlug = firstRestaurant.slug || firstRestaurant.restaurantId || firstRestaurant._id
-                              navigate(`/restaurants/${restaurantSlug}`)
-                            }
-                          }}
-                        >
-                          <OptimizedImage
-                            src={image}
-                            alt={`Hero Banner ${index + 1}`}
-                            className="w-full h-full"
-                            priority={index === 0}
-                            sizes="100vw"
-                            objectFit="cover"
-                            placeholder="blur"
-                          />
-                        </div>
-                      )
-                    })}
-                  </motion.div>
-                </div>
-              ) : (
-                <div className="h-[190px] sm:h-[220px] lg:h-[320px] xl:h-[360px] bg-gradient-to-br from-cyan-300 to-cyan-500" />
-              )}
+              </div>
+              </StickySearchShell>
             </div>
           </div>
         </section>
       </div>
 
       {/* Rest of Content - Container Width with Unified Background */}
-      <motion.div
-        className="relative max-w-7xl xl:max-w-[1420px] mx-auto px-3 sm:px-4 md:px-6 lg:px-8 xl:px-10 space-y-0 pt-4 sm:pt-5 lg:pt-8 xl:pt-10"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.6, delay: 0.4 }}
-      >
-        {/* Sticky Section - Food Categories and Filters (no Lenis on this page so sticky is stable) */}
-        <div
-          className="sticky top-0 z-40 bg-white dark:bg-[#0a0a0a] pt-4 sm:pt-5"
-          style={{
-            transform: 'translateZ(0)',
-            WebkitTransform: 'translateZ(0)',
-            backfaceVisibility: 'hidden',
-            WebkitBackfaceVisibility: 'hidden',
-            contain: 'layout style paint',
-          }}
-        >
+      {/* Plain div (not motion) so no ancestor transform breaks position:sticky on categories/filters */}
+      <div className="relative max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8 xl:px-12 space-y-0 pt-4 sm:pt-5 lg:pt-8">
+          {/* Sticky Section - Food Categories and Filters */}
+          <motion.div
+            className={`${isFilterOpen ? 'hidden' : 'sticky'} relative z-[999] bg-white dark:bg-[#0a0a0a] pt-4 sm:pt-5 pb-2 sm:pb-3 overflow-hidden`}
+            style={{ top: isDesktop ? "4.5rem" : "0rem" }}
+          >
+          <div className="pointer-events-none absolute -top-3 inset-x-0 h-3 bg-white dark:bg-[#0a0a0a]" />
+          <div className="pointer-events-none absolute inset-0 bg-white dark:bg-[#0a0a0a]" />
           {/* Food Categories - Horizontal Scroll */}
           <motion.section
-            className="space-y-0"
+            className="relative z-10 space-y-0 bg-white dark:bg-[#0a0a0a] pt-2"
             initial={{ opacity: 1, y: 0 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0 }}
           >
             <div
               ref={categoryScrollRef}
-              className="flex gap-4 sm:gap-5 overflow-x-auto overflow-y-visible scrollbar-hide scroll-smooth px-2 sm:px-3 lg:px-4 pt-0.5 sm:pt-1 pb-1.5 sm:pb-2"
+              data-lenis-prevent-touch
+              className="flex gap-4 sm:gap-5 overflow-x-auto overflow-y-visible scrollbar-hide scroll-smooth px-2 sm:px-3 lg:px-4 pt-0.5 sm:pt-1 pb-1.5 sm:pb-2 lg:justify-center"
               style={{
                 scrollbarWidth: "none",
                 msOverflowStyle: "none",
@@ -1422,28 +1999,6 @@ export default function Home() {
                 overflowY: "hidden",
               }}
             >
-              {/* Offer Image - Static, Centered */}
-              {/* Special Offer Badge - Meals Under 200 */}
-              <motion.div
-                className="flex-shrink-0 flex flex-col items-center gap-2 cursor-pointer group"
-                initial={{ opacity: 1, scale: 1 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ duration: 0 }}
-                onClick={() => navigate("/under-250")}
-              >
-                <div className="w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 flex items-center justify-center relative overflow-hidden">
-                  <img
-                    src={offerImage}
-                    alt="Special Offer"
-                    width={96}
-                    height={96}
-                    fetchPriority="high"
-                    loading="eager"
-                    decoding="async"
-                    className="w-full h-full object-contain group-hover:scale-110 transition-transform duration-300"
-                  />
-                </div>
-              </motion.div>
               {loadingRealCategories ? (
                 <div className="flex items-center justify-center py-4">
                   <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
@@ -1473,7 +2028,8 @@ export default function Home() {
                             sizes="(max-width: 640px) 64px, (max-width: 768px) 80px, 96px"
                             objectFit="cover"
                             placeholder="blur"
-                            priority={index === 0}
+                            observerRootMargin="120px 200px 120px 200px"
+                            priority={index < 8}
                             onError={() => { }}
                           />
                         </div>
@@ -1483,6 +2039,25 @@ export default function Home() {
                       </Link>
                     </motion.div>
                   ))}
+                  {realCategories.length > 10 && (
+                    <motion.div
+                      className="flex-shrink-0"
+                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      transition={{ duration: 0.3, delay: 0.25 }}
+                      whileHover={{ scale: 1.05, y: -5 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      <Link to="/user/category/all" className="flex flex-col items-center gap-2 group">
+                        <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl sm:rounded-3xl overflow-hidden shadow-sm border border-gray-100 dark:border-gray-800 relative bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                          <UtensilsCrossed className="w-6 h-6 sm:w-8 sm:h-8 text-green-600 dark:text-green-400" />
+                        </div>
+                        <span className="text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 text-center whitespace-nowrap max-w-[80px] truncate">
+                          See all
+                        </span>
+                      </Link>
+                    </motion.div>
+                  )}
                 </>
               ) : landingCategories.length > 0 ? (
                 <>
@@ -1501,7 +2076,8 @@ export default function Home() {
                             sizes="(max-width: 640px) 64px, (max-width: 768px) 80px, 96px"
                             objectFit="cover"
                             placeholder="blur"
-                            priority={index === 0}
+                            observerRootMargin="120px 200px 120px 200px"
+                            priority={index < 8}
                           />
                         </div>
                         <span className="text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 text-center whitespace-nowrap max-w-[80px] truncate">
@@ -1510,6 +2086,25 @@ export default function Home() {
                       </Link>
                     </div>
                   ))}
+                  {landingCategories.length > 10 && (
+                    <motion.div
+                      className="flex-shrink-0"
+                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      transition={{ duration: 0.3, delay: 0.25 }}
+                      whileHover={{ scale: 1.05, y: -5 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      <Link to="/user/category/all" className="flex flex-col items-center gap-2 group">
+                        <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl sm:rounded-3xl overflow-hidden shadow-sm border border-gray-100 dark:border-gray-800 relative bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                          <UtensilsCrossed className="w-6 h-6 sm:w-8 sm:h-8 text-green-600 dark:text-green-400" />
+                        </div>
+                        <span className="text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 text-center whitespace-nowrap max-w-[80px] truncate">
+                          See all
+                        </span>
+                      </Link>
+                    </motion.div>
+                  )}
                 </>
               ) : (
                 // No categories available from API
@@ -1522,13 +2117,14 @@ export default function Home() {
 
           {/* Filters */}
           <motion.section
-            className="mt-3 sm:mt-4 pt-0 pb-0"
+            className="relative z-10 mt-3 sm:mt-4 pt-0 pb-0 bg-white dark:bg-[#0a0a0a]"
             initial={{ opacity: 1, y: 0 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0 }}
           >
             <div
-              className="flex items-center gap-2.5 sm:gap-3 overflow-x-auto scrollbar-hide pb-0.5 lg:pb-1"
+              data-lenis-prevent-touch
+              className="flex items-center gap-2.5 sm:gap-3 overflow-x-auto scrollbar-hide pb-0.5 lg:pb-1 lg:justify-center lg:flex-wrap"
               style={{
                 scrollbarWidth: "none",
                 msOverflowStyle: "none",
@@ -1591,8 +2187,7 @@ export default function Home() {
               })}
             </div>
           </motion.section>
-        </div>
-        {/* End Sticky Section */}
+        </motion.div>
 
         {/* Explore More Section */}
         <motion.section
@@ -1611,8 +2206,48 @@ export default function Home() {
           >
             {exploreMoreHeading}
           </motion.h2>
+
+          {/* Desktop only: large Swiggy-style explore tiles (Tastizo green accents) */}
+          <div className="hidden lg:grid gap-5 grid-cols-2 xl:grid-cols-4 mt-1 mb-2">
+            {loadingLandingConfig
+              ? Array.from({ length: 4 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="h-[220px] rounded-[28px] bg-gray-100 dark:bg-gray-800 animate-pulse"
+                  />
+                ))
+              : desktopExploreItems.slice(0, 4).map((item) => (
+                  <Link
+                    key={item.id}
+                    to={item.href}
+                    className="group relative bg-white dark:bg-[#141414] rounded-[28px] p-6 shadow-md border border-gray-100 dark:border-gray-800 overflow-hidden min-h-[210px] flex flex-col hover:shadow-lg transition-shadow"
+                  >
+                    <div className="relative z-10 max-w-[58%] pr-2">
+                      <p className="text-[11px] font-extrabold uppercase tracking-wide text-gray-900 dark:text-white leading-snug">
+                        {item.title}
+                      </p>
+                      <p className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mt-1.5">
+                        {item.sub}
+                      </p>
+                      <p className="text-xs font-bold uppercase text-[#2B9C64] mt-4">{item.tag}</p>
+                    </div>
+                    <div className="absolute bottom-2 right-2 w-[118px] h-[118px] flex items-center justify-center pointer-events-none">
+                      <img
+                        src={item.image}
+                        alt=""
+                        className="max-w-full max-h-full object-contain drop-shadow-md group-hover:scale-105 transition-transform duration-300"
+                      />
+                    </div>
+                    <div className="absolute bottom-5 left-6 w-10 h-10 rounded-full bg-[#2B9C64] text-white flex items-center justify-center shadow-md group-hover:scale-105 transition-transform">
+                      <ArrowRight className="w-5 h-5" strokeWidth={2.5} />
+                    </div>
+                  </Link>
+                ))}
+          </div>
+
           <div
-            className="flex gap-2 sm:gap-3 lg:gap-4 overflow-x-auto scrollbar-hide pb-2 lg:pb-3"
+            data-lenis-prevent-touch
+            className="flex gap-2 sm:gap-3 lg:gap-4 overflow-x-auto scrollbar-hide pb-2 lg:pb-3 lg:hidden"
             style={{
               scrollbarWidth: "none",
               msOverflowStyle: "none",
@@ -1815,7 +2450,8 @@ export default function Home() {
                   >
                     <div className="h-full group">
                       <Link to={`/user/restaurants/${restaurantSlug}`} className="h-full flex">
-                        <Card className="overflow-hidden gap-0 cursor-pointer border-0 dark:border-gray-800 group bg-white dark:bg-[#1a1a1a] border-background transition-all duration-500 py-0 rounded-2xl sm:rounded-3xl flex flex-col h-full w-full relative">
+                        <Card className={`overflow-hidden gap-0 cursor-pointer border-0 dark:border-gray-800 group bg-white dark:bg-[#1a1a1a] border-background transition-all duration-500 py-0 rounded-2xl sm:rounded-3xl flex flex-col h-full w-full relative ${isOutOfService ? 'grayscale opacity-75' : ''
+                          }`}>
                           {/* Image Section with Carousel */}
                           <div className="relative">
                             <RestaurantImageCarousel
@@ -1848,14 +2484,6 @@ export default function Home() {
                               </Button>
                             </div>
 
-                            {/* FREE delivery Badge - Bottom Left (only for first 3 restaurants) */}
-                            {index < 3 && (
-                              <div className="absolute bottom-2 left-0 sm:bottom-2 sm:left-0 z-10 transform transition-all duration-300 group-hover:translate-x-1">
-                                <div className="bg-gradient-to-r from-blue-600 via-blue-500/80 to-transparent text-white px-2.5 py-1 rounded-r-sm text-[10px] sm:text-xs font-bold shadow-lg backdrop-blur-sm">
-                                  FREE delivery
-                                </div>
-                              </div>
-                            )}
                           </div>
 
                           {/* Content Section */}
@@ -1920,12 +2548,12 @@ export default function Home() {
             </Link> */}
           </div>
         </motion.section>
-      </motion.div>
+      </div>
 
       {/* Filter Modal - Bottom Sheet */}
       <AnimatePresence>
         {isFilterOpen && (
-          <div className="fixed inset-0 z-[100]">
+          <div className="fixed inset-0 z-[100000]">
             {/* Backdrop */}
             <motion.div
               className="absolute inset-0 bg-black/50"
@@ -1938,7 +2566,7 @@ export default function Home() {
 
             {/* Modal Content */}
             <motion.div
-              className="absolute bottom-0 left-0 right-0 bg-white dark:bg-[#1a1a1a] rounded-t-3xl max-h-[85vh] flex flex-col"
+              className="absolute bottom-0 left-0 right-0 z-[100001] bg-white dark:bg-[#1a1a1a] rounded-t-3xl max-h-[85vh] flex flex-col overflow-hidden isolate"
               initial={{ y: "100%" }}
               animate={{ y: 0 }}
               exit={{ y: "100%" }}
@@ -1965,9 +2593,9 @@ export default function Home() {
               </div>
 
               {/* Body */}
-              <div className="flex flex-1 overflow-hidden">
+              <div className="flex flex-1 min-h-0 overflow-hidden bg-white dark:bg-[#1a1a1a]">
                 {/* Left Sidebar - Tabs */}
-                <div className="w-24 sm:w-28 bg-gray-50 dark:bg-[#0a0a0a] border-r dark:border-gray-800 flex flex-col">
+                <div className="w-24 sm:w-28 shrink-0 bg-gray-50 dark:bg-[#0a0a0a] border-r dark:border-gray-800 flex flex-col">
                   {[
                     { id: 'sort', label: 'Sort By', icon: ArrowDownUp },
                     { id: 'time', label: 'Time', icon: Timer },
@@ -2004,7 +2632,7 @@ export default function Home() {
                 </div>
 
                 {/* Right Content Area - Scrollable */}
-                <div ref={rightContentRef} className="flex-1 overflow-y-auto p-4">
+                <div ref={rightContentRef} className="flex-1 min-w-0 min-h-0 overflow-y-auto bg-white dark:bg-[#1a1a1a] p-4">
                   {/* Sort By Tab */}
                   <div
                     ref={el => filterSectionRefs.current['sort'] = el}
@@ -2300,43 +2928,42 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      {/* Veg Mode Popup */}
-      <AnimatePresence>
-        {showVegModePopup && (
-          <>
-            {/* Backdrop */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              onClick={() => {
-                setShowVegModePopup(false)
-                // Revert veg mode to OFF if popup is closed without applying
-                setVegModeContext(false)
-                setPrevVegMode(false)
-              }}
-              className="fixed inset-0 bg-black/30 z-[9998] backdrop-blur-sm"
-            />
+      {/* Veg Mode Popup — portal to body so fixed + z-index work on desktop (escapes overflow/transform ancestors) */}
+      {typeof document !== "undefined" &&
+        createPortal(
+          <AnimatePresence>
+            {showVegModePopup && (
+              <>
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  onClick={() => {
+                    setShowVegModePopup(false)
+                    setVegModeContext(false)
+                    setPrevVegMode(false)
+                  }}
+                  className="fixed inset-0 bg-black/30 z-[10050] backdrop-blur-sm"
+                />
 
-            {/* Popup */}
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: -10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: -10 }}
-              transition={{
-                type: "spring",
-                damping: 25,
-                stiffness: 300,
-                mass: 0.8
-              }}
-              className="fixed z-[9999] bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-2xl p-4 w-[calc(100%-2rem)] max-w-xs"
-              style={{
-                top: `${popupPosition.top}px`,
-                right: `${popupPosition.right}px`,
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9, y: -10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.9, y: -10 }}
+                  transition={{
+                    type: "spring",
+                    damping: 25,
+                    stiffness: 300,
+                    mass: 0.8
+                  }}
+                  className="fixed z-[10051] bg-white dark:bg-[#1a1a1a] rounded-2xl shadow-2xl p-4 w-[calc(100%-2rem)] max-w-xs"
+                  style={{
+                    top: `${popupPosition.top}px`,
+                    right: `${popupPosition.right}px`,
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
               {/* Pointer Triangle */}
               <div
                 className="absolute -top-2 right-5 w-3 h-3 bg-white dark:bg-[#1a1a1a] transform rotate-45"
@@ -2422,14 +3049,16 @@ export default function Home() {
                     setIsApplyingVegMode(false)
                   }, 2000)
                 }}
-                className="w-full bg-[#1FCAD3] text-white font-semibold py-2.5 rounded-xl hover:bg-[#14a7b3] transition-colors text-sm shadow-sm"
+                className="w-full bg-[#2B9C64] text-white font-semibold py-2.5 rounded-xl hover:bg-[#218a56] transition-colors text-sm shadow-sm"
               >
                 Apply
               </button>
             </motion.div>
-          </>
+              </>
+            )}
+          </AnimatePresence>,
+          document.body
         )}
-      </AnimatePresence>
 
       {/* Switch Off Veg Mode Popup */}
       <AnimatePresence>

@@ -5,6 +5,8 @@ import { Toaster } from 'sonner'
 import './index.css'
 import App from './App.jsx'
 import OfflineBanner from './components/OfflineBanner.jsx'
+import MobileSplashScreen from './components/MobileSplashScreen.jsx'
+import { LocationIconTransitionProvider } from './context/LocationIconTransitionContext.jsx'
 import { getGoogleMapsApiKey } from './lib/utils/googleMapsApiKey.js'
 import { loadBusinessSettings } from './lib/utils/businessSettings.js'
 
@@ -14,16 +16,33 @@ loadBusinessSettings().catch(() => {
   // Silently fail - settings will load when admin is authenticated
 })
 
-// Initialize push notifications globally (non-blocking).
+// Initialize push messaging in a non-blocking way.
 setTimeout(() => {
   import("./lib/notifications/fcmWeb.js")
     .then(({ initializePushNotifications }) => initializePushNotifications())
-    .catch(() => {})
+    .catch(() => {
+      // Ignore push init failures to avoid blocking app startup
+    })
 }, 0)
 
 // Global flag to track Google Maps loading state
 window.__googleMapsLoading = window.__googleMapsLoading || false;
 window.__googleMapsLoaded = window.__googleMapsLoaded || false;
+window.__googleMapsAuthFailed = window.__googleMapsAuthFailed || false;
+
+// Google Maps calls this global on auth/key/billing/referrer failures.
+// We use it to gracefully degrade (show UI without map) instead of breaking the screen.
+window.gm_authFailure = () => {
+  window.__googleMapsAuthFailed = true;
+  window.__googleMapsLoaded = false;
+  window.__googleMapsLoading = false;
+  try {
+    window.dispatchEvent(new CustomEvent("googleMapsAuthFailure"));
+  } catch {
+    // ignore
+  }
+  console.error("❌ Google Maps auth failure (key/restrictions/billing).");
+};
 
 // Load Google Maps API dynamically from backend database
 // Only load if not already loaded to prevent multiple loads
@@ -92,6 +111,45 @@ if (savedTheme === 'dark') {
 } else {
   document.documentElement.classList.remove('dark')
 }
+
+// Disable browser zoom (keyboard shortcuts, Ctrl/Cmd + wheel, and pinch gestures)
+const disableAppZoom = () => {
+  document.addEventListener(
+    'wheel',
+    (event) => {
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault()
+      }
+    },
+    { passive: false },
+  )
+
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (!(event.ctrlKey || event.metaKey)) return
+      if (event.key === '+' || event.key === '-' || event.key === '=' || event.key === '0') {
+        event.preventDefault()
+      }
+    },
+    { passive: false },
+  )
+
+  document.addEventListener(
+    'touchmove',
+    (event) => {
+      if (event.touches && event.touches.length > 1) {
+        event.preventDefault()
+      }
+    },
+    { passive: false },
+  )
+
+  document.addEventListener('gesturestart', (event) => event.preventDefault(), { passive: false })
+  document.addEventListener('gesturechange', (event) => event.preventDefault(), { passive: false })
+  document.addEventListener('gestureend', (event) => event.preventDefault(), { passive: false })
+}
+disableAppZoom()
 
 // Suppress browser extension errors
 const originalError = console.error
@@ -239,9 +297,12 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <BrowserRouter>
-      <App />
-      <Toaster position="top-center" richColors offset="80px" />
-      <OfflineBanner />
+      <LocationIconTransitionProvider>
+        <App />
+        <Toaster position="top-center" richColors offset="80px" />
+        <OfflineBanner />
+        <MobileSplashScreen />
+      </LocationIconTransitionProvider>
     </BrowserRouter>
   </StrictMode>,
 )

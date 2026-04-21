@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { useProfile } from "@/module/user/context/ProfileContext"
+import { useLocation } from "@/module/user/hooks/useLocation"
+import { useZone } from "@/module/user/hooks/useZone"
 import { restaurantAPI, diningAPI } from "@/lib/api"
 import {
     ArrowLeft,
@@ -17,11 +19,14 @@ import {
 import { Button } from "@/components/ui/button"
 import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
 
 export default function DiningRestaurantDetails() {
     const { diningType, slug } = useParams() // Get params from URL
     const navigate = useNavigate()
     const { addFavorite, removeFavorite, isFavorite } = useProfile()
+    const { location } = useLocation()
+    const { zoneId, currentLocation, locationRefreshKey } = useZone()
     const isFav = isFavorite(slug)
 
     const [restaurant, setRestaurant] = useState(null)
@@ -34,52 +39,17 @@ export default function DiningRestaurantDetails() {
     const [diningOffers, setDiningOffers] = useState([])
     const [diningMenu, setDiningMenu] = useState(null)
 
-    // Share handler (Web Share API + clipboard fallback)
-    const copyToClipboard = async (text) => {
-        try {
-            await navigator.clipboard.writeText(text)
-            toast.success("Link copied to clipboard!")
-        } catch (error) {
-            const textArea = document.createElement("textarea")
-            textArea.value = text
-            textArea.style.position = "fixed"
-            textArea.style.opacity = "0"
-            document.body.appendChild(textArea)
-            textArea.select()
-            try {
-                document.execCommand("copy")
-                toast.success("Link copied to clipboard!")
-            } catch (err) {
-                toast.error("Failed to copy link")
-            }
-            document.body.removeChild(textArea)
-        }
-    }
-
     const handleShareClick = async () => {
         if (!restaurant) return
 
         const shareUrl = window.location.href
         const shareTitle = `${restaurant.name || "Dining"} - Tastizo`
         const shareText = `Book your table at ${restaurant.name || "this restaurant"} on Tastizo.`
-
-        if (navigator.share) {
-            try {
-                await navigator.share({
-                    title: shareTitle,
-                    text: shareText,
-                    url: shareUrl,
-                })
-                return
-            } catch (error) {
-                if (error.name === "AbortError") {
-                    return
-                }
-                // fall through to clipboard fallback
-            }
-        }
-
-        await copyToClipboard(shareUrl)
+        await shareWithFallback({
+            title: shareTitle,
+            text: shareText,
+            url: shareUrl,
+        })
     }
 
     // Fetch data
@@ -89,7 +59,15 @@ export default function DiningRestaurantDetails() {
             try {
                 setLoading(true)
                 // Try fetch by ID/Slug
-                const response = await diningAPI.getRestaurantBySlug(slug)
+                const response = await diningAPI.getRestaurantBySlug(slug, {
+                    ...(zoneId ? { zoneId } : {}),
+                    ...(currentLocation?.latitude && currentLocation?.longitude
+                        ? {
+                            lat: currentLocation.latitude,
+                            lng: currentLocation.longitude,
+                        }
+                        : {}),
+                })
 
                 if (response.data && response.data.success) {
                     const apiRestaurant = response.data.data
@@ -109,7 +87,16 @@ export default function DiningRestaurantDetails() {
                 // FAILSAFE: If API by slug fails, let's try to get list and find match (temporary fix for development if slug isn't unique ID)
                 // In a real app, backend should support slug lookup reliably.
                 try {
-                    const listResp = await restaurantAPI.getRestaurants()
+                    const params = {
+                        ...(zoneId ? { zoneId } : {}),
+                        ...(currentLocation?.latitude && currentLocation?.longitude
+                            ? {
+                                lat: currentLocation.latitude,
+                                lng: currentLocation.longitude,
+                            }
+                            : {}),
+                    }
+                    const listResp = await restaurantAPI.getRestaurants(params)
                     if (listResp.data?.data?.restaurants) {
                         const match = listResp.data.data.restaurants.find(r =>
                             r.slug === slug ||
@@ -131,7 +118,7 @@ export default function DiningRestaurantDetails() {
             }
         }
         fetchRestaurant()
-    }, [slug])
+    }, [currentLocation?.latitude, currentLocation?.longitude, locationRefreshKey, slug, zoneId])
 
     // Fetch this restaurant's dining offers (pre-book & walk-in) by slug
     useEffect(() => {
@@ -156,7 +143,15 @@ export default function DiningRestaurantDetails() {
         if (!restaurant?._id) return
         const fetchMenu = async () => {
             try {
-                const res = await restaurantAPI.getMenuByRestaurantId(restaurant._id)
+                const res = await restaurantAPI.getMenuByRestaurantId(restaurant._id, {
+                    ...(zoneId ? { zoneId } : {}),
+                    ...(currentLocation?.latitude && currentLocation?.longitude
+                        ? {
+                            lat: currentLocation.latitude,
+                            lng: currentLocation.longitude,
+                        }
+                        : {}),
+                })
                 const data = res?.data?.data || res?.data
                 setDiningMenu(data?.menu || data || null)
             } catch {
@@ -164,12 +159,12 @@ export default function DiningRestaurantDetails() {
             }
         }
         fetchMenu()
-    }, [restaurant?._id])
+    }, [currentLocation?.latitude, currentLocation?.longitude, restaurant?._id, zoneId])
 
     if (loading) {
         return (
             <div className="flex items-center justify-center min-h-screen bg-slate-50">
-                <Loader2 className="w-8 h-8 animate-spin text-[#1FCAD3]" />
+                <Loader2 className="w-8 h-8 animate-spin text-[#2B9C64]" />
             </div>
         )
     }
@@ -263,7 +258,7 @@ export default function DiningRestaurantDetails() {
     return (
         <div className="min-h-screen bg-white pb-20 relative">
             {/* Sticky Header / Back Button */}
-            <div className="fixed top-0 left-0 w-full z-50 p-4 flex justify-between items-center bg-gradient-to-b from-black/50 to-transparent pointer-events-none">
+            <div className="fixed top-0 left-0 w-full z-50 px-4 pt-6 pb-4 flex justify-between items-center bg-gradient-to-b from-black/50 to-transparent pointer-events-none">
                 <button
                     onClick={() => navigate(-1)}
                     className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white pointer-events-auto hover:bg-black/60 transition-colors"
@@ -342,7 +337,7 @@ export default function DiningRestaurantDetails() {
                         </div>
 
                         {reviewsEnabled && (
-                            <div className="flex flex-col items-center bg-[#1FCAD3]/90 backdrop-blur-sm rounded-lg px-2 py-1">
+                            <div className="flex flex-col items-center bg-[#2B9C64]/90 backdrop-blur-sm rounded-lg px-2 py-1">
                                 <div className="flex items-center gap-1 text-white font-bold text-lg leading-none">
                                     {ratingDisplay} {rating != null && rating > 0 && <Star className="w-3 h-3 fill-current" />}
                                 </div>
@@ -358,7 +353,7 @@ export default function DiningRestaurantDetails() {
                 <Button
                     variant="outline"
                     onClick={() => setIsBookingOpen(true)}
-                    className="flex-1 border-gray-200 h-10 text-[#1FCAD3] hover:text-[#14a7b3] hover:bg-[#1FCAD3]/10 font-medium rounded-full"
+                    className="flex-1 border-gray-200 h-10 text-[#2B9C64] hover:text-[#218a56] hover:bg-[#2B9C64]/10 font-medium rounded-full"
                 >
                     <UtensilsCrossed className="w-4 h-4 mr-2" />
                     Book a table
@@ -373,7 +368,7 @@ export default function DiningRestaurantDetails() {
                                 window.open(`https://www.google.com/maps/search/?api=1&query=${encoded}`, "_blank")
                             }
                         }}
-                        className="w-10 h-10 rounded-full border border-gray-200 flex items-center justify-center text-[#1FCAD3] hover:bg-[#1FCAD3]/10"
+                        className="w-10 h-10 rounded-full border border-gray-200 flex items-center justify-center text-[#2B9C64] hover:bg-[#2B9C64]/10"
                     >
                         <Navigation className="w-5 h-5" />
                     </button>
@@ -385,7 +380,7 @@ export default function DiningRestaurantDetails() {
                                 window.location.href = `tel:${digits}`
                             }
                         }}
-                        className="w-10 h-10 rounded-full border border-gray-200 flex items-center justify-center text-[#1FCAD3] hover:bg-[#1FCAD3]/10"
+                        className="w-10 h-10 rounded-full border border-gray-200 flex items-center justify-center text-[#2B9C64] hover:bg-[#2B9C64]/10"
                     >
                         <Phone className="w-5 h-5" />
                     </button>
@@ -413,12 +408,12 @@ export default function DiningRestaurantDetails() {
                         <button
                             key={tab}
                             onClick={() => setActiveTab(tab)}
-                            className={`whitespace-nowrap py-3 text-sm font-medium transition-colors relative ${activeTab === tab ? "text-[#1FCAD3]" : "text-gray-500 hover:text-gray-800"
+                            className={`whitespace-nowrap py-3 text-sm font-medium transition-colors relative ${activeTab === tab ? "text-[#2B9C64]" : "text-gray-500 hover:text-gray-800"
                                 }`}
                         >
                             {tab}
                             {activeTab === tab && (
-                                <div className="absolute bottom-0 left-0 w-full h-[2px] bg-[#1FCAD3] rounded-t-full" />
+                                <div className="absolute bottom-0 left-0 w-full h-[2px] bg-[#2B9C64] rounded-t-full" />
                             )}
                         </button>
                     ))}
@@ -436,7 +431,7 @@ export default function DiningRestaurantDetails() {
                                 <div key={offer._id} className="rounded-xl overflow-hidden border border-gray-200 bg-gray-50 p-4">
                                     <p className="font-medium text-gray-900">{offer.title}</p>
                                     {offer.description && <p className="text-sm text-gray-600 mt-1">{offer.description}</p>}
-                                    <p className="text-sm text-[#1FCAD3] font-medium mt-2">
+                                    <p className="text-sm text-[#2B9C64] font-medium mt-2">
                                         {offer.discountType === "percentage" ? `${offer.discountValue}% off` : `₹${offer.discountValue} off`}
                                     </p>
                                     {offer.validFrom && offer.validTo && (
@@ -449,8 +444,8 @@ export default function DiningRestaurantDetails() {
                         ) : (
                             <>
                                 <p className="text-gray-600 text-sm">Pre-book your table to enjoy dining offers and a seamless experience.</p>
-                                <div className="bg-[#F0FDFF] border border-[#1FCAD3]/30 rounded-xl p-4 mt-2">
-                                    <p className="text-sm font-medium text-[#1FCAD3]">Reserve through Tastizo for a smooth dining experience.</p>
+                                <div className="bg-[#F0FDF4] border border-[#2B9C64]/30 rounded-xl p-4 mt-2">
+                                    <p className="text-sm font-medium text-[#2B9C64]">Reserve through Tastizo for a smooth dining experience.</p>
                                 </div>
                             </>
                         )}
@@ -464,7 +459,7 @@ export default function DiningRestaurantDetails() {
                                 <div key={offer._id} className="rounded-xl overflow-hidden border border-gray-200 bg-gray-50 p-4">
                                     <p className="font-medium text-gray-900">{offer.title}</p>
                                     {offer.description && <p className="text-sm text-gray-600 mt-1">{offer.description}</p>}
-                                    <p className="text-sm text-[#1FCAD3] font-medium mt-2">
+                                    <p className="text-sm text-[#2B9C64] font-medium mt-2">
                                         {offer.discountType === "percentage" ? `${offer.discountValue}% off` : `₹${offer.discountValue} off`}
                                     </p>
                                     {offer.validFrom && offer.validTo && (
@@ -496,7 +491,7 @@ export default function DiningRestaurantDetails() {
                                                         {img ? <img src={img} alt={item.name} className="w-full aspect-square object-cover" /> : <div className="w-full aspect-square bg-gray-100 flex items-center justify-center text-gray-400 text-xs">No image</div>}
                                                         <div className="p-3">
                                                             <p className="font-medium text-gray-900 text-sm">{item.name}</p>
-                                                            <p className="text-[#1FCAD3] font-semibold mt-1">₹{(item.dineInPrice ?? item.price) ?? "—"}</p>
+                                                            <p className="text-[#2B9C64] font-semibold mt-1">₹{(item.dineInPrice ?? item.price) ?? "—"}</p>
                                                         </div>
                                                     </div>
                                                 )
@@ -508,7 +503,7 @@ export default function DiningRestaurantDetails() {
                                                         {img ? <img src={img} alt={item.name} className="w-full aspect-square object-cover" /> : <div className="w-full aspect-square bg-gray-100 flex items-center justify-center text-gray-400 text-xs">No image</div>}
                                                         <div className="p-3">
                                                             <p className="font-medium text-gray-900 text-sm">{item.name}</p>
-                                                            <p className="text-[#1FCAD3] font-semibold mt-1">₹{(item.dineInPrice ?? item.price) ?? "—"}</p>
+                                                            <p className="text-[#2B9C64] font-semibold mt-1">₹{(item.dineInPrice ?? item.price) ?? "—"}</p>
                                                         </div>
                                                     </div>
                                                 )
@@ -563,7 +558,7 @@ export default function DiningRestaurantDetails() {
                         )}
                         <div className="border-t border-gray-100 pt-4 space-y-2">
                             <p className="font-medium text-gray-900">{displayName}</p>
-                            {addressForMaps && <p className="flex items-start gap-2"><MapPin className="w-4 h-4 text-[#1FCAD3] flex-shrink-0 mt-0.5" /><span>{addressForMaps}</span></p>}
+                            {addressForMaps && <p className="flex items-start gap-2"><MapPin className="w-4 h-4 text-[#2B9C64] flex-shrink-0 mt-0.5" /><span>{addressForMaps}</span></p>}
                             <p className="text-gray-500 text-xs">Open {displayOpening} – {displayClosing}{displayCostForTwo ? ` · ₹${displayCostForTwo} for two` : ""}</p>
                         </div>
                     </div>
@@ -580,7 +575,7 @@ export default function DiningRestaurantDetails() {
                     <Button
                         variant="outline"
                         onClick={() => setIsBookingOpen(true)}
-                        className="flex-1 h-12 rounded-xl text-[#1FCAD3] border-[#1FCAD3] hover:bg-[#1FCAD3]/10 font-bold"
+                        className="flex-1 h-12 rounded-xl text-[#2B9C64] border-[#2B9C64] hover:bg-[#2B9C64]/10 font-bold"
                     >
                         Book a table
                     </Button>
@@ -626,7 +621,7 @@ export default function DiningRestaurantDetails() {
                                         onBlur={(e) => {
                                             if (!selectedGuests || selectedGuests < 1) setSelectedGuests(1)
                                         }}
-                                        className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 focus:bg-white focus:border-[#1FCAD3] focus:ring-1 focus:ring-[#1FCAD3] transition-all text-lg font-semibold text-center"
+                                        className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 focus:bg-white focus:border-[#2B9C64] focus:ring-1 focus:ring-[#2B9C64] transition-all text-lg font-semibold text-center"
                                     />
                                     <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 text-sm font-medium pointer-events-none">
                                         Guests
@@ -640,8 +635,8 @@ export default function DiningRestaurantDetails() {
                                             key={num}
                                             onClick={() => setSelectedGuests(num)}
                                             className={`min-w-[40px] h-10 rounded-full flex items-center justify-center text-sm font-medium transition-all flex-shrink-0 ${selectedGuests === num
-                                                ? "bg-[#1FCAD3] text-white shadow-md transform scale-105"
-                                                : "bg-white border border-gray-200 text-gray-600 hover:border-[#1FCAD3]/30 hover:bg-[#1FCAD3]/10"
+                                                ? "bg-[#2B9C64] text-white shadow-md transform scale-105"
+                                                : "bg-white border border-gray-200 text-gray-600 hover:border-[#2B9C64]/30 hover:bg-[#2B9C64]/10"
                                                 }`}
                                         >
                                             {num}
@@ -655,7 +650,7 @@ export default function DiningRestaurantDetails() {
                                     setIsBookingOpen(false)
                                     navigate(`/dining/book/${slug}`, { state: { guestCount: selectedGuests } })
                                 }}
-                                className="w-full bg-[#1FCAD3] hover:bg-[#14a7b3] text-white font-bold h-12 rounded-xl"
+                                className="w-full bg-[#2B9C64] hover:bg-[#218a56] text-white font-bold h-12 rounded-xl"
                             >
                                 Confirm Booking
                             </Button>

@@ -107,83 +107,167 @@ function getRestaurantZoneId(restaurantLat, restaurantLng, activeZones) {
   return null;
 }
 
-function getEntityCoordinates(location = {}) {
-  if (
-    Array.isArray(location.coordinates) &&
-    location.coordinates.length >= 2 &&
-    location.coordinates[0] != null &&
-    location.coordinates[1] != null
-  ) {
-    return {
-      longitude: Number(location.coordinates[0]),
-      latitude: Number(location.coordinates[1]),
-    };
+function getRestaurantCoordinates(restaurant) {
+  const lat = Number(
+    restaurant?.location?.latitude ?? restaurant?.location?.coordinates?.[1],
+  );
+  const lng = Number(
+    restaurant?.location?.longitude ?? restaurant?.location?.coordinates?.[0],
+  );
+
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    return { lat, lng };
   }
 
-  if (location.longitude != null && location.latitude != null) {
-    return {
-      longitude: Number(location.longitude),
-      latitude: Number(location.latitude),
-    };
-  }
-
-  return { longitude: null, latitude: null };
+  return null;
 }
 
-async function resolveRequestedZone({ zoneId, latitude, longitude }) {
-  if (zoneId) {
-    const zone = await Zone.findById(zoneId).lean();
-    if (!zone || !zone.isActive) {
-      const error = new Error(
-        "Invalid or inactive zone. Please detect your zone again.",
-      );
-      error.statusCode = 400;
-      throw error;
-    }
-    return zone;
-  }
+function calculateDistanceMeters(lat1, lng1, lat2, lng2) {
+  const earthRadius = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadius * c;
+}
 
-  if (latitude == null || longitude == null) {
+function getUserCoordinatesFromQuery(query = {}) {
+  const lat = Number(query.lat ?? query.latitude);
+  const lng = Number(query.lng ?? query.longitude);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     return null;
   }
 
-  const latNum = Number(latitude);
-  const lngNum = Number(longitude);
-
-  if (Number.isNaN(latNum) || Number.isNaN(lngNum)) {
-    const error = new Error("Invalid latitude or longitude");
-    error.statusCode = 400;
-    throw error;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return null;
   }
 
-  const activeZones = await Zone.find({ isActive: true })
-    .select("_id coordinates zoneName")
-    .lean();
-
-  const matchedZone = activeZones.find((zone) =>
-    isPointInZone(latNum, lngNum, zone.coordinates),
-  );
-
-  return matchedZone || null;
+  return { lat, lng };
 }
 
-function filterRestaurantsByZone(restaurants, zone, shouldFilter = false) {
-  if (!shouldFilter) {
-    return restaurants;
+function findMatchingZone(restaurantLat, restaurantLng, activeZones) {
+  if (!Number.isFinite(restaurantLat) || !Number.isFinite(restaurantLng)) {
+    return null;
   }
 
-  if (!zone) {
-    return [];
+  for (const zone of activeZones) {
+    if (!zone.coordinates || zone.coordinates.length < 3) continue;
+
+    const isInZone =
+      typeof zone.containsPoint === "function"
+        ? zone.containsPoint(restaurantLat, restaurantLng)
+        : isPointInZone(restaurantLat, restaurantLng, zone.coordinates);
+
+    if (isInZone) return zone;
   }
+
+  return null;
+}
+
+function filterRestaurantsByZone(restaurants, zoneId, activeZones) {
+  if (!zoneId) return restaurants;
 
   return restaurants.filter((restaurant) => {
-    const { latitude, longitude } = getEntityCoordinates(restaurant.location);
-    if (latitude == null || longitude == null) {
-      return false;
-    }
+    const coords = getRestaurantCoordinates(restaurant);
+    if (!coords) return false;
 
-    return isPointInZone(latitude, longitude, zone.coordinates);
+    const restaurantZoneId = getRestaurantZoneId(coords.lat, coords.lng, activeZones);
+    if (!restaurantZoneId) return false;
+
+    restaurant.zoneId = restaurantZoneId;
+    return restaurantZoneId === zoneId;
   });
+}
+
+async function getValidatedUserZone(zoneId) {
+  if (!zoneId) return null;
+
+  const userZone = await Zone.findById(zoneId).lean();
+  if (!userZone || !userZone.isActive) {
+    return undefined;
+  }
+
+  return userZone;
+}
+
+async function resolveUserZone({ zoneId, coords, activeZones = null }) {
+  const explicitZone = await getValidatedUserZone(zoneId);
+  if (zoneId && !explicitZone) {
+    return { invalidZone: true, userZone: null, activeZones: [] };
+  }
+
+  const zones =
+    activeZones ||
+    (explicitZone ? [explicitZone] : await Zone.find({ isActive: true }).lean());
+
+  if (explicitZone || !coords) {
+    return {
+      invalidZone: false,
+      userZone: explicitZone || null,
+      activeZones: zones,
+    };
+  }
+
+  const detectedZone = findMatchingZone(coords.lat, coords.lng, zones);
+  return {
+    invalidZone: false,
+    userZone: detectedZone || null,
+    activeZones: zones,
+  };
+}
+
+function isRestaurantAccessibleInZone(restaurant, zoneId, activeZones) {
+  if (!zoneId) return true;
+
+  const coords = getRestaurantCoordinates(restaurant);
+  if (!coords) return false;
+
+  const restaurantZoneId = getRestaurantZoneId(coords.lat, coords.lng, activeZones);
+  return !!restaurantZoneId && restaurantZoneId === zoneId;
+}
+
+function hasVisibleMenuItems(menu) {
+  if (!menu || menu.isActive === false) return false;
+
+  const sections = Array.isArray(menu.sections) ? menu.sections : [];
+  for (const section of sections) {
+    if (!section || section.isEnabled === false) continue;
+
+    const sectionItems = Array.isArray(section.items) ? section.items : [];
+    const hasVisibleSectionItem = sectionItems.some((item) => {
+      if (!item) return false;
+      const isAvailable = item.isAvailable !== false;
+      const isApproved =
+        item.approvalStatus === "approved" || !item.approvalStatus;
+      return isAvailable && isApproved;
+    });
+    if (hasVisibleSectionItem) return true;
+
+    const subsections = Array.isArray(section.subsections)
+      ? section.subsections
+      : [];
+    for (const subsection of subsections) {
+      const subsectionItems = Array.isArray(subsection?.items)
+        ? subsection.items
+        : [];
+      const hasVisibleSubItem = subsectionItems.some((item) => {
+        if (!item) return false;
+        const isAvailable = item.isAvailable !== false;
+        const isApproved =
+          item.approvalStatus === "approved" || !item.approvalStatus;
+        return isAvailable && isApproved;
+      });
+      if (hasVisibleSubItem) return true;
+    }
+  }
+
+  return false;
 }
 
 // Get all restaurants (for user module)
@@ -200,18 +284,42 @@ export const getRestaurants = async (req, res) => {
       maxPrice,
       hasOffers,
       zoneId, // User's zone ID (optional - if provided, filters by zone)
-      latitude,
-      longitude,
       diningCategory, // Dining category slug (optional)
     } = req.query;
 
-    const shouldFilterByLocation =
-      !!zoneId || (latitude != null && longitude != null);
-    const requestedZone = await resolveRequestedZone({
-      zoneId,
-      latitude,
-      longitude,
-    });
+    const userCoords = getUserCoordinatesFromQuery(req.query);
+    const zoneResolution = await resolveUserZone({ zoneId, coords: userCoords });
+    const { invalidZone, userZone } = zoneResolution;
+    if (invalidZone) {
+      return errorResponse(
+        res,
+        400,
+        "Invalid or inactive zone. Please detect your zone again.",
+      );
+    }
+
+    if (userCoords && !userZone) {
+      return successResponse(res, 200, "Restaurants retrieved successfully", {
+        restaurants: [],
+        total: 0,
+        currentZone: null,
+        currentZoneId: null,
+        userLocation: {
+          latitude: userCoords.lat,
+          longitude: userCoords.lng,
+        },
+        zoneStatus: "OUT_OF_SERVICE",
+        filters: {
+          sortBy,
+          cuisine,
+          minRating,
+          maxDeliveryTime,
+          maxDistance,
+          maxPrice,
+          hasOffers,
+        },
+      });
+    }
 
     // Build query
     const query = { isActive: true };
@@ -330,18 +438,102 @@ export const getRestaurants = async (req, res) => {
       }
     }
 
-    let restaurants = await Restaurant.find(query)
+    const activeZones = zoneResolution.activeZones;
+
+    // Fetch restaurants
+    const mongoQuery = Restaurant.find(query)
       .select("-owner -createdAt -updatedAt -password")
-      .sort(sortObj)
-      .limit(parseInt(limit))
-      .skip(parseInt(offset))
-      .lean();
+      .sort(sortObj);
+
+    if (!userZone) {
+      mongoQuery.limit(parseInt(limit)).skip(parseInt(offset));
+    }
+
+    let restaurants = await mongoQuery.lean();
 
     restaurants = filterRestaurantsByZone(
       restaurants,
-      requestedZone,
-      shouldFilterByLocation,
+      userZone?._id?.toString() || null,
+      activeZones,
     );
+
+    if (userCoords) {
+      restaurants = restaurants.map((restaurant) => {
+        const coords = getRestaurantCoordinates(restaurant);
+        const distanceMeters = coords
+          ? calculateDistanceMeters(
+              userCoords.lat,
+              userCoords.lng,
+              coords.lat,
+              coords.lng,
+            )
+          : null;
+        const resolvedZone =
+          coords && activeZones.length
+            ? findMatchingZone(coords.lat, coords.lng, activeZones)
+            : null;
+
+        return {
+          ...restaurant,
+          zoneId:
+            restaurant.zoneId ||
+            resolvedZone?._id?.toString() ||
+            restaurant.zoneId ||
+            null,
+          zone: resolvedZone
+            ? {
+                _id: resolvedZone._id.toString(),
+                name: resolvedZone.name || resolvedZone.zoneName || "Zone",
+                zoneName: resolvedZone.zoneName || resolvedZone.name || "Zone",
+              }
+            : null,
+          distanceMeters:
+            distanceMeters != null ? Math.round(distanceMeters) : null,
+          distanceKm:
+            distanceMeters != null
+              ? Number((distanceMeters / 1000).toFixed(2))
+              : null,
+          deliveryAvailable:
+            (!userZone || restaurant.zoneId === userZone._id.toString()) &&
+            restaurant.isActive === true &&
+            restaurant.isAcceptingOrders === true,
+        };
+      });
+
+      restaurants.sort((a, b) => {
+        const aDistance =
+          typeof a.distanceMeters === "number" ? a.distanceMeters : Infinity;
+        const bDistance =
+          typeof b.distanceMeters === "number" ? b.distanceMeters : Infinity;
+        return aDistance - bDistance;
+      });
+    }
+
+    if (userZone) {
+      restaurants = restaurants.slice(
+        parseInt(offset),
+        parseInt(offset) + parseInt(limit),
+      );
+    }
+
+    // User side: hide restaurants that have no visible menu items.
+    if (restaurants.length > 0) {
+      const restaurantIds = restaurants.map((r) => r?._id).filter(Boolean);
+      const menus = await Menu.find({
+        restaurant: { $in: restaurantIds },
+        isActive: true,
+      })
+        .select("restaurant sections isActive")
+        .lean();
+
+      const menuByRestaurantId = new Map(
+        menus.map((menu) => [String(menu.restaurant), menu]),
+      );
+
+      restaurants = restaurants.filter((restaurant) =>
+        hasVisibleMenuItems(menuByRestaurantId.get(String(restaurant._id))),
+      );
+    }
 
     // Apply string-based filters that can't be done in MongoDB query
     if (maxDeliveryTime) {
@@ -365,10 +557,25 @@ export const getRestaurants = async (req, res) => {
     // Get total count (before filtering by string fields)
     const totalQuery = { ...query };
     delete totalQuery.$or; // Remove $or for count
-    const total = await Restaurant.countDocuments(totalQuery);
+    const total = userZone ? restaurants.length : await Restaurant.countDocuments(totalQuery);
     return successResponse(res, 200, "Restaurants retrieved successfully", {
       restaurants,
       total: restaurants.length,
+      currentZone: userZone
+        ? {
+            _id: userZone._id.toString(),
+            name: userZone.name || userZone.zoneName || "Zone",
+            zoneName: userZone.zoneName || userZone.name || "Zone",
+          }
+        : null,
+      currentZoneId: userZone?._id?.toString() || null,
+      userLocation: userCoords
+        ? {
+            latitude: userCoords.lat,
+            longitude: userCoords.lng,
+          }
+        : null,
+      zoneStatus: userZone ? "IN_SERVICE" : "OUT_OF_SERVICE",
       filters: {
         sortBy,
         cuisine,
@@ -377,16 +584,11 @@ export const getRestaurants = async (req, res) => {
         maxDistance,
         maxPrice,
         hasOffers,
-        zoneId: requestedZone?._id?.toString() || null,
       },
     });
   } catch (error) {
     console.error("Error fetching restaurants:", error);
-    return errorResponse(
-      res,
-      error.statusCode || 500,
-      error.message || "Failed to fetch restaurants",
-    );
+    return errorResponse(res, 500, "Failed to fetch restaurants");
   }
 };
 
@@ -394,6 +596,25 @@ export const getRestaurants = async (req, res) => {
 export const getRestaurantById = async (req, res) => {
   try {
     const { id } = req.params;
+    const { zoneId } = req.query;
+    const userCoords = getUserCoordinatesFromQuery(req.query);
+    const zoneResolution = await resolveUserZone({ zoneId, coords: userCoords });
+    const { invalidZone, userZone } = zoneResolution;
+    if (invalidZone) {
+      return errorResponse(
+        res,
+        400,
+        "Invalid or inactive zone. Please detect your zone again.",
+      );
+    }
+
+    if (userCoords && !userZone) {
+      return errorResponse(
+        res,
+        404,
+        "Restaurant not available in your current zone",
+      );
+    }
 
     // Build query conditions - only include _id if it's a valid ObjectId
     const queryConditions = {
@@ -417,8 +638,63 @@ export const getRestaurantById = async (req, res) => {
       return errorResponse(res, 404, "Restaurant not found");
     }
 
+    if (
+      userZone &&
+      !isRestaurantAccessibleInZone(
+        restaurant,
+        userZone._id.toString(),
+        [userZone],
+      )
+    ) {
+      return errorResponse(
+        res,
+        404,
+        "Restaurant not available in your current zone",
+      );
+    }
+
+    if (userCoords) {
+      const coords = getRestaurantCoordinates(restaurant);
+      if (coords) {
+        const distanceMeters = calculateDistanceMeters(
+          userCoords.lat,
+          userCoords.lng,
+          coords.lat,
+          coords.lng,
+        );
+        const resolvedZone = findMatchingZone(
+          coords.lat,
+          coords.lng,
+          zoneResolution.activeZones || [],
+        );
+        restaurant.distanceMeters = Math.round(distanceMeters);
+        restaurant.distanceKm = Number((distanceMeters / 1000).toFixed(2));
+        restaurant.zoneId =
+          resolvedZone?._id?.toString() || restaurant.zoneId || null;
+        restaurant.zone = resolvedZone
+          ? {
+              _id: resolvedZone._id.toString(),
+              name: resolvedZone.name || resolvedZone.zoneName || "Zone",
+              zoneName: resolvedZone.zoneName || resolvedZone.name || "Zone",
+            }
+          : null;
+        restaurant.deliveryAvailable =
+          (!userZone || restaurant.zoneId === userZone._id.toString()) &&
+          restaurant.isActive === true &&
+          restaurant.isAcceptingOrders === true;
+      }
+    }
+
     return successResponse(res, 200, "Restaurant retrieved successfully", {
       restaurant,
+      currentZoneId: userZone?._id?.toString() || null,
+      currentZone: userZone
+        ? {
+            _id: userZone._id.toString(),
+            name: userZone.name || userZone.zoneName || "Zone",
+            zoneName: userZone.zoneName || userZone.name || "Zone",
+          }
+        : null,
     });
   } catch (error) {
     console.error("Error fetching restaurant:", error);
@@ -613,9 +889,23 @@ export const updateRestaurantProfile = asyncHandler(async (req, res) => {
 
     const updateData = {};
 
-    // Update profile image if provided
-    if (profileImage) {
-      updateData.profileImage = profileImage;
+    // Update profile image if provided, including explicit removal
+    if (profileImage !== undefined) {
+      if (profileImage === null || profileImage === "") {
+        if (restaurant.profileImage?.publicId) {
+          try {
+            await deleteFromCloudinary(restaurant.profileImage.publicId);
+          } catch (deleteError) {
+            console.error(
+              "Error deleting restaurant profile image from Cloudinary:",
+              deleteError,
+            );
+          }
+        }
+        updateData.profileImage = null;
+      } else {
+        updateData.profileImage = profileImage;
+      }
     }
 
     // Update menu images if provided
@@ -679,6 +969,32 @@ export const updateRestaurantProfile = asyncHandler(async (req, res) => {
         if (!location.latitude) location.latitude = location.coordinates[1];
       }
 
+      const locationLat = Number(location.latitude);
+      const locationLng = Number(location.longitude);
+
+      if (Number.isFinite(locationLat) && Number.isFinite(locationLng)) {
+        const activeZones = await Zone.find({ isActive: true })
+          .select("_id name zoneName country unit coordinates")
+          .lean();
+
+        if (activeZones.length === 0) {
+          return errorResponse(
+            res,
+            400,
+            "No active zones are available right now. Please contact admin before saving the restaurant location.",
+          );
+        }
+
+        const matchedZone = findMatchingZone(locationLat, locationLng, activeZones);
+        if (!matchedZone) {
+          return errorResponse(
+            res,
+            400,
+            "Restaurant location must be pinned inside an active service zone.",
+          );
+        }
+      }
+
       updateData.location = location;
     }
 
@@ -697,6 +1013,20 @@ export const updateRestaurantProfile = asyncHandler(async (req, res) => {
     Object.assign(restaurant, updateData);
     await restaurant.save();
 
+    const savedRestaurantCoords = getRestaurantCoordinates(restaurant);
+    let matchedZone = null;
+
+    if (savedRestaurantCoords) {
+      const activeZones = await Zone.find({ isActive: true })
+        .select("_id name zoneName country unit coordinates")
+        .lean();
+      matchedZone = findMatchingZone(
+        savedRestaurantCoords.lat,
+        savedRestaurantCoords.lng,
+        activeZones,
+      );
+    }
+
     return successResponse(
       res,
       200,
@@ -714,6 +1044,15 @@ export const updateRestaurantProfile = asyncHandler(async (req, res) => {
           ownerName: restaurant.ownerName,
           ownerEmail: restaurant.ownerEmail,
           ownerPhone: restaurant.ownerPhone,
+          zone: matchedZone
+            ? {
+                _id: matchedZone._id.toString(),
+                name: matchedZone.name || matchedZone.zoneName || "Zone",
+                zoneName: matchedZone.zoneName || matchedZone.name || "Zone",
+                country: matchedZone.country || "",
+                unit: matchedZone.unit || "kilometer",
+              }
+            : null,
         },
       },
     );
@@ -982,14 +1321,17 @@ export const deleteRestaurantAccount = asyncHandler(async (req, res) => {
 // Get restaurants with dishes under ₹250
 export const getRestaurantsWithDishesUnder250 = async (req, res) => {
   try {
-    const { zoneId, latitude, longitude } = req.query;
-    const shouldFilterByLocation =
-      !!zoneId || (latitude != null && longitude != null);
-    const requestedZone = await resolveRequestedZone({
-      zoneId,
-      latitude,
-      longitude,
-    });
+    const { zoneId } = req.query; // User's zone ID (optional - if provided, filters by zone)
+
+    // Optional: Zone-based filtering - if zoneId is provided, validate and filter by zone
+    const userZone = await getValidatedUserZone(zoneId);
+    if (zoneId && !userZone) {
+      return errorResponse(
+        res,
+        400,
+        "Invalid or inactive zone. Please detect your zone again.",
+      );
+    }
 
     const MAX_PRICE = 250;
 
@@ -1117,6 +1459,11 @@ export const getRestaurantsWithDishesUnder250 = async (req, res) => {
       }
     };
 
+    const activeZones = userZone
+      ? [userZone]
+      : await Zone.find({ isActive: true }).lean();
+
+    // Get active restaurants
     let restaurants = await Restaurant.find({ isActive: true })
       .select("-owner -createdAt -updatedAt")
       .lean()
@@ -1124,8 +1471,8 @@ export const getRestaurantsWithDishesUnder250 = async (req, res) => {
 
     restaurants = filterRestaurantsByZone(
       restaurants,
-      requestedZone,
-      shouldFilterByLocation,
+      userZone?._id?.toString() || null,
+      activeZones,
     );
 
     // Process restaurants in parallel (batch processing for better performance)
@@ -1159,8 +1506,8 @@ export const getRestaurantsWithDishesUnder250 = async (req, res) => {
     console.error("Error fetching restaurants with dishes under ₹250:", error);
     return errorResponse(
       res,
-      error.statusCode || 500,
-      error.message || "Failed to fetch restaurants with dishes under ₹250",
+      500,
+      "Failed to fetch restaurants with dishes under ₹250",
     );
   }
 };

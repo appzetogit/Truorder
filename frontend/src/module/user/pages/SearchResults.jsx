@@ -32,7 +32,14 @@ export default function SearchResults() {
   const query = searchParams.get("q") || ""
   const navigate = useNavigate()
   const { location } = useLocation()
-  const { zoneId, isOutOfService } = useZone(location)
+  const {
+    zoneId,
+    currentLocation,
+    locationRefreshKey,
+    isOutOfService,
+    loading: zoneLoading,
+  } = useZone()
+  const { vegMode } = useProfile()
   const [searchQuery, setSearchQuery] = useState(query)
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [activeFilters, setActiveFilters] = useState(new Set())
@@ -41,10 +48,24 @@ export default function SearchResults() {
   const [restaurantsData, setRestaurantsData] = useState([])
   const [loadingRestaurants, setLoadingRestaurants] = useState(true)
   const [categories, setCategories] = useState([
-    { id: 'all', name: "All", image: offerImage }
+    { id: 'all', name: "All", image: offerImage, dietType: 'Both' }
   ])
   const [loadingCategories, setLoadingCategories] = useState(true)
   const [categoryKeywords, setCategoryKeywords] = useState({})
+  const visibleCategories = useMemo(() => {
+    return categories.filter((cat) => {
+      const categoryId = (cat.slug || cat.id || "").toLowerCase()
+      if (categoryId === 'all') return true
+      if (vegMode && cat.dietType === 'Non-Veg') return false
+      return true
+    })
+  }, [categories, vegMode])
+  const visibleNonAllCategories = useMemo(() => {
+    return visibleCategories.filter((cat) => {
+      const categoryId = (cat.slug || cat.id || "").toLowerCase()
+      return categoryId !== 'all'
+    })
+  }, [visibleCategories])
 
   // Fetch categories from admin API
   useEffect(() => {
@@ -58,12 +79,13 @@ export default function SearchResults() {
 
           // Transform API categories to match expected format
           const transformedCategories = [
-            { id: 'all', name: "All", image: offerImage },
+            { id: 'all', name: "All", image: offerImage, dietType: 'Both' },
             ...categoriesArray.map((cat) => ({
               id: cat.slug || cat.id,
               name: cat.name,
               image: cat.image || foodImages[0],
               type: cat.type,
+              dietType: cat.dietType || 'Both',
             }))
           ]
 
@@ -98,6 +120,21 @@ export default function SearchResults() {
   useEffect(() => {
     setSearchQuery(query)
   }, [query])
+
+  useEffect(() => {
+    if (!vegMode || selectedCategory === 'all') return
+    if (!categories || categories.length === 0) return
+
+    const normalizedSelected = selectedCategory.toLowerCase()
+    const currentCategory = categories.find((cat) => {
+      const catId = (cat.slug || cat.id || "").toLowerCase()
+      return catId === normalizedSelected
+    })
+
+    if (currentCategory?.dietType === 'Non-Veg') {
+      setSelectedCategory('all')
+    }
+  }, [vegMode, selectedCategory, categories])
 
   // Helper function to check if menu has dishes matching category keywords
   const checkCategoryInMenu = (menu, categoryId) => {
@@ -172,13 +209,19 @@ export default function SearchResults() {
   // Fetch restaurants from API
   useEffect(() => {
     const fetchRestaurants = async () => {
+      if (zoneLoading) return
+
       try {
         setLoadingRestaurants(true)
         console.log('🔄 Fetching restaurants from API...')
-        // Optional: Add zoneId if available (for sorting/filtering, but show all restaurants)
-        const params = {}
-        if (zoneId) {
-          params.zoneId = zoneId
+        if (!zoneId) {
+          setRestaurantsData([])
+          return
+        }
+        const params = { zoneId }
+        if (currentLocation?.latitude && currentLocation?.longitude) {
+          params.lat = currentLocation.latitude
+          params.lng = currentLocation.longitude
         }
         const response = await restaurantAPI.getRestaurants(params)
 
@@ -315,7 +358,10 @@ export default function SearchResults() {
           // Fetch menus for all restaurants in parallel
           const menuPromises = restaurantsWithIds.map(async (restaurant) => {
             try {
-              const menuResponse = await restaurantAPI.getMenuByRestaurantId(restaurant.restaurantId)
+              const menuResponse = await restaurantAPI.getMenuByRestaurantId(
+                restaurant.restaurantId,
+                params,
+              )
               if (menuResponse.data && menuResponse.data.success && menuResponse.data.data && menuResponse.data.data.menu) {
                 const menu = menuResponse.data.data.menu
 
@@ -397,7 +443,14 @@ export default function SearchResults() {
     }
 
     fetchRestaurants()
-  }, [zoneId, isOutOfService, location?.latitude, location?.longitude])
+  }, [
+    currentLocation?.latitude,
+    currentLocation?.longitude,
+    isOutOfService,
+    locationRefreshKey,
+    zoneId,
+    zoneLoading,
+  ])
 
   // Update search query when URL changes
   useEffect(() => {
@@ -676,12 +729,12 @@ export default function SearchResults() {
   const shouldShowGrayscale = isOutOfService
 
   return (
-    <div className={`min-h-screen bg-white dark:bg-[#0a0a0a] ${shouldShowGrayscale ? 'grayscale opacity-75' : ''}`}>
+    <div className={`min-h-screen pt-2 bg-white dark:bg-[#0a0a0a] ${shouldShowGrayscale ? 'grayscale opacity-75' : ''}`}>
       {/* Sticky Header */}
       <div className="sticky top-0 z-20 bg-white dark:bg-[#1a1a1a] shadow-sm">
         <div className="max-w-7xl mx-auto">
           {/* Search Bar with Back Button */}
-          <div className="flex items-center gap-2 px-3 sm:px-4 md:px-6 lg:px-8 py-3 md:py-4 border-b border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-2 px-3 sm:px-4 md:px-6 lg:px-8 pt-6 pb-3 md:pt-8 md:pb-4 border-b border-gray-100 dark:border-gray-800">
             <button
               onClick={() => navigate('/user')}
               className="w-9 h-9 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors flex-shrink-0"
@@ -712,7 +765,7 @@ export default function SearchResults() {
               msOverflowStyle: "none",
             }}
           >
-            {categories.map((cat) => {
+            {visibleNonAllCategories.length > 0 ? visibleNonAllCategories.map((cat) => {
               const isSelected = selectedCategory === cat.id
               return (
                 <button
@@ -742,7 +795,11 @@ export default function SearchResults() {
                   </span>
                 </button>
               )
-            })}
+            }) : (
+              <div className="flex items-center justify-center py-4">
+                <span className="text-sm text-gray-600 dark:text-gray-400">No categories available</span>
+              </div>
+            )}
           </div>
 
           {/* Filters */}

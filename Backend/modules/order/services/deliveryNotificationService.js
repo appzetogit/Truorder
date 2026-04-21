@@ -2,6 +2,10 @@ import Order from "../models/Order.js";
 import Delivery from "../../delivery/models/Delivery.js";
 import Restaurant from "../../restaurant/models/Restaurant.js";
 import mongoose from "mongoose";
+import {
+  DELIVERY_NOTIFICATION_EVENTS,
+  notifyDeliveryOrderEvent,
+} from "../../delivery/services/deliveryNotificationService.js";
 
 // Dynamic import to avoid circular dependency
 let getIO = null;
@@ -89,6 +93,22 @@ function redactPII(data) {
   delete redacted.fullOrder;
 
   return redacted;
+}
+
+function extractLatLng(location) {
+  if (!location) return null;
+
+  if (Array.isArray(location.coordinates) && location.coordinates.length >= 2) {
+    const lng = Number(location.coordinates[0]);
+    const lat = Number(location.coordinates[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  }
+
+  const lat = Number(location.latitude ?? location.lat);
+  const lng = Number(location.longitude ?? location.lng);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+
+  return null;
 }
 
 /**
@@ -190,30 +210,32 @@ export async function notifyDeliveryBoyNewOrder(order, deliveryPartnerId) {
     let pickupDistance = null;
     let deliveryDistance = null;
 
-    if (
-      deliveryPartner.availability?.currentLocation?.coordinates &&
-      restaurant?.location?.coordinates
-    ) {
-      const [deliveryLng, deliveryLat] =
-        deliveryPartner.availability.currentLocation.coordinates;
-      const [restaurantLng, restaurantLat] = restaurant.location.coordinates;
-      const [customerLng, customerLat] = order.address.location.coordinates;
-
-      // Calculate pickup distance (delivery boy to restaurant)
-      pickupDistance = calculateDistance(
-        deliveryLat,
-        deliveryLng,
-        restaurantLat,
-        restaurantLng,
+    if (deliveryPartner.availability?.currentLocation && restaurant?.location) {
+      const deliveryPoint = extractLatLng(
+        deliveryPartner.availability.currentLocation,
       );
+      const restaurantPoint = extractLatLng(restaurant.location);
+      const customerPoint = extractLatLng(order.address?.location);
 
-      // Calculate delivery distance (restaurant to customer)
-      deliveryDistance = calculateDistance(
-        restaurantLat,
-        restaurantLng,
-        customerLat,
-        customerLng,
-      );
+      if (deliveryPoint && restaurantPoint) {
+        // Calculate pickup distance (delivery boy to restaurant)
+        pickupDistance = calculateDistance(
+          deliveryPoint.lat,
+          deliveryPoint.lng,
+          restaurantPoint.lat,
+          restaurantPoint.lng,
+        );
+      }
+
+      if (restaurantPoint && customerPoint) {
+        // Calculate delivery distance (restaurant to customer)
+        deliveryDistance = calculateDistance(
+          restaurantPoint.lat,
+          restaurantPoint.lng,
+          customerPoint.lat,
+          customerPoint.lng,
+        );
+      }
     }
 
     // Calculate estimated earnings; use order's delivery fee as fallback when 0 or distance missing
@@ -346,9 +368,33 @@ export async function notifyDeliveryBoyNewOrder(order, deliveryPartnerId) {
     }
 
     if (notificationSent) {
+      notifyDeliveryOrderEvent({
+        order,
+        deliveryBoyId: deliveryPartnerId,
+        type: DELIVERY_NOTIFICATION_EVENTS.NEW_DELIVERY_REQUEST,
+        metadata: {
+          pickupDistance,
+          deliveryDistance,
+          estimatedEarnings,
+        },
+        source: "order.deliveryNotificationService.notifyDeliveryBoyNewOrder",
+      }).catch((notifyError) => {
+        console.warn("Delivery DB notification failed:", notifyError.message);
+      });
     } else {
       console.error(`❌ Failed to send notification`);
     }
+
+    await notifyDeliveryOrderEvent({
+      order,
+      deliveryBoyId: normalizedDeliveryPartnerId,
+      type: DELIVERY_NOTIFICATION_EVENTS.PICKUP_READY,
+      metadata: {
+        restaurantLat: coords?.[1],
+        restaurantLng: coords?.[0],
+      },
+      source: "order.deliveryNotificationService.notifyDeliveryBoyOrderReady",
+    });
 
     return {
       success: true,
@@ -443,33 +489,20 @@ export async function notifyMultipleDeliveryBoys(
 
     // Calculate delivery distance (restaurant to customer) for earnings calculation
     let deliveryDistance = 0;
-    if (
-      restaurantLocation?.coordinates &&
-      orderWithUser.address?.location?.coordinates
-    ) {
-      const [restaurantLng, restaurantLat] = restaurantLocation.coordinates;
-      const [customerLng, customerLat] =
-        orderWithUser.address.location.coordinates;
+    {
+      const restaurantPoint = extractLatLng(restaurantLocation);
+      const customerPoint = extractLatLng(orderWithUser.address?.location);
 
       // Validate coordinates
-      if (
-        restaurantLat &&
-        restaurantLng &&
-        customerLat &&
-        customerLng &&
-        !isNaN(restaurantLat) &&
-        !isNaN(restaurantLng) &&
-        !isNaN(customerLat) &&
-        !isNaN(customerLng)
-      ) {
+      if (restaurantPoint && customerPoint) {
         // Calculate distance using Haversine formula
         const R = 6371; // Earth radius in km
-        const dLat = ((customerLat - restaurantLat) * Math.PI) / 180;
-        const dLng = ((customerLng - restaurantLng) * Math.PI) / 180;
+        const dLat = ((customerPoint.lat - restaurantPoint.lat) * Math.PI) / 180;
+        const dLng = ((customerPoint.lng - restaurantPoint.lng) * Math.PI) / 180;
         const a =
           Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos((restaurantLat * Math.PI) / 180) *
-            Math.cos((customerLat * Math.PI) / 180) *
+          Math.cos((restaurantPoint.lat * Math.PI) / 180) *
+            Math.cos((customerPoint.lat * Math.PI) / 180) *
             Math.sin(dLng / 2) *
             Math.sin(dLng / 2);
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
@@ -477,8 +510,6 @@ export async function notifyMultipleDeliveryBoys(
       } else {
         console.warn("⚠️ Invalid coordinates for distance calculation");
       }
-    } else {
-      console.warn("⚠️ Missing coordinates for distance calculation");
     }
 
     // Calculate estimated earnings based on delivery distance
@@ -529,8 +560,8 @@ export async function notifyMultipleDeliveryBoys(
       restaurantAddress: restaurantAddress,
       restaurantLocation: restaurantLocation
         ? {
-            latitude: restaurantLocation.coordinates?.[1],
-            longitude: restaurantLocation.coordinates?.[0],
+            latitude: extractLatLng(restaurantLocation)?.lat,
+            longitude: extractLatLng(restaurantLocation)?.lng,
             address:
               restaurantLocation.formattedAddress ||
               restaurantLocation.address ||
@@ -549,8 +580,8 @@ export async function notifyMultipleDeliveryBoys(
         orderWithUser.address?.formattedAddress,
       customerLocation: orderWithUser.address?.location
         ? {
-            latitude: orderWithUser.address.location.coordinates?.[1],
-            longitude: orderWithUser.address.location.coordinates?.[0],
+            latitude: extractLatLng(orderWithUser.address?.location)?.lat,
+            longitude: extractLatLng(orderWithUser.address?.location)?.lng,
             address:
               orderWithUser.address.formattedAddress ||
               orderWithUser.address.address,
@@ -568,17 +599,13 @@ export async function notifyMultipleDeliveryBoys(
       timestamp: new Date().toISOString(),
       phase: phase,
       restaurantLat:
-        restaurantLocation?.coordinates?.[1] ||
-        orderWithUser.restaurantId?.location?.coordinates?.[1],
+        extractLatLng(restaurantLocation)?.lat ||
+        extractLatLng(orderWithUser.restaurantId?.location)?.lat,
       restaurantLng:
-        restaurantLocation?.coordinates?.[0] ||
-        orderWithUser.restaurantId?.location?.coordinates?.[0],
-      deliveryLat:
-        orderWithUser.address?.location?.coordinates?.[1] ||
-        orderWithUser.address?.location?.latitude,
-      deliveryLng:
-        orderWithUser.address?.location?.coordinates?.[0] ||
-        orderWithUser.address?.location?.longitude,
+        extractLatLng(restaurantLocation)?.lng ||
+        extractLatLng(orderWithUser.restaurantId?.location)?.lng,
+      deliveryLat: extractLatLng(orderWithUser.address?.location)?.lat,
+      deliveryLng: extractLatLng(orderWithUser.address?.location)?.lng,
     };
 
     // REDACT PII for broad notifications
@@ -690,23 +717,17 @@ export async function broadcastNewOrderToAllDeliveryBoys(order, phase = "priorit
 
     const deliveryFeeFromOrder = orderWithUser.pricing?.deliveryFee ?? 0;
     let deliveryDistance = 0;
-    if (
-      restaurantLocation?.coordinates &&
-      orderWithUser.address?.location?.coordinates
-    ) {
-      const [restaurantLng, restaurantLat] = restaurantLocation.coordinates;
-      const [customerLng, customerLat] = orderWithUser.address.location.coordinates;
-      if (
-        restaurantLat && restaurantLng && customerLat && customerLng &&
-        !isNaN(restaurantLat) && !isNaN(restaurantLng) && !isNaN(customerLat) && !isNaN(customerLng)
-      ) {
+    {
+      const restaurantPoint = extractLatLng(restaurantLocation);
+      const customerPoint = extractLatLng(orderWithUser.address?.location);
+      if (restaurantPoint && customerPoint) {
         const R = 6371;
-        const dLat = ((customerLat - restaurantLat) * Math.PI) / 180;
-        const dLng = ((customerLng - restaurantLng) * Math.PI) / 180;
+        const dLat = ((customerPoint.lat - restaurantPoint.lat) * Math.PI) / 180;
+        const dLng = ((customerPoint.lng - restaurantPoint.lng) * Math.PI) / 180;
         const a =
           Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos((restaurantLat * Math.PI) / 180) *
-            Math.cos((customerLat * Math.PI) / 180) *
+          Math.cos((restaurantPoint.lat * Math.PI) / 180) *
+            Math.cos((customerPoint.lat * Math.PI) / 180) *
             Math.sin(dLng / 2) *
             Math.sin(dLng / 2);
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
@@ -744,8 +765,8 @@ export async function broadcastNewOrderToAllDeliveryBoys(order, phase = "priorit
       restaurantAddress,
       restaurantLocation: restaurantLocation
         ? {
-            latitude: restaurantLocation.coordinates?.[1],
-            longitude: restaurantLocation.coordinates?.[0],
+            latitude: extractLatLng(restaurantLocation)?.lat,
+            longitude: extractLatLng(restaurantLocation)?.lng,
             address:
               restaurantLocation.formattedAddress ||
               restaurantLocation.address ||
@@ -764,8 +785,8 @@ export async function broadcastNewOrderToAllDeliveryBoys(order, phase = "priorit
         orderWithUser.address?.formattedAddress,
       customerLocation: orderWithUser.address?.location
         ? {
-            latitude: orderWithUser.address.location.coordinates?.[1],
-            longitude: orderWithUser.address.location.coordinates?.[0],
+            latitude: extractLatLng(orderWithUser.address?.location)?.lat,
+            longitude: extractLatLng(orderWithUser.address?.location)?.lng,
             address:
               orderWithUser.address.formattedAddress ||
               orderWithUser.address.address,
@@ -783,17 +804,13 @@ export async function broadcastNewOrderToAllDeliveryBoys(order, phase = "priorit
       timestamp: new Date().toISOString(),
       phase,
       restaurantLat:
-        restaurantLocation?.coordinates?.[1] ||
-        orderWithUser.restaurantId?.location?.coordinates?.[1],
+        extractLatLng(restaurantLocation)?.lat ||
+        extractLatLng(orderWithUser.restaurantId?.location)?.lat,
       restaurantLng:
-        restaurantLocation?.coordinates?.[0] ||
-        orderWithUser.restaurantId?.location?.coordinates?.[0],
-      deliveryLat:
-        orderWithUser.address?.location?.coordinates?.[1] ||
-        orderWithUser.address?.location?.latitude,
-      deliveryLng:
-        orderWithUser.address?.location?.coordinates?.[0] ||
-        orderWithUser.address?.location?.longitude,
+        extractLatLng(restaurantLocation)?.lng ||
+        extractLatLng(orderWithUser.restaurantId?.location)?.lng,
+      deliveryLat: extractLatLng(orderWithUser.address?.location)?.lat,
+      deliveryLng: extractLatLng(orderWithUser.address?.location)?.lng,
     };
 
     const orderNotification = redactPII(orderNotificationRaw);
