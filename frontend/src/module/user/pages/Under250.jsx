@@ -1,29 +1,42 @@
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useLocation as useRouterLocation } from "react-router-dom"
 import { useState, useMemo, useCallback, useEffect, useRef } from "react"
-import { Star, Clock, MapPin, ArrowDownUp, Timer, ArrowRight, ChevronDown, Bookmark, Share2, Plus, Minus, X } from "lucide-react"
+import { Star, Clock, MapPin, ArrowDownUp, Timer, ArrowRight, ChevronDown, Bookmark, Share2, Plus, Minus, X, UtensilsCrossed } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { toast } from "sonner"
 import AnimatedPage from "../components/AnimatedPage"
-import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useLocationSelector } from "../components/UserLayout"
+import { pickNavbarLocationLines } from "@/lib/userLocationDisplay"
 import { useLocation } from "../hooks/useLocation"
 import { useZone } from "../hooks/useZone"
 import { useCart } from "../context/CartContext"
 import PageNavbar from "../components/PageNavbar"
 import { foodImages } from "@/constants/images"
-import offerImage from "@/assets/offerimage.png"
 import AddToCartAnimation from "../components/AddToCartAnimation"
 import OptimizedImage from "@/components/OptimizedImage"
 import api from "@/lib/api"
 import { restaurantAPI } from "@/lib/api"
 import { isModuleAuthenticated } from "@/lib/utils/auth"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
+import { useProfile } from "../context/ProfileContext"
 
 export default function Under250() {
-  const { location } = useLocation()
-  const { zoneId, zoneStatus, isInService, isOutOfService } = useZone(location)
+  const routerLocation = useRouterLocation()
+  const { location, loading: geoLoading } = useLocation()
+  const { openLocationSelector } = useLocationSelector()
+  const { main: desktopLocMain, sub: desktopLocSub } = pickNavbarLocationLines(location)
+  const {
+    zoneId,
+    currentLocation,
+    locationRefreshKey,
+    zoneStatus,
+    isInService,
+    isOutOfService,
+    loading: zoneLoading,
+  } = useZone()
   const navigate = useNavigate()
   const { addToCart, updateQuantity, removeFromCart, getCartItem, cart, openVariantPicker } = useCart()
+  const { addDishFavorite, removeDishFavorite, isDishFavorite } = useProfile()
   const [activeCategory, setActiveCategory] = useState(null)
   const [showSortPopup, setShowSortPopup] = useState(false)
   const [selectedSort, setSelectedSort] = useState(null)
@@ -31,15 +44,17 @@ export default function Under250() {
   const [showItemDetail, setShowItemDetail] = useState(false)
   const [selectedItem, setSelectedItem] = useState(null)
   const [quantities, setQuantities] = useState({})
-  const [bookmarkedItems, setBookmarkedItems] = useState(new Set())
-  const [viewCartButtonBottom, setViewCartButtonBottom] = useState("bottom-20")
-  const lastScrollY = useRef(0)
+  const under250StickyHeaderRef = useRef(null)
+  const [isUnder250HeaderStuck, setIsUnder250HeaderStuck] = useState(false)
   const [categories, setCategories] = useState([])
   const [loadingCategories, setLoadingCategories] = useState(true)
   const [bannerImage, setBannerImage] = useState(null)
   const [loadingBanner, setLoadingBanner] = useState(true)
   const [under250Restaurants, setUnder250Restaurants] = useState([])
   const [loadingRestaurants, setLoadingRestaurants] = useState(true)
+  const [showAllCategoriesModal, setShowAllCategoriesModal] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
+  const ITEMS_PER_PAGE = 12
 
   const sortOptions = [
     { id: null, label: 'Relevance' },
@@ -55,6 +70,51 @@ export default function Under250() {
   const handleApply = () => {
     setShowSortPopup(false)
   }
+
+  // When the sticky categories header reaches the top, add extra top padding
+  // (inside the same bg) so the UI doesn't feel cramped/overlapping.
+  useEffect(() => {
+    let raf = 0
+    const last = { stuck: false }
+
+    const update = () => {
+      const el = under250StickyHeaderRef.current
+      if (!el) return
+
+      const rootFontSize =
+        parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+
+      // Tailwind: md:top-16 => 4rem, md breakpoint => min-width 768px
+      const isMd = window.matchMedia("(min-width: 768px)").matches
+      const desiredViewportTop = isMd ? 4 * rootFontSize : 0
+
+      const rectTop = el.getBoundingClientRect().top
+      const stuck = rectTop <= desiredViewportTop + 1
+
+      if (last.stuck !== stuck) {
+        last.stuck = stuck
+        setIsUnder250HeaderStuck(stuck)
+      }
+    }
+
+    const onScroll = () => {
+      if (raf) return
+      raf = window.requestAnimationFrame(() => {
+        raf = 0
+        update()
+      })
+    }
+
+    update()
+    window.addEventListener("scroll", onScroll, { passive: true })
+    window.addEventListener("resize", onScroll)
+
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      window.removeEventListener("scroll", onScroll)
+      window.removeEventListener("resize", onScroll)
+    }
+  }, [])
 
   // Helper function to parse delivery time (e.g., "12-15 mins" -> 12 or average)
   const parseDeliveryTime = (deliveryTime) => {
@@ -106,7 +166,7 @@ export default function Under250() {
       })
     })
 
-    let filtered = [...allDishes]
+    let filtered = allDishes.filter((dish) => dish.price > 0)
 
     // Apply "Under 30 mins" filter based on restaurant delivery time
     if (under30MinsFilter) {
@@ -147,6 +207,17 @@ export default function Under250() {
     return filtered
   }, [under250Restaurants, selectedSort, under30MinsFilter])
 
+  const totalPages = Math.ceil(sortedAndFilteredDishes.length / ITEMS_PER_PAGE)
+  const paginatedDishes = useMemo(() => {
+    const start = (currentPage - 1) * ITEMS_PER_PAGE
+    return sortedAndFilteredDishes.slice(start, start + ITEMS_PER_PAGE)
+  }, [sortedAndFilteredDishes, currentPage, ITEMS_PER_PAGE])
+
+  // Reset to page 1 when filters/sort change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [selectedSort, under30MinsFilter, activeCategory])
+
   // Fetch under 250 banners from API
   useEffect(() => {
     const fetchBanners = async () => {
@@ -173,10 +244,20 @@ export default function Under250() {
   // Fetch restaurants with dishes under ₹250 from backend
   useEffect(() => {
     const fetchRestaurantsUnder250 = async () => {
+      if (zoneLoading) return
+
       try {
         setLoadingRestaurants(true)
-        // Optional: Add zoneId if available (for sorting/filtering, but show all restaurants)
-        const response = await restaurantAPI.getRestaurantsUnder250(zoneId)
+        setUnder250Restaurants([])
+        if (!zoneId) {
+          return
+        }
+        const params = zoneId ? { zoneId } : {}
+        if (currentLocation?.latitude && currentLocation?.longitude) {
+          params.lat = currentLocation.latitude
+          params.lng = currentLocation.longitude
+        }
+        const response = await restaurantAPI.getRestaurantsUnder250(params)
         if (response.data.success && response.data.data.restaurants) {
           setUnder250Restaurants(response.data.data.restaurants)
         } else {
@@ -191,7 +272,14 @@ export default function Under250() {
     }
 
     fetchRestaurantsUnder250()
-  }, [zoneId, isOutOfService, location?.latitude, location?.longitude])
+  }, [
+    currentLocation?.latitude,
+    currentLocation?.longitude,
+    isOutOfService,
+    locationRefreshKey,
+    zoneId,
+    zoneLoading,
+  ])
 
   // Fetch categories from admin API
   useEffect(() => {
@@ -243,42 +331,8 @@ export default function Under250() {
     setQuantities(cartQuantities)
   }, [cart])
 
-  // Scroll detection for view cart button positioning
-  useEffect(() => {
-    const handleScroll = () => {
-      const currentScrollY = window.scrollY
-      const scrollDifference = Math.abs(currentScrollY - lastScrollY.current)
-
-      // Only update if scroll difference is significant (avoid flickering)
-      if (scrollDifference < 5) {
-        return
-      }
-
-      // Scroll down -> bottom-0, Scroll up -> bottom-20
-      if (currentScrollY > lastScrollY.current) {
-        // Scrolling down
-        setViewCartButtonBottom("bottom-0")
-      } else if (currentScrollY < lastScrollY.current) {
-        // Scrolling up
-        setViewCartButtonBottom("bottom-20")
-      }
-
-      lastScrollY.current = currentScrollY
-    }
-
-    window.addEventListener("scroll", handleScroll, { passive: true })
-    return () => window.removeEventListener("scroll", handleScroll)
-  }, [])
-
   // Helper function to update item quantity in bothlocal state and cart
   const updateItemQuantity = (item, newQuantity, event = null, restaurantName = null) => {
-    // Check authentication
-    if (!isModuleAuthenticated('user')) {
-      toast.error("Please login to add items to cart")
-      navigate('/user/auth/sign-in', { state: { from: location.pathname } })
-      return
-    }
-
     // CRITICAL: Check if user is in service zone
     if (isOutOfService) {
       toast.error('You are outside the service zone. Please select a location within the service area.')
@@ -384,15 +438,58 @@ export default function Under250() {
     setShowItemDetail(true)
   }
 
-  const handleBookmarkClick = (itemId) => {
-    setBookmarkedItems((prev) => {
-      const newSet = new Set(prev)
-      if (newSet.has(itemId)) {
-        newSet.delete(itemId)
-      } else {
-        newSet.add(itemId)
-      }
-      return newSet
+  const isDishBookmarked = (item) => {
+    const dishId = item?.id || item?._id
+    const restaurantId = item?.restaurantId || item?.restaurant?._id || item?.restaurant?.id
+    if (!dishId || !restaurantId) return false
+    return isDishFavorite(dishId, restaurantId)
+  }
+
+  const handleBookmarkClick = (item) => {
+    if (!isModuleAuthenticated('user')) {
+      toast.error("Please login to add favorites")
+      navigate('/user/auth/sign-in', { state: { from: routerLocation.pathname } })
+      return
+    }
+
+    const dishId = item?.id || item?._id
+    const restaurantId = item?.restaurantId || item?.restaurant?._id || item?.restaurant?.id
+    if (!dishId || !restaurantId) {
+      toast.error("Unable to save favorite for this item")
+      return
+    }
+
+    const favoritePayload = {
+      id: dishId,
+      restaurantId,
+      name: item?.name || "Dish",
+      price: item?.price || 0,
+      image: item?.image || "",
+      rating: item?.rating || 0,
+      deliveryTime: item?.deliveryTime || "",
+      restaurantName: item?.restaurantName || item?.restaurant || "Under 250",
+      description: item?.description || "",
+    }
+
+    if (isDishFavorite(dishId, restaurantId)) {
+      removeDishFavorite(dishId, restaurantId)
+      toast.success("Removed from favorites")
+    } else {
+      addDishFavorite(favoritePayload)
+      toast.success("Added to favorites")
+    }
+  }
+
+  const handleShareClick = async (item) => {
+    const slug = item.restaurantSlug || ""
+    const dishId = item.id || item._id
+    const shareUrl = `${window.location.origin}/restaurants/${slug}?dish=${dishId}`
+    const title = `${item.name}${item.restaurantName ? ` — ${item.restaurantName}` : ""}`
+
+    await shareWithFallback({
+      title,
+      text: `Check out ${item.name}!`,
+      url: shareUrl,
     })
   }
 
@@ -403,10 +500,10 @@ export default function Under250() {
 
     <div className={`relative min-h-screen bg-white dark:bg-[#0a0a0a] ${shouldShowGrayscale ? 'grayscale opacity-75' : ''}`}>
       {/* Banner Section with Navbar */}
-      <div className="relative w-full overflow-hidden min-h-[39vh] lg:min-h-[50vh] md:pt-16">
-        {/* Banner Image */}
+      <div className="relative w-full overflow-hidden min-h-[39vh] lg:min-h-[min(48vh,520px)] pt-[max(0.5rem,env(safe-area-inset-top,0px))] md:pt-0 rounded-b-3xl sm:rounded-b-[2rem] lg:rounded-b-none">
+        {/* Banner — phones / tablets only */}
         {bannerImage && (
-          <div className="absolute top-0 left-0 right-0 bottom-0 z-0">
+          <div className="absolute top-0 left-0 right-0 bottom-0 z-0 lg:hidden">
             <OptimizedImage
               src={bannerImage}
               alt="Under 250 Banner"
@@ -418,12 +515,51 @@ export default function Under250() {
           </div>
         )}
         {!bannerImage && !loadingBanner && (
-          <div className="absolute top-0 left-0 right-0 bottom-0 z-0 bg-gradient-to-br from-green-100 to-blue-100 dark:from-green-900 dark:to-blue-900" />
+          <div className="absolute top-0 left-0 right-0 bottom-0 z-0 bg-gradient-to-br from-green-100 to-blue-100 dark:from-green-900 dark:to-blue-900 lg:hidden" />
         )}
+
+        {/* Desktop: brand hero */}
+        <div
+          className="pointer-events-none hidden lg:block absolute inset-0 z-0 bg-gradient-to-br from-[#2B9C64] via-[#259052] to-[#1a5c38]"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none hidden lg:block absolute -right-20 top-10 h-[320px] w-[320px] rounded-full bg-white/[0.07] blur-3xl"
+          aria-hidden
+        />
 
         {/* Navbar (without profile avatar on this page) */}
         <div className="relative z-20 pt-2 sm:pt-3 lg:pt-4">
-          <PageNavbar textColor="white" zIndex={20} showProfile={false} />
+          <PageNavbar textColor="white" zIndex={20} showProfile={false} showBrandLogo={false} />
+        </div>
+
+        {/* Desktop headline + location */}
+        <div className="relative z-20 hidden lg:block px-8 xl:px-12 pb-10 pt-4 max-w-5xl xl:max-w-6xl mx-auto">
+          <h1 className="text-center text-white text-4xl xl:text-[2.5rem] font-extrabold leading-tight">
+            Meals under ₹250
+            <span className="block mt-2 text-xl xl:text-2xl font-bold text-white/95">
+              Budget-friendly dishes from restaurants near you
+            </span>
+          </h1>
+          <div className="mt-8 flex justify-center">
+            <button
+              type="button"
+              onClick={() => openLocationSelector()}
+              className="flex items-center gap-3 rounded-2xl bg-white/95 shadow-lg px-5 py-3 max-w-md w-full hover:bg-white transition-colors"
+            >
+              <MapPin className="h-5 w-5 text-[#2B9C64] shrink-0" strokeWidth={2.5} />
+              <div className="min-w-0 flex-1 text-left">
+                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Delivering to</span>
+                <p className="font-bold text-gray-900 truncate">
+                  {geoLoading ? "Locating…" : desktopLocMain || "Set delivery location"}
+                </p>
+                {desktopLocSub ? (
+                  <p className="text-xs text-gray-500 truncate">{desktopLocSub}</p>
+                ) : null}
+              </div>
+              <ChevronDown className="h-5 w-5 text-gray-400 shrink-0" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -431,43 +567,20 @@ export default function Under250() {
       <div className="relative max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8 xl:px-12 space-y-0 pt-2 sm:pt-3 md:pt-4 lg:pt-6 pb-24 md:pb-28 lg:pb-32">
 
         {/* Sticky Header: Categories and Filters */}
-        <div className="sticky top-0 md:top-16 z-30 bg-white dark:bg-[#0a0a0a] -mx-3 px-3 sm:-mx-4 sm:px-4 md:-mx-6 md:px-6 lg:-mx-8 lg:px-8 xl:-mx-12 xl:px-12 shadow-sm transition-all duration-300">
-          <section className="space-y-1 sm:space-y-1.5 pb-2">
+        <div
+          ref={under250StickyHeaderRef}
+          className="sticky top-0 md:top-16 z-30 bg-white dark:bg-[#0a0a0a] -mx-3 px-3 pt-5 sm:-mx-4 sm:px-4 md:-mx-6 md:px-6 lg:-mx-8 lg:px-8 xl:-mx-12 xl:px-12 transition-[padding-top] duration-300 ease-in-out"
+        >
+          <section className="pt-5">
             <div
-              className="flex gap-3 sm:gap-4 md:gap-5 lg:gap-6 overflow-x-auto md:overflow-x-visible overflow-y-visible scrollbar-hide scroll-smooth px-2 sm:px-3 py-2 sm:py-3 md:py-4"
+              className="flex gap-3 sm:gap-4 md:gap-5 lg:gap-6 overflow-x-auto md:overflow-x-hidden md:flex-wrap md:justify-center scrollbar-hide scroll-smooth px-2 sm:px-3 pt-0.5 pb-2 sm:pt-1 sm:pb-2 md:pt-1 md:pb-2"
               style={{
                 scrollbarWidth: "none",
                 msOverflowStyle: "none",
                 touchAction: "pan-x pan-y pinch-zoom",
-                overflowY: "hidden",
               }}
             >
-              {/* All Button */}
-              <div className="flex-shrink-0">
-                <Link to="/under-250" onClick={() => setActiveCategory(null)}>
-                  <motion.div
-                    className="flex flex-col items-center gap-2 w-[62px] sm:w-24 md:w-28 cursor-pointer"
-                    whileHover={{ scale: 1.1, y: -4 }}
-                    whileTap={{ scale: 0.95 }}
-                    transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                  >
-                    <div className="w-14 h-14 sm:w-20 sm:h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden shadow-md transition-all">
-                      <OptimizedImage
-                        src={offerImage}
-                        alt="All"
-                        className="w-full h-full bg-white rounded-full"
-                        objectFit="cover"
-                        sizes="(max-width: 640px) 62px, (max-width: 768px) 96px, 112px"
-                        placeholder="blur"
-                      />
-                    </div>
-                    <span className="text-xs sm:text-sm md:text-base font-semibold text-gray-800 dark:text-gray-200 text-center pb-1">
-                      All
-                    </span>
-                  </motion.div>
-                </Link>
-              </div>
-              {categories.map((category, index) => {
+              {categories.slice(0, 6).map((category, index) => {
                 const isActive = activeCategory === category.id
                 const categorySlug = category.slug || category.name.toLowerCase().replace(/\s+/g, '-')
                 return (
@@ -498,11 +611,29 @@ export default function Under250() {
                   </div>
                 )
               })}
+              {categories.length > 6 && (
+                <div className="flex-shrink-0">
+                  <motion.div
+                    className="flex flex-col items-center gap-2 w-[62px] sm:w-24 md:w-28 cursor-pointer"
+                    whileHover={{ scale: 1.1, y: -4 }}
+                    whileTap={{ scale: 0.95 }}
+                    transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                    onClick={() => setShowAllCategoriesModal(true)}
+                  >
+                    <div className="w-14 h-14 sm:w-20 sm:h-20 md:w-24 md:h-24 rounded-full overflow-hidden shadow-md transition-all bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                      <UtensilsCrossed className="w-6 h-6 sm:w-8 sm:h-8 md:w-10 md:h-10 text-green-600 dark:text-green-400" />
+                    </div>
+                    <span className="text-xs sm:text-sm md:text-base font-semibold text-gray-800 dark:text-gray-200 text-center pb-1">
+                      See all
+                    </span>
+                  </motion.div>
+                </div>
+              )}
             </div>
           </section>
 
-          <section className="py-2 sm:py-3 md:py-4 border-t dark:border-gray-800/50">
-            <div className="flex items-center gap-2 md:gap-3">
+          <section className="py-2 sm:py-2 md:py-2.5">
+            <div className="flex items-center gap-2 md:gap-3 lg:justify-center">
               <Button
                 variant="outline"
                 onClick={() => setShowSortPopup(true)}
@@ -544,178 +675,267 @@ export default function Under250() {
             </div>
           </div>
         ) : (
-          <section className="pt-4 sm:pt-6 md:pt-8 lg:pt-10">
-            <div className="grid gap-3 sm:gap-4 md:gap-5 lg:gap-6 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {sortedAndFilteredDishes.map((item, itemIndex) => {
+          <section className="pt-3 sm:pt-4 md:pt-5 lg:pt-6 lg:max-w-7xl lg:mx-auto">
+            <div className="space-y-0 bg-white dark:bg-[#1a1a1a] rounded-none sm:rounded-2xl overflow-hidden sm:border sm:border-gray-100 sm:dark:border-gray-800 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:gap-5 lg:bg-transparent lg:border-0 lg:rounded-none lg:overflow-visible dark:lg:bg-transparent">
+              {paginatedDishes.map((item, itemIndex) => {
                 const quantity = quantities[item.id] || 0
-                const isBookmarked = bookmarkedItems.has(item.id)
-                return (
-                  <motion.div
-                    key={item.id}
-                    className="w-full bg-white dark:bg-[#1a1a1a] rounded-2xl overflow-hidden cursor-pointer"
-                    onClick={() => handleItemClick(item, { name: item.restaurantName || "Under 250" })}
-                    initial={{ opacity: 0, y: 20 }}
-                    whileInView={{ opacity: 1, y: 0 }}
-                    viewport={{ once: true, margin: "-50px" }}
-                    transition={{ duration: 0.4, delay: itemIndex * 0.05 }}
-                    whileHover={{ y: -8, scale: 1.02 }}
-                  >
-                    {/* Item Row: left details, right image with floating ADD/qty pill */}
-                    <div className="flex gap-4 p-4 md:p-5 lg:p-6">
-                      {/* Left Side - Details */}
-                      <div className="flex-1 min-w-0">
-                        {/* Veg indicator + name */}
-                        <div className="flex items-center gap-2 mb-1">
-                          {item.isVeg ? (
-                            <div className="w-4 h-4 border-2 border-green-600 flex items-center justify-center rounded-sm flex-shrink-0">
-                              <div className="w-2 h-2 bg-green-600 rounded-full"></div>
-                            </div>
-                          ) : (
-                            <div className="w-4 h-4 border-2 border-orange-600 flex items-center justify-center rounded-sm flex-shrink-0">
-                              <div className="w-2 h-2 bg-orange-600 rounded-full"></div>
-                            </div>
-                          )}
-                          <h3 className="font-semibold text-gray-900 dark:text-white text-sm md:text-base lg:text-lg line-clamp-1">
-                            {item.name}
-                          </h3>
-                        </div>
+                const isBookmarked = isDishBookmarked(item)
+                const isVeg = item.isVeg === true || item.foodType === "Veg"
+                const timeLabel =
+                  (item.preparationTime && String(item.preparationTime).trim()) ||
+                  item.deliveryTime ||
+                  "20-25 mins"
 
-                        {/* Price + time pill */}
-                        <div className="flex items-center gap-3 mt-1 text-xs sm:text-sm">
+                return (
+                  <div
+                    key={item.id}
+                    className="flex gap-4 p-4 border-b border-gray-100 dark:border-gray-800 last:border-none relative cursor-pointer lg:flex-col-reverse lg:gap-0 lg:p-0 lg:border lg:border-gray-200 lg:dark:border-gray-800 lg:rounded-2xl lg:shadow-sm lg:hover:shadow-md lg:bg-white lg:dark:bg-[#1a1a1a] lg:overflow-hidden lg:last:border"
+                    onClick={() => handleItemClick(item, { name: item.restaurantName || "Under 250" })}
+                  >
+                    <div className="flex-1 min-w-0 lg:p-4 lg:pt-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        {isVeg ? (
+                          <div className="w-4 h-4 border-2 border-green-600 flex items-center justify-center rounded-sm flex-shrink-0">
+                            <div className="w-2 h-2 bg-green-600 rounded-full" />
+                          </div>
+                        ) : (
+                          <div className="w-4 h-4 border-2 border-orange-600 flex items-center justify-center rounded-sm flex-shrink-0">
+                            <div className="w-2 h-2 bg-orange-600 rounded-full" />
+                          </div>
+                        )}
+                        {item.isSpicy && <span className="text-red-500">🌶️</span>}
+                      </div>
+
+                      <h3 className="font-bold text-gray-800 dark:text-white text-lg leading-tight">
+                        {item.name}
+                      </h3>
+
+                      {item.customisable && (
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="h-1.5 w-16 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                            <div className="h-full bg-green-600 w-3/4" />
+                          </div>
+                          <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+                            Highly reordered
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-3 mt-1 flex-wrap">
+                        {item.price > 0 && (
                           <p className="font-semibold text-gray-900 dark:text-white">
                             ₹{Math.round(item.price)}
                           </p>
-                          <div className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300">
-                            <Clock className="h-3 w-3" strokeWidth={1.5} />
-                            <span className="text-[11px] sm:text-xs font-medium">
-                              {item.deliveryTime || "20-25 mins"}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Restaurant name */}
-                        {item.restaurantName && (
-                          <p className="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400 line-clamp-1">
-                            {item.restaurantName}
-                          </p>
                         )}
-
-                        {/* Description */}
-                        {item.description && (
-                          <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
-                            {item.description}
-                          </p>
-                        )}
-
-                        {/* Bookmark & Share */}
-                        <div className="flex items-center gap-2 mt-3">
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            className="h-7 w-7 sm:h-8 sm:w-8 rounded-full border-gray-200 dark:border-gray-700 bg-white dark:bg-[#111] hover:bg-gray-100 dark:hover:bg-gray-800"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleBookmarkClick(item.id)
-                            }}
-                          >
-                            <Bookmark
-                              className={`h-4 w-4 ${isBookmarked ? "fill-gray-800 dark:fill-gray-200 text-gray-800 dark:text-gray-200" : "text-gray-600 dark:text-gray-400"
-                                }`}
-                              strokeWidth={2}
-                            />
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            className="h-7 w-7 sm:h-8 sm:w-8 rounded-full border-gray-200 dark:border-gray-700 bg-white dark:bg-[#111] hover:bg-gray-100 dark:hover:bg-gray-800"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              // Share action placeholder
-                            }}
-                          >
-                            <Share2 className="h-4 w-4 text-gray-600 dark:text-gray-400" />
-                          </Button>
+                        <div className="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-full">
+                          <Clock size={12} className="text-gray-500 shrink-0" />
+                          <span>{timeLabel}</span>
                         </div>
                       </div>
 
-                      {/* Right Side - Image and ADD/qty pill */}
-                      <div className="relative w-28 h-28 sm:w-32 sm:h-32 flex-shrink-0">
+                      {item.restaurantName && (
+                        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 line-clamp-1">
+                          {item.restaurantName}
+                        </p>
+                      )}
+
+                      {item.description && (
+                        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
+                          {item.description}
+                        </p>
+                      )}
+
+                      <div className="flex gap-4 mt-3">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            handleBookmarkClick(item)
+                          }}
+                          className={`p-1.5 border rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors ${isBookmarked
+                            ? "border-red-500 text-red-500 bg-red-50 dark:bg-red-900/20"
+                            : "border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400"
+                            }`}
+                        >
+                          <Bookmark size={18} className={isBookmarked ? "fill-red-500" : ""} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            handleShareClick(item)
+                          }}
+                          className="p-1.5 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                        >
+                          <Share2 size={18} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="relative w-32 h-32 flex-shrink-0 lg:w-full lg:h-48 overflow-visible">
+                      <div className="w-full h-full rounded-2xl lg:rounded-none lg:rounded-t-2xl overflow-hidden">
                         {item.image ? (
                           <OptimizedImage
                             src={item.image}
                             alt={item.name}
-                            className="w-full h-full rounded-2xl"
+                            className="w-full h-full rounded-2xl shadow-sm lg:rounded-none lg:rounded-t-2xl"
                             objectFit="cover"
                             sizes="128px"
                             placeholder="blur"
-                            priority={itemIndex < 4}
+                            priority={itemIndex < 6}
+                            observerRootMargin="200px"
                           />
                         ) : (
-                          <div className="w-full h-full bg-gray-100 dark:bg-gray-800 rounded-2xl flex items-center justify-center">
+                          <div className="w-full h-full bg-gray-200 dark:bg-gray-700 rounded-2xl lg:rounded-none lg:rounded-t-2xl flex items-center justify-center shadow-sm">
                             <span className="text-xs text-gray-400">No image</span>
                           </div>
                         )}
+                      </div>
 
-                        {quantity > 0 && !shouldShowGrayscale ? (
-                          <motion.div
-                            initial={{ opacity: 0, scale: 0.85 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-white dark:bg-[#111] font-bold px-4 py-1.5 rounded-lg flex items-center gap-2 text-green-600"
-                          >
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
+                      {quantity > 0 && !shouldShowGrayscale ? (
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-white border font-bold px-4 py-1.5 rounded-lg shadow-md flex items-center gap-1 ${shouldShowGrayscale
+                            ? "border-gray-300 text-gray-400 cursor-not-allowed opacity-50"
+                            : "border-green-600 text-green-600 hover:bg-green-50 dark:hover:bg-green-950/30"
+                            }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (!shouldShowGrayscale) {
                                 updateItemQuantity(
                                   item,
                                   Math.max(0, quantity - 1),
                                   e,
                                   item.restaurantName,
                                 )
-                              }}
-                              className="text-green-600 hover:text-green-700"
-                            >
-                              <Minus size={14} />
-                            </button>
-                            <span className="text-sm">{quantity}</span>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
+                              }
+                            }}
+                            disabled={shouldShowGrayscale}
+                            className={shouldShowGrayscale ? "text-gray-400 cursor-not-allowed" : "text-green-600 hover:text-green-700"}
+                          >
+                            <Minus size={14} />
+                          </button>
+                          <span className={`mx-2 text-sm ${shouldShowGrayscale ? "text-gray-400" : ""}`}>
+                            {quantity}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (!shouldShowGrayscale) {
                                 updateItemQuantity(
                                   item,
                                   quantity + 1,
                                   e,
                                   item.restaurantName,
                                 )
-                              }}
-                              className="text-green-600 hover:text-green-700"
-                            >
-                              <Plus size={14} className="stroke-[3px]" />
-                            </button>
-                          </motion.div>
-                        ) : (
-                          <motion.button
-                            initial={false}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              if (!shouldShowGrayscale) {
-                                updateItemQuantity(item, 1, e, item.restaurantName)
                               }
                             }}
                             disabled={shouldShowGrayscale}
-                            className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-white dark:bg-[#111] font-bold px-6 py-1.5 rounded-lg flex items-center gap-1 ${shouldShowGrayscale
-                              ? 'text-gray-400 cursor-not-allowed opacity-50'
-                              : 'text-green-600 hover:bg-green-50'
-                              }`}
+                            className={shouldShowGrayscale ? "text-gray-400 cursor-not-allowed" : "text-green-600 hover:text-green-700"}
                           >
-                            ADD <Plus size={14} className="stroke-[3px]" />
-                          </motion.button>
-                        )}
-                      </div>
+                            <Plus size={14} className="stroke-[3px]" />
+                          </button>
+                        </motion.div>
+                      ) : (
+                        <motion.button
+                          type="button"
+                          initial={false}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (!shouldShowGrayscale) {
+                              updateItemQuantity(item, 1, e, item.restaurantName)
+                            }
+                          }}
+                          disabled={shouldShowGrayscale}
+                          className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-white border font-bold px-6 py-1.5 rounded-lg shadow-md flex items-center gap-1 transition-colors ${shouldShowGrayscale
+                            ? "border-gray-300 text-gray-400 cursor-not-allowed opacity-50"
+                            : "border-green-600 text-green-600 hover:bg-green-50 dark:hover:bg-green-950/30"
+                            }`}
+                        >
+                          ADD <Plus size={14} className="stroke-[3px]" />
+                        </motion.button>
+                      )}
                     </div>
-                  </motion.div>
+                  </div>
                 )
               })}
             </div>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div className="flex flex-col items-center gap-3 pt-6 pb-4">
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1}–{Math.min(currentPage * ITEMS_PER_PAGE, sortedAndFilteredDishes.length)} of {sortedAndFilteredDishes.length} dishes
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={currentPage === 1}
+                    onClick={() => {
+                      setCurrentPage((p) => p - 1)
+                      window.scrollTo({ top: 0, behavior: 'smooth' })
+                    }}
+                    className="h-9 px-3 rounded-lg text-sm font-medium disabled:opacity-40"
+                  >
+                    Previous
+                  </Button>
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter((page) => {
+                      if (totalPages <= 5) return true
+                      if (page === 1 || page === totalPages) return true
+                      return Math.abs(page - currentPage) <= 1
+                    })
+                    .reduce((acc, page, idx, arr) => {
+                      if (idx > 0 && page - arr[idx - 1] > 1) {
+                        acc.push('ellipsis-' + page)
+                      }
+                      acc.push(page)
+                      return acc
+                    }, [])
+                    .map((item) => {
+                      if (typeof item === 'string') {
+                        return (
+                          <span key={item} className="px-1 text-gray-400">…</span>
+                        )
+                      }
+                      return (
+                        <Button
+                          key={item}
+                          variant={currentPage === item ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => {
+                            setCurrentPage(item)
+                            window.scrollTo({ top: 0, behavior: 'smooth' })
+                          }}
+                          className={`h-9 w-9 rounded-lg text-sm font-medium ${currentPage === item ? 'bg-green-600 text-white hover:bg-green-700' : ''}`}
+                        >
+                          {item}
+                        </Button>
+                      )
+                    })}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={currentPage === totalPages}
+                    onClick={() => {
+                      setCurrentPage((p) => p + 1)
+                      window.scrollTo({ top: 0, behavior: 'smooth' })
+                    }}
+                    className="h-9 px-3 rounded-lg text-sm font-medium disabled:opacity-40"
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            )}
           </section>
         )}
       </div>
@@ -858,15 +1078,15 @@ export default function Under250() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      handleBookmarkClick(selectedItem.id)
+                      handleBookmarkClick(selectedItem)
                     }}
-                    className={`h-10 w-10 rounded-full border flex items-center justify-center transition-all duration-300 ${bookmarkedItems.has(selectedItem.id)
+                    className={`h-10 w-10 rounded-full border flex items-center justify-center transition-all duration-300 ${isDishBookmarked(selectedItem)
                       ? "border-red-500 bg-red-50 text-red-500"
                       : "border-white bg-white/90 text-gray-600 hover:bg-white"
                       }`}
                   >
                     <Bookmark
-                      className={`h-5 w-5 transition-all duration-300 ${bookmarkedItems.has(selectedItem.id) ? "fill-red-500" : ""
+                      className={`h-5 w-5 transition-all duration-300 ${isDishBookmarked(selectedItem) ? "fill-red-500" : ""
                         }`}
                     />
                   </button>
@@ -895,15 +1115,15 @@ export default function Under250() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
-                        handleBookmarkClick(selectedItem.id)
+                        handleBookmarkClick(selectedItem)
                       }}
-                      className={`h-8 w-8 lg:h-10 lg:w-10 rounded-full border flex items-center justify-center transition-all duration-300 ${bookmarkedItems.has(selectedItem.id)
+                      className={`h-8 w-8 lg:h-10 lg:w-10 rounded-full border flex items-center justify-center transition-all duration-300 ${isDishBookmarked(selectedItem)
                         ? "border-red-500 bg-red-50 dark:bg-red-900/20 text-red-500 dark:text-red-400"
                         : "border-gray-300 dark:border-gray-600 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
                         }`}
                     >
                       <Bookmark
-                        className={`h-4 w-4 lg:h-5 lg:w-5 transition-all duration-300 ${bookmarkedItems.has(selectedItem.id) ? "fill-red-500 dark:fill-red-400" : ""
+                        className={`h-4 w-4 lg:h-5 lg:w-5 transition-all duration-300 ${isDishBookmarked(selectedItem) ? "fill-red-500 dark:fill-red-400" : ""
                           }`}
                       />
                     </button>
@@ -1016,7 +1236,70 @@ export default function Under250() {
       </AnimatePresence>
 
       {/* Add to Cart Animation */}
-      <AddToCartAnimation dynamicBottom={viewCartButtonBottom} />
+      <AddToCartAnimation dynamicBottom="bottom-20" />
+
+      {/* All Categories Modal */}
+      <AnimatePresence>
+        {showAllCategoriesModal && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => setShowAllCategoriesModal(false)}
+              className="fixed inset-0 bg-black/40 z-[9998] backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, y: "100%" }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: "100%" }}
+              transition={{ type: "spring", damping: 30, stiffness: 300 }}
+              className="fixed inset-x-0 bottom-0 top-12 sm:top-16 md:top-20 z-[9999] bg-white dark:bg-[#1a1a1a] rounded-t-3xl shadow-2xl overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
+                <h2 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white">
+                  All Categories
+                </h2>
+                <button
+                  onClick={() => setShowAllCategoriesModal(false)}
+                  className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                  {categories.map((category) => {
+                    const categorySlug = category.slug || category.name.toLowerCase().replace(/\s+/g, '-')
+                    return (
+                      <Link
+                        key={category.id}
+                        to={`/user/category/${categorySlug}`}
+                        onClick={() => setShowAllCategoriesModal(false)}
+                        className="flex flex-col items-center gap-2"
+                      >
+                        <div className="w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 rounded-full overflow-hidden shadow-md">
+                          <OptimizedImage
+                            src={category.image}
+                            alt={category.name}
+                            className="w-full h-full bg-white rounded-full"
+                            objectFit="cover"
+                          />
+                        </div>
+                        <span className="text-xs sm:text-sm font-semibold text-gray-800 dark:text-gray-200 text-center">
+                          {category.name}
+                        </span>
+                      </Link>
+                    )
+                  })}
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

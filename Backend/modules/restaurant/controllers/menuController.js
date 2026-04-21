@@ -1,5 +1,6 @@
 import Menu from '../models/Menu.js';
 import Restaurant from '../models/Restaurant.js';
+import Zone from '../../admin/models/Zone.js';
 import { successResponse, errorResponse } from '../../../shared/utils/response.js';
 import asyncHandler from '../../../shared/middleware/asyncHandler.js';
 import mongoose from 'mongoose';
@@ -35,6 +36,213 @@ const deriveBasePriceFromVariations = (rawPrice, variations) => {
     : 0;
 };
 
+function isPointInZone(lat, lng, zoneCoordinates = []) {
+  if (!zoneCoordinates || zoneCoordinates.length < 3) return false;
+
+  let inside = false;
+  for (let i = 0, j = zoneCoordinates.length - 1; i < zoneCoordinates.length; j = i++) {
+    const coordI = zoneCoordinates[i];
+    const coordJ = zoneCoordinates[j];
+    const xi = typeof coordI === 'object' ? coordI.latitude || coordI.lat : null;
+    const yi = typeof coordI === 'object' ? coordI.longitude || coordI.lng : null;
+    const xj = typeof coordJ === 'object' ? coordJ.latitude || coordJ.lat : null;
+    const yj = typeof coordJ === 'object' ? coordJ.longitude || coordJ.lng : null;
+
+    if (xi === null || yi === null || xj === null || yj === null) continue;
+
+    const intersect =
+      yi > lng !== yj > lng && lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
+}
+
+function getRestaurantCoordinates(restaurant) {
+  const lat = Number(
+    restaurant?.location?.latitude ?? restaurant?.location?.coordinates?.[1],
+  );
+  const lng = Number(
+    restaurant?.location?.longitude ?? restaurant?.location?.coordinates?.[0],
+  );
+
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    return { lat, lng };
+  }
+
+  return null;
+}
+
+function hasCompletedZoneSetup(restaurant) {
+  const coords = getRestaurantCoordinates(restaurant);
+  if (!coords) return false;
+
+  const { lat, lng } = coords;
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lng >= -180 &&
+    lng <= 180
+  );
+}
+
+function ensureZoneSetupBeforeMenuChanges(req, res) {
+  if (hasCompletedZoneSetup(req.restaurant)) return true;
+
+  errorResponse(
+    res,
+    403,
+    'Please complete zone setup before adding or updating food items.',
+  );
+  return false;
+}
+
+const toPlainMenuPart = (value) => {
+  if (!value) return value;
+  if (typeof value.toObject === 'function') {
+    return value.toObject({ depopulate: true });
+  }
+  return value;
+};
+
+const collectItemIds = (sections = []) => {
+  const ids = new Set();
+
+  sections.forEach((section) => {
+    (section.items || []).forEach((item) => {
+      if (item?.id != null) ids.add(String(item.id));
+    });
+
+    (section.subsections || []).forEach((subsection) => {
+      (subsection.items || []).forEach((item) => {
+        if (item?.id != null) ids.add(String(item.id));
+      });
+    });
+  });
+
+  return ids;
+};
+
+const mergeItemsPreservingMissing = (
+  existingItems = [],
+  incomingItems = [],
+  incomingMenuItemIds,
+  allowRemovals,
+) => {
+  if (allowRemovals) return incomingItems;
+
+  const incomingHereIds = new Set(
+    incomingItems
+      .map((item) => (item?.id != null ? String(item.id) : null))
+      .filter(Boolean),
+  );
+
+  const preservedItems = existingItems
+    .map(toPlainMenuPart)
+    .filter((item) => {
+      if (!item?.id) return false;
+      const id = String(item.id);
+      return !incomingHereIds.has(id) && !incomingMenuItemIds.has(id);
+    });
+
+  return [...incomingItems, ...preservedItems];
+};
+
+const mergeSubsectionsPreservingMissing = (
+  existingSubsections = [],
+  incomingSubsections = [],
+  incomingMenuItemIds,
+  allowRemovals,
+) => {
+  if (allowRemovals) return incomingSubsections;
+
+  const incomingById = new Map(
+    incomingSubsections.map((subsection) => [String(subsection.id), subsection]),
+  );
+  const merged = [];
+
+  existingSubsections.forEach((existingSubsection) => {
+    const plainExisting = toPlainMenuPart(existingSubsection);
+    const incomingSubsection = incomingById.get(String(plainExisting.id));
+
+    if (!incomingSubsection) {
+      const preservedItems = (plainExisting.items || []).filter(
+        (item) => item?.id == null || !incomingMenuItemIds.has(String(item.id)),
+      );
+
+      if (preservedItems.length > 0) {
+        merged.push({
+          ...plainExisting,
+          items: preservedItems,
+        });
+      }
+      return;
+    }
+
+    merged.push({
+      ...incomingSubsection,
+      items: mergeItemsPreservingMissing(
+        plainExisting.items || [],
+        incomingSubsection.items || [],
+        incomingMenuItemIds,
+        allowRemovals,
+      ),
+    });
+    incomingById.delete(String(plainExisting.id));
+  });
+
+  incomingById.forEach((subsection) => merged.push(subsection));
+
+  return merged;
+};
+
+const mergeSectionsPreservingMissing = (
+  existingSections = [],
+  incomingSections = [],
+  allowRemovals = false,
+) => {
+  if (allowRemovals) return incomingSections;
+
+  const incomingMenuItemIds = collectItemIds(incomingSections);
+  const incomingById = new Map(
+    incomingSections.map((section) => [String(section.id), section]),
+  );
+  const merged = [];
+
+  existingSections.forEach((existingSection) => {
+    const plainExisting = toPlainMenuPart(existingSection);
+    const incomingSection = incomingById.get(String(plainExisting.id));
+
+    if (!incomingSection) {
+      merged.push(plainExisting);
+      return;
+    }
+
+    merged.push({
+      ...incomingSection,
+      items: mergeItemsPreservingMissing(
+        plainExisting.items || [],
+        incomingSection.items || [],
+        incomingMenuItemIds,
+        allowRemovals,
+      ),
+      subsections: mergeSubsectionsPreservingMissing(
+        plainExisting.subsections || [],
+        incomingSection.subsections || [],
+        incomingMenuItemIds,
+        allowRemovals,
+      ),
+    });
+    incomingById.delete(String(plainExisting.id));
+  });
+
+  incomingById.forEach((section) => merged.push(section));
+
+  return merged;
+};
+
 // Get menu for a restaurant
 export const getMenu = asyncHandler(async (req, res) => {
   // Restaurant is attached by authenticate middleware
@@ -63,9 +271,11 @@ export const getMenu = asyncHandler(async (req, res) => {
 
 // Update menu (upsert)
 export const updateMenu = asyncHandler(async (req, res) => {
+  if (!ensureZoneSetupBeforeMenuChanges(req, res)) return;
+
   // Restaurant is attached by authenticate middleware
   const restaurantId = req.restaurant._id;
-  const { sections } = req.body;
+  const { sections, allowFullReplace = false } = req.body;
   // CRITICAL: Get existing menu FIRST to preserve approval status fields
   const existingMenu = await Menu.findOne({ restaurant: restaurantId });
   if (existingMenu) {
@@ -248,6 +458,11 @@ export const updateMenu = asyncHandler(async (req, res) => {
 
   // Find or create menu
   let menu = await Menu.findOne({ restaurant: restaurantId });
+  const sectionsToSave = mergeSectionsPreservingMissing(
+    existingMenu?.sections || [],
+    normalizedSections,
+    allowFullReplace === true,
+  );
   
   // Debug: Log normalized sections before saving
   normalizedSections.forEach((section, sIdx) => {
@@ -260,12 +475,12 @@ export const updateMenu = asyncHandler(async (req, res) => {
   if (!menu) {
     menu = new Menu({
       restaurant: restaurantId,
-      sections: normalizedSections,
+      sections: sectionsToSave,
       isActive: true,
     });
   } else {
     // Use set method to ensure Mongoose properly tracks changes
-    menu.set('sections', normalizedSections);
+    menu.set('sections', sectionsToSave);
     // Mark sections as modified to ensure Mongoose saves nested arrays properly
     // This is CRITICAL for nested arrays in Mongoose
     menu.markModified('sections');
@@ -297,6 +512,8 @@ export const updateMenu = asyncHandler(async (req, res) => {
 
 // Add a new section (category)
 export const addSection = asyncHandler(async (req, res) => {
+  if (!ensureZoneSetupBeforeMenuChanges(req, res)) return;
+
   const restaurantId = req.restaurant._id;
   const { name } = req.body;
 
@@ -348,6 +565,8 @@ export const addSection = asyncHandler(async (req, res) => {
 
 // Add a new item to a section
 export const addItemToSection = asyncHandler(async (req, res) => {
+  if (!ensureZoneSetupBeforeMenuChanges(req, res)) return;
+
   const restaurantId = req.restaurant._id;
   const { sectionId, item } = req.body;
 
@@ -433,6 +652,8 @@ export const addItemToSection = asyncHandler(async (req, res) => {
 
 // Add a subsection to a section
 export const addSubsectionToSection = asyncHandler(async (req, res) => {
+  if (!ensureZoneSetupBeforeMenuChanges(req, res)) return;
+
   const restaurantId = req.restaurant._id;
   const { sectionId, name } = req.body;
 
@@ -487,6 +708,8 @@ export const addSubsectionToSection = asyncHandler(async (req, res) => {
 
 // Add a new item to a subsection
 export const addItemToSubsection = asyncHandler(async (req, res) => {
+  if (!ensureZoneSetupBeforeMenuChanges(req, res)) return;
+
   const restaurantId = req.restaurant._id;
   const { sectionId, subsectionId, item } = req.body;
 
@@ -574,6 +797,7 @@ export const addItemToSubsection = asyncHandler(async (req, res) => {
 export const getMenuByRestaurantId = async (req, res) => {
   try {
     const { id } = req.params;
+    const { zoneId } = req.query;
     
     // Find restaurant by ID, slug, or restaurantId
     const restaurant = await Restaurant.findOne({
@@ -589,6 +813,22 @@ export const getMenuByRestaurantId = async (req, res) => {
 
     if (!restaurant) {
       return errorResponse(res, 404, 'Restaurant not found');
+    }
+
+    if (zoneId) {
+      const userZone = await Zone.findById(zoneId).lean();
+      if (!userZone || !userZone.isActive) {
+        return errorResponse(res, 400, 'Invalid or inactive zone. Please detect your zone again.');
+      }
+
+      const coords = getRestaurantCoordinates(restaurant);
+      const isAccessible =
+        coords &&
+        isPointInZone(coords.lat, coords.lng, userZone.coordinates || []);
+
+      if (!isAccessible) {
+        return errorResponse(res, 404, 'Restaurant menu not available in your current zone');
+      }
     }
 
     // Find menu

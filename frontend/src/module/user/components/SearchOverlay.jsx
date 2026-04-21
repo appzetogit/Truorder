@@ -5,12 +5,22 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { restaurantAPI } from "@/lib/api"
 import { foodImages } from "@/constants/images"
+import { useLocation } from "../hooks/useLocation"
+import { useZone } from "../hooks/useZone"
+import {
+  isAnyVoiceInputAvailable,
+  setFlutterVoiceGlobals,
+  startFlutterVoiceSearch,
+  stopFlutterVoiceSearch,
+} from "@/lib/voice/flutterVoiceSearch"
 
 const SEARCH_HISTORY_KEY = "user_search_history_v1"
 const MAX_HISTORY_ITEMS = 10
 
 export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchChange }) {
   const navigate = useNavigate()
+  const { location } = useLocation()
+  const { zoneId, currentLocation, locationRefreshKey } = useZone()
   const inputRef = useRef(null)
   const recognitionRef = useRef(null)
   const [allFoods, setAllFoods] = useState([])
@@ -18,13 +28,16 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
   const [recentSearches, setRecentSearches] = useState([])
   const [loadingFoods, setLoadingFoods] = useState(false)
   const [isListening, setIsListening] = useState(false)
-  const [micSupported, setMicSupported] = useState(false)
+  const [micSupported, setMicSupported] = useState(() =>
+    typeof window !== "undefined" ? isAnyVoiceInputAvailable() : false,
+  )
+  const flutterListeningRef = useRef(false)
 
-  // Check if browser supports speech recognition
+  // Web Speech API and/or Flutter WebView bridge (channel / inappwebview)
   useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    setMicSupported(!!SpeechRecognition)
-  }, [])
+    if (!isOpen) return
+    setMicSupported(isAnyVoiceInputAvailable())
+  }, [isOpen])
 
   // Focus input when opened
   useEffect(() => {
@@ -70,6 +83,11 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
     }
   }, [isOpen])
 
+  useEffect(() => {
+    setAllFoods([])
+    setFilteredFoods([])
+  }, [locationRefreshKey, zoneId])
+
   // Load restaurants + menu dishes so search matches food names
   useEffect(() => {
     if (!isOpen || allFoods.length > 0 || loadingFoods) return
@@ -77,7 +95,17 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
     const loadFoods = async () => {
       try {
         setLoadingFoods(true)
-        const response = await restaurantAPI.getRestaurants({ limit: 50 })
+        if (!zoneId) {
+          setAllFoods([])
+          return
+        }
+        const params = { limit: 50 }
+        params.zoneId = zoneId
+        if (currentLocation?.latitude && currentLocation?.longitude) {
+          params.lat = currentLocation.latitude
+          params.lng = currentLocation.longitude
+        }
+        const response = await restaurantAPI.getRestaurants(params)
         const restaurants = response?.data?.data?.restaurants || []
 
         const restaurantSlug = (r) =>
@@ -120,7 +148,7 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
             try {
               const id = restaurant._id || restaurant.restaurantId
               if (!id) return
-              const menuRes = await restaurantAPI.getMenuByRestaurantId(id)
+              const menuRes = await restaurantAPI.getMenuByRestaurantId(id, params)
               const menu = menuRes?.data?.data?.menu || menuRes?.data?.menu
               if (!menu || !menu.sections || !Array.isArray(menu.sections)) return
 
@@ -179,7 +207,32 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
     }
 
     loadFoods()
-  }, [isOpen, allFoods.length, loadingFoods])
+  }, [
+    allFoods.length,
+    currentLocation?.latitude,
+    currentLocation?.longitude,
+    isOpen,
+    loadingFoods,
+    locationRefreshKey,
+    zoneId,
+  ])
+
+  useEffect(() => {
+    if (isOpen) return
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop()
+      } catch {
+        /* ignore */
+      }
+      recognitionRef.current = null
+    }
+    if (flutterListeningRef.current) {
+      stopFlutterVoiceSearch()
+      flutterListeningRef.current = false
+    }
+    setIsListening(false)
+  }, [isOpen])
 
   // Filter foods based on search input (name, cuisine, featured dish)
   // When search is empty, "Popular restaurants around you" shows only restaurants (no dishes)
@@ -253,7 +306,7 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
     if (food.restaurantSlug) {
       // Go directly to the restaurant menu page with a dish search query
       navigate(
-        `/user/restaurants/${food.restaurantSlug}?q=${encodeURIComponent(
+        `/user/restaurants/${food.restaurantSlug}?search=${encodeURIComponent(
           food.name,
         )}`,
       )
@@ -267,16 +320,44 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
   }
 
   const handleMicClick = () => {
-    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SpeechRecognitionAPI) return
-
     if (isListening) {
       if (recognitionRef.current) {
-        recognitionRef.current.stop()
+        try {
+          recognitionRef.current.stop()
+        } catch {
+          /* ignore */
+        }
+        recognitionRef.current = null
+      }
+      if (flutterListeningRef.current) {
+        stopFlutterVoiceSearch()
+        flutterListeningRef.current = false
       }
       setIsListening(false)
       return
     }
+
+    setFlutterVoiceGlobals({
+      onResult: (text) => {
+        flutterListeningRef.current = false
+        setIsListening(false)
+        if (text) onSearchChange(text)
+      },
+      onError: () => {
+        flutterListeningRef.current = false
+        setIsListening(false)
+      },
+    })
+
+    const flutterMode = startFlutterVoiceSearch()
+    if (flutterMode) {
+      flutterListeningRef.current = true
+      setIsListening(true)
+      return
+    }
+
+    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognitionAPI) return
 
     const recognition = new SpeechRecognitionAPI()
     recognition.continuous = false
@@ -319,7 +400,7 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
     >
       {/* Header with Search Bar */}
       <div className="flex-shrink-0 bg-white dark:bg-[#1a1a1a] border-b border-gray-100 dark:border-gray-800 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-4">
           <form onSubmit={handleSearchSubmit} className="flex items-center gap-2 sm:gap-4">
             <div className="flex-1 relative">
               <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground dark:text-gray-400 z-10 pointer-events-none" />
@@ -336,8 +417,7 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
                   variant="ghost"
                   size="icon"
                   onClick={handleMicClick}
-                  disabled={isListening}
-                  className="absolute right-1 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-primary-orange disabled:opacity-70"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-primary-orange"
                   aria-label={isListening ? "Stop listening" : "Search by voice"}
                 >
                   {isListening ? (
@@ -503,4 +583,3 @@ export default function SearchOverlay({ isOpen, onClose, searchValue, onSearchCh
     </div>
   )
 }
-

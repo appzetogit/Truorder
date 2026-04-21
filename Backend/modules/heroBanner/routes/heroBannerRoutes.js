@@ -7,6 +7,8 @@ import {
   createHeroBanner,
   createMultipleHeroBanners,
   deleteHeroBanner,
+  uploadHeroBannerDesktop,
+  deleteHeroBannerDesktop,
   updateBannerOrder,
   toggleBannerStatus,
   linkRestaurantsToBanner,
@@ -77,6 +79,13 @@ router.post(
   uploadMiddleware.array('images', 5),
   createMultipleHeroBanners
 );
+router.patch(
+  '/:id/desktop',
+  authenticateAdmin,
+  uploadMiddleware.single('image'),
+  uploadHeroBannerDesktop
+);
+router.delete('/:id/desktop', authenticateAdmin, deleteHeroBannerDesktop);
 router.delete('/:id', authenticateAdmin, deleteHeroBanner);
 router.patch('/:id/order', authenticateAdmin, updateBannerOrder);
 router.patch('/:id/status', authenticateAdmin, toggleBannerStatus);
@@ -126,9 +135,7 @@ router.post(
 );
 router.delete('/under-250/:id', authenticateAdmin, deleteUnder250Banner);
 router.patch('/under-250/:id/order', authenticateAdmin, updateUnder250BannerOrder);
-
-
-
+router.patch('/under-250/:id/status', authenticateAdmin, toggleUnder250BannerStatus);
 
 // Admin routes - Dining Banners
 router.get('/dining', authenticateAdmin, getAllDiningBanners);

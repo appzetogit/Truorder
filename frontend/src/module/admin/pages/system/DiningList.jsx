@@ -18,16 +18,6 @@ export default function DiningList() {
     const [editingRestaurant, setEditingRestaurant] = useState(null)
     const [showOnlyRequests, setShowOnlyRequests] = useState(false)
 
-    // Fallback static dining categories (used when admin API has none yet)
-    const fallbackDiningCategories = [
-        { _id: "cozy-cafes", name: "Cozy cafes", slug: "cozy-cafes" },
-        { _id: "pure-veg", name: "Pure veg", slug: "pure-veg" },
-        { _id: "family-dining", name: "Family dining", slug: "family-dining" },
-        { _id: "drink-and-dine", name: "Drink & dine", slug: "drink-and-dine" },
-        { _id: "buffet", name: "Buffet", slug: "buffet" },
-        { _id: "premium-dining", name: "Premium dining", slug: "premium-dining" },
-    ]
-
     // Fetch restaurants from backend API
     useEffect(() => {
         const fetchRestaurants = async () => {
@@ -93,25 +83,14 @@ export default function DiningList() {
                 setCategoryLoading(true)
                 const response = await adminAPI.getDiningCategories()
                 if (response.data && response.data.success) {
-                    const raw = response.data.data?.categories || response.data.data || []
-                    const cats = raw.map(cat => ({
+                    const cats = (response.data.data.categories || []).map(cat => ({
                         ...cat,
-                        slug: (cat.slug || cat.name || "").toLowerCase().replace(/\s+/g, '-')
+                        slug: cat.name.toLowerCase().replace(/\s+/g, '-')
                     }))
-                    if (cats.length > 0) {
-                        setCategories(cats)
-                    } else {
-                        // No categories defined in backend yet – use safe fallback list
-                        setCategories(fallbackDiningCategories)
-                    }
-                } else {
-                    // Backend responded but not success – use fallback
-                    setCategories(fallbackDiningCategories)
+                    setCategories(cats)
                 }
             } catch (err) {
                 console.error("Error fetching categories:", err)
-                // On error, still show fallback categories so admin can assign something
-                setCategories(fallbackDiningCategories)
             } finally {
                 setCategoryLoading(false)
             }

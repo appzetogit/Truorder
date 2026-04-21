@@ -1,11 +1,13 @@
 import { Link, useLocation } from "react-router-dom"
 import { useEffect, useState, useRef } from "react"
-import { ChevronDown, ShoppingCart, Wallet } from "lucide-react"
+import { Bell, ChevronDown, ShoppingCart, Wallet } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useLocation as useLocationHook } from "../hooks/useLocation"
 import { useCart } from "../context/CartContext"
 import { useLocationSelector } from "./UserLayout"
 import { FaLocationDot } from "react-icons/fa6"
+import { pickNavbarLocationLines } from "@/lib/userLocationDisplay"
+import { useUserNotifications } from "../hooks/useUserNotifications"
 
 export default function DesktopNavbar() {
   const location = useLocation()
@@ -13,20 +15,11 @@ export default function DesktopNavbar() {
   const { getCartCount } = useCart()
   const { openLocationSelector } = useLocationSelector()
   const cartCount = getCartCount()
+  const { unreadCount } = useUserNotifications()
   const [isVisible, setIsVisible] = useState(true)
   const lastScrollY = useRef(0)
 
-  // Show area if available, otherwise show city
-  // Priority: area > city > "Select"
-  const areaName = userLocation?.area && userLocation?.area.trim() ? userLocation.area.trim() : null
-  const cityName = userLocation?.city || null
-  const stateName = userLocation?.state || null
-  // Main location name: Show area if available, otherwise show city, otherwise "Select"
-  const mainLocationName = areaName || cityName || "Select"
-  // Secondary location: Show only city when area is available (as per design image)
-  const secondaryLocation = areaName
-    ? (cityName || "")  // Show only city when area is available
-    : (cityName && stateName ? `${cityName}, ${stateName}` : cityName || stateName || "")
+  const { main: mainLocationName, sub: secondaryLocation } = pickNavbarLocationLines(userLocation)
 
   const handleLocationClick = () => {
     // Open location selector overlay
@@ -46,6 +39,11 @@ export default function DesktopNavbar() {
   }, [location.pathname])
 
   useEffect(() => {
+    if (isUnder250) {
+      setIsVisible(true)
+      return
+    }
+
     const handleScroll = () => {
       const currentScrollY = window.scrollY
       const scrollDifference = Math.abs(currentScrollY - lastScrollY.current)
@@ -76,7 +74,7 @@ export default function DesktopNavbar() {
 
     window.addEventListener("scroll", handleScroll, { passive: true })
     return () => window.removeEventListener("scroll", handleScroll)
-  }, [location.pathname])
+  }, [location.pathname, isUnder250])
 
   return (
     <nav
@@ -144,7 +142,7 @@ export default function DesktopNavbar() {
               {/* Divider */}
               <div className="h-6 w-px bg-gray-300 dark:bg-gray-700" />
 
-              {/* Under 250 Tab */}
+              {/* Under 200 Tab */}
               <Link
                 to="/under-250"
                 className={`px-6 py-2.5 text-sm font-medium transition-all duration-200 relative ${isUnder250
@@ -152,7 +150,7 @@ export default function DesktopNavbar() {
                   : "text-gray-600 dark:text-gray-400 hover:text-green-600 dark:hover:text-green-500"
                   }`}
               >
-                <span className="relative z-10">Under 250</span>
+                <span className="relative z-10">Under 200</span>
                 {isUnder250 && (
                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-600 dark:bg-green-500 rounded-t-full" />
                 )}
@@ -195,6 +193,22 @@ export default function DesktopNavbar() {
 
             {/* Right: Wallet and Cart Icons */}
             <div className="flex items-center gap-2 lg:gap-3 flex-shrink-0">
+              <Link to="/user/notifications">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="relative h-9 w-9 lg:h-10 lg:w-10 rounded-full p-0 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  title="Notifications"
+                >
+                  <Bell className="h-5 w-5 lg:h-6 lg:w-6 text-gray-700 dark:text-gray-300" strokeWidth={2} />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-5 h-5 px-1 bg-red-500 rounded-full flex items-center justify-center ring-2 ring-white dark:ring-gray-800">
+                      <span className="text-[10px] font-bold text-white">{unreadCount > 99 ? "99+" : unreadCount}</span>
+                    </span>
+                  )}
+                </Button>
+              </Link>
+
               {/* Wallet Icon */}
               <Link to="/user/wallet">
                 <Button

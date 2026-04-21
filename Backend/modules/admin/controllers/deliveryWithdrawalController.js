@@ -16,22 +16,6 @@ export const getDeliveryWithdrawalRequests = asyncHandler(async (req, res) => {
       query.status = status;
     }
 
-    // Hub Manager: filter by delivery partners in assigned zones
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      const Delivery = (await import('../../delivery/models/Delivery.js')).default;
-      const deliveryIds = await Delivery.find({
-        'availability.zones': { $in: req.user.assignedZoneIds } }
-      ).select('_id').lean();
-      const ids = deliveryIds.map((d) => d._id);
-      if (ids.length === 0) {
-        return successResponse(res, 200, 'Delivery withdrawal requests retrieved successfully', {
-          requests: [],
-          pagination: { page: 1, limit: parseInt(limit, 10), total: 0, pages: 0 }
-        });
-      }
-      query.deliveryId = { $in: ids };
-    }
-
     if (search && search.trim()) {
       query.$or = [
         { deliveryName: { $regex: search.trim(), $options: 'i' } },
@@ -101,24 +85,6 @@ export const approveDeliveryWithdrawal = asyncHandler(async (req, res) => {
     if (!request) {
       return errorResponse(res, 404, 'Withdrawal request not found');
     }
-
-    // Hub Manager: verify delivery partner is in assigned zones
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      const Delivery = (await import('../../delivery/models/Delivery.js')).default;
-      const delivery = await Delivery.findById(request.deliveryId)
-        .select('availability.zones')
-        .lean();
-      if (!delivery?.availability?.zones?.length) {
-        return errorResponse(res, 403, 'You can only approve withdrawals for delivery partners in your assigned zones');
-      }
-      const hasZone = delivery.availability.zones.some((z) =>
-        req.user.assignedZoneIds.includes(z.toString())
-      );
-      if (!hasZone) {
-        return errorResponse(res, 403, 'You can only approve withdrawals for delivery partners in your assigned zones');
-      }
-    }
-
     if (request.status !== 'Pending') {
       console.warn('[approve] 400: request already', request.status);
       return errorResponse(res, 400, `Withdrawal request is already ${request.status}`);

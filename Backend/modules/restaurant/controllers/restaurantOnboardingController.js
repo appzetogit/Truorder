@@ -4,8 +4,42 @@ import {
   errorResponse,
 } from "../../../shared/utils/response.js";
 import { createRestaurantFromOnboarding } from "./restaurantController.js";
-import { incrementReferralUsage } from "../../referral/services/referralService.js";
 import { registerTrulifeAffiliate } from "../../referral/services/trulifeService.js";
+
+const normalizeImageObject = (value) => {
+  if (!value) return null;
+  if (typeof value === "string") {
+    const url = value.trim();
+    if (!url) return null;
+    return { url };
+  }
+  if (typeof value === "object") {
+    const url = typeof value.url === "string" ? value.url.trim() : "";
+    if (!url) return null;
+    return {
+      url,
+      ...(value.publicId ? { publicId: value.publicId } : {}),
+    };
+  }
+  return null;
+};
+
+const normalizeStep2Payload = (step2) => {
+  if (!step2 || typeof step2 !== "object") return step2;
+
+  const normalizedMenuImageUrls = Array.isArray(step2.menuImageUrls)
+    ? step2.menuImageUrls
+        .map((img) => normalizeImageObject(img))
+        .filter(Boolean)
+    : [];
+  const normalizedProfileImage = normalizeImageObject(step2.profileImageUrl);
+
+  return {
+    ...step2,
+    menuImageUrls: normalizedMenuImageUrls,
+    profileImageUrl: normalizedProfileImage,
+  };
+};
 
 // Get current restaurant's onboarding data
 export const getOnboarding = async (req, res) => {
@@ -37,7 +71,8 @@ export const getOnboarding = async (req, res) => {
 export const upsertOnboarding = async (req, res) => {
   try {
     const restaurantId = req.restaurant._id;
-    const { step1, step2, step3, step4, completedSteps } = req.body;
+    const { step1, step3, step4, completedSteps } = req.body;
+    const step2 = normalizeStep2Payload(req.body?.step2);
 
     // Get existing restaurant data to merge if needed
     const existingRestaurant = await Restaurant.findById(restaurantId).lean();
@@ -271,35 +306,40 @@ export const upsertOnboarding = async (req, res) => {
         console.error("Error sending onboarding emails:", emailError);
       }
 
-      if (completeRestaurant.referralCodeId && !completeRestaurant.referralCounted) {
+      if (
+        completeRestaurant.referralCode &&
+        !completeRestaurant.trulifeAffiliateRegistered
+      ) {
         try {
-          await incrementReferralUsage(completeRestaurant.referralCodeId);
-          await Restaurant.findByIdAndUpdate(restaurantId, { $set: { referralCounted: true } });
-        } catch (referralError) {
-          console.error(`Failed to increment referral usage: ${referralError.message}`);
-        }
-      }
-
-      if (completeRestaurant.referralCode && !completeRestaurant.trulifeAffiliateRegistered) {
-        try {
-          const step1Data = completeRestaurant.onboarding?.step1 || {};
           const affiliateResult = await registerTrulifeAffiliate({
             referralCode: completeRestaurant.referralCode,
-            fullName: completeRestaurant.ownerName || step1Data.ownerName || completeRestaurant.name,
-            email: completeRestaurant.ownerEmail || step1Data.ownerEmail || completeRestaurant.email || "",
-            mobileNo: completeRestaurant.ownerPhone || step1Data.ownerPhone || completeRestaurant.phone || "",
-            state: completeRestaurant.location?.state || step1Data.location?.state || "",
-            city: completeRestaurant.location?.city || step1Data.location?.city || "",
+            fullName:
+              completeRestaurant.ownerName || completeRestaurant.name || "",
+            email: completeRestaurant.ownerEmail || completeRestaurant.email || "",
+            mobileNo:
+              completeRestaurant.ownerPhone ||
+              completeRestaurant.primaryContactNumber ||
+              completeRestaurant.phone ||
+              "",
+            state: completeRestaurant.location?.state || "",
+            city: completeRestaurant.location?.city || "",
             role: "restaurant",
           });
+
           if (affiliateResult.success) {
-            await Restaurant.findByIdAndUpdate(restaurantId, { $set: { trulifeAffiliateRegistered: true } });
+            await Restaurant.findByIdAndUpdate(restaurantId, {
+              $set: { trulifeAffiliateRegistered: true },
+            });
           }
         } catch (affiliateError) {
-          console.error(`Trulife affiliate registration failed: ${affiliateError.message}`);
+          console.error(
+            "Failed to register restaurant affiliate with Trulife:",
+            affiliateError,
+          );
         }
       }
 
+      // Return success response with restaurant info
       return successResponse(
         res,
         200,

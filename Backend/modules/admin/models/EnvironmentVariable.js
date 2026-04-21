@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { encrypt, decrypt, isEncrypted } from '../../../shared/utils/encryption.js';
 
 const environmentVariableSchema = new mongoose.Schema(
   {
@@ -155,7 +156,7 @@ environmentVariableSchema.statics.getOrCreate = async function() {
   return envVars;
 };
 
-// Method to get all variables as plain object
+// Method to get all variables as plain object (with decryption)
 environmentVariableSchema.methods.toEnvObject = function() {
   const obj = this.toObject();
   delete obj._id;
@@ -164,10 +165,104 @@ environmentVariableSchema.methods.toEnvObject = function() {
   delete obj.updatedAt;
   delete obj.lastUpdatedBy;
   delete obj.lastUpdatedAt;
-
+  
+  // Decrypt all sensitive fields
+  const sensitiveFields = [
+    'RAZORPAY_API_KEY',
+    'RAZORPAY_SECRET_KEY',
+    'CLOUDINARY_API_KEY',
+    'CLOUDINARY_API_SECRET',
+    'FIREBASE_API_KEY',
+    'FIREBASE_CLIENT_EMAIL',
+    'FIREBASE_PRIVATE_KEY',
+    'SMTP_USER',
+    'SMTP_PASS',
+    'SMSINDIAHUB_API_KEY',
+    'VITE_GOOGLE_MAPS_API_KEY'
+  ];
+  
+  sensitiveFields.forEach(field => {
+    if (obj[field] && isEncrypted(obj[field])) {
+      try {
+        obj[field] = decrypt(obj[field]);
+      } catch (error) {
+        console.error(`Error decrypting ${field}:`, error);
+        obj[field] = ''; // Return empty on decryption error
+      }
+    }
+  });
+  
   return obj;
 };
+
+// Pre-save hook to encrypt sensitive fields
+environmentVariableSchema.pre('save', function(next) {
+  const sensitiveFields = [
+    'RAZORPAY_API_KEY',
+    'RAZORPAY_SECRET_KEY',
+    'CLOUDINARY_API_KEY',
+    'CLOUDINARY_API_SECRET',
+    'FIREBASE_API_KEY',
+    'FIREBASE_CLIENT_EMAIL',
+    'FIREBASE_PRIVATE_KEY',
+    'SMTP_USER',
+    'SMTP_PASS',
+    'SMSINDIAHUB_API_KEY',
+    'VITE_GOOGLE_MAPS_API_KEY'
+  ];
+  
+  // Process each field safely
+  for (const field of sensitiveFields) {
+    try {
+      // Check if field exists and is modified
+      if (!this.isModified(field)) {
+        continue; // Skip if not modified
+      }
+      
+      let fieldValue = this[field];
+      
+      // Convert to string if it's not already a string
+      if (fieldValue !== null && fieldValue !== undefined && typeof fieldValue !== 'string') {
+        fieldValue = String(fieldValue);
+        this[field] = fieldValue;
+      }
+      
+      // Handle null, undefined, or empty strings
+      if (!fieldValue || (typeof fieldValue === 'string' && fieldValue.trim() === '')) {
+        // Set to empty string if null/undefined
+        this[field] = '';
+        continue; // Skip encryption for empty values
+      }
+      
+      // Only encrypt if value is a string and not already encrypted
+      if (typeof fieldValue === 'string' && !isEncrypted(fieldValue)) {
+        try {
+          const encryptedValue = encrypt(fieldValue);
+          if (encryptedValue && encryptedValue.trim() !== '') {
+            this[field] = encryptedValue;
+          } else {
+            console.warn(`Encryption returned empty for field: ${field}, keeping original value`);
+            // Keep original value if encryption returns empty
+          }
+        } catch (encryptError) {
+          console.error(`Error encrypting ${field}:`, encryptError.message);
+          console.error(`Field value length: ${fieldValue?.length}`);
+          // Continue with unencrypted value if encryption fails
+          // This allows the save to proceed even if encryption fails
+        }
+      }
+    } catch (fieldError) {
+      console.error(`Error processing field ${field}:`, fieldError.message);
+      // Continue processing other fields even if one fails
+    }
+  }
+  
+  // Always call next() to allow save to proceed
+  // Never pass error to next() - we want save to succeed even if encryption fails
+  next();
+});
 
 const EnvironmentVariable = mongoose.model('EnvironmentVariable', environmentVariableSchema);
 
 export default EnvironmentVariable;
+

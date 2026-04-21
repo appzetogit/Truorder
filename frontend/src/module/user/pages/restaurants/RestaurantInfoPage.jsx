@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { diningAPI } from "@/lib/api"
 import { getCompanyNameAsync } from "@/lib/utils/businessSettings"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
 import { useProfile } from "../../context/ProfileContext"
 import { toast } from "sonner"
 import {
@@ -205,7 +206,7 @@ export default function RestaurantInfoPage() {
     <AnimatedPage>
       <div className="min-h-screen bg-background pb-8">
         {/* Header - back, bookmark, share all working */}
-        <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-background border-b border-border">
+        <div className="sticky top-0 z-10 flex items-center justify-between px-4 pb-3 pt-[max(0.75rem,calc(0.75rem+env(safe-area-inset-top,0px)))] bg-background border-b border-border">
           <Button
             variant="ghost"
             size="icon"
@@ -233,7 +234,7 @@ export default function RestaurantInfoPage() {
               aria-label={isFavorite(slug) ? "Remove from favorites" : "Add to favorites"}
             >
               <Bookmark
-                className={`h-5 w-5 ${isFavorite(slug) ? "fill-[#1FCAD3] text-[#1FCAD3]" : ""}`}
+                className={`h-5 w-5 ${isFavorite(slug) ? "fill-[#2B9C64] text-[#2B9C64]" : ""}`}
               />
             </Button>
             <Button
@@ -243,24 +244,7 @@ export default function RestaurantInfoPage() {
               onClick={async () => {
                 const url = window.location.href
                 const title = restaurant?.name ? `${restaurant.name} - ${companyName}` : companyName
-                try {
-                  if (navigator.share) {
-                    await navigator.share({ title, url })
-                    toast.success("Shared")
-                  } else {
-                    await navigator.clipboard.writeText(url)
-                    toast.success("Link copied to clipboard")
-                  }
-                } catch (err) {
-                  if (err?.name !== "AbortError") {
-                    try {
-                      await navigator.clipboard.writeText(url)
-                      toast.success("Link copied to clipboard")
-                    } catch {
-                      toast.error("Could not share")
-                    }
-                  }
-                }
+                await shareWithFallback({ title, url })
               }}
               aria-label="Share"
             >
@@ -291,7 +275,7 @@ export default function RestaurantInfoPage() {
             {phone ? (
               <a
                 href={telUrl}
-                className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg border-2 border-[#1FCAD3] text-[#1FCAD3] hover:bg-[#1FCAD3]/5 transition-colors"
+                className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg border-2 border-[#2B9C64] text-[#2B9C64] hover:bg-[#2B9C64]/5 transition-colors"
               >
                 <Phone className="h-5 w-5" />
                 <span>Call</span>
@@ -301,7 +285,7 @@ export default function RestaurantInfoPage() {
               href={mapsUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg border-2 border-[#1FCAD3] text-[#1FCAD3] hover:bg-[#1FCAD3]/5 transition-colors"
+              className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg border-2 border-[#2B9C64] text-[#2B9C64] hover:bg-[#2B9C64]/5 transition-colors"
             >
               <MapPin className="h-5 w-5" />
               <span>Direction</span>

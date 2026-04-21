@@ -4,9 +4,11 @@ import {
   getOrderDetails,
   getActiveOrder,
   acceptOrder, 
+  rejectOrder,
   confirmReachedPickup, 
   confirmOrderId,
   confirmReachedDrop,
+  verifyDeliveryOtp,
   completeDelivery
 } from '../controllers/deliveryOrdersController.js';
 import { getOrderChatDelivery, sendOrderChatMessageDelivery } from '../../order/controllers/orderChatController.js';
@@ -25,9 +27,11 @@ router.get('/orders/:orderId', getOrderDetails);
 router.get('/orders/:orderId/chat', getOrderChatDelivery);
 router.post('/orders/:orderId/chat/messages', sendOrderChatMessageDelivery);
 router.patch('/orders/:orderId/accept', acceptOrder);
+router.patch('/orders/:orderId/reject', rejectOrder);
 router.patch('/orders/:orderId/reached-pickup', confirmReachedPickup);
 router.patch('/orders/:orderId/confirm-order-id', confirmOrderId);
 router.patch('/orders/:orderId/reached-drop', confirmReachedDrop);
+router.post('/orders/:orderId/verify-delivery-otp', verifyDeliveryOtp);
 router.patch('/orders/:orderId/complete-delivery', completeDelivery);
 
 // Trip History route

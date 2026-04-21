@@ -5,6 +5,14 @@ import {
 } from "../../../shared/utils/response.js";
 import asyncHandler from "../../../shared/middleware/asyncHandler.js";
 import mongoose from "mongoose";
+import { getOrderZoneFilter } from "../utils/hubZoneFilter.js";
+
+const payableOrderVisibilityQuery = {
+  $or: [
+    { "payment.method": { $in: ["cash", "cod"] } },
+    { "payment.status": { $in: ["completed", "refunded"] } },
+  ],
+};
 
 /**
  * Get all orders for admin
@@ -26,15 +34,20 @@ export const getOrders = asyncHandler(async (req, res) => {
       customer,
       cancelledBy,
     } = req.query;
+    const assignedZoneIds = req.zoneFilter?.zoneIds || [];
 
     // Build query
     const query = {};
+    const andConditions = [];
 
     // Status filter
     if (status && status !== "all") {
       // Offline payments: filter by payment method = cash (COD/offline), not by order status
       if (status === "offline-payments") {
         query["payment.method"] = "cash";
+      } else if (status === "payment-failed") {
+        query["payment.method"] = { $nin: ["cash", "cod"] };
+        query["payment.status"] = "failed";
       } else {
         // Map frontend status keys to backend status values
         const statusMap = {
@@ -46,7 +59,6 @@ export const getOrders = asyncHandler(async (req, res) => {
           delivered: "delivered",
           canceled: "cancelled",
           "restaurant-cancelled": "cancelled", // Restaurant cancelled orders
-          "payment-failed": "pending", // Payment failed orders have pending status
           refunded: "cancelled", // Refunded orders might be cancelled
           "dine-in": "dine_in",
         };
@@ -81,6 +93,10 @@ export const getOrders = asyncHandler(async (req, res) => {
     // Payment status filter
     if (paymentStatus) {
       query["payment.status"] = paymentStatus.toLowerCase();
+    }
+
+    if (!paymentStatus && status !== "payment-failed") {
+      andConditions.push(payableOrderVisibilityQuery);
     }
 
     // Date range filter
@@ -123,10 +139,9 @@ export const getOrders = asyncHandler(async (req, res) => {
       }
     }
 
-    // Zone filter - Hub Manager: enforce assigned zones only
-    if (req.isHubManager && req.user?.assignedZoneIds?.length) {
-      query["assignmentInfo.zoneId"] = { $in: req.user.assignedZoneIds };
-    } else if (zone && zone !== "All Zones") {
+    // Zone filter
+    if (zone && zone !== "All Zones") {
+      // Find zone by name
       const Zone = (await import("../models/Zone.js")).default;
       const zoneDoc = await Zone.findOne({
         name: { $regex: zone, $options: "i" },
@@ -192,6 +207,14 @@ export const getOrders = asyncHandler(async (req, res) => {
       if (query.$or && query.$or.length === 0) {
         delete query.$or;
       }
+    }
+
+    if (andConditions.length > 0) {
+      query.$and = [...(query.$and || []), ...andConditions];
+    }
+
+    if (assignedZoneIds.length > 0) {
+      query.$and = [...(query.$and || []), getOrderZoneFilter(assignedZoneIds)];
     }
 
     // Calculate pagination
@@ -268,6 +291,11 @@ export const getOrders = asyncHandler(async (req, res) => {
       // Map payment status
       const isCod =
         order.payment?.method === "cash" || order.payment?.method === "cod";
+      const isPaymentCollected =
+        isCod
+          ? order.status === "delivered"
+          : order.payment?.status === "completed" ||
+            order.payment?.status === "refunded";
       const paymentStatusMap = {
         completed: "Paid",
         pending: isCod ? "COD" : "Pending",
@@ -402,11 +430,7 @@ export const getOrders = asyncHandler(async (req, res) => {
           }
         })(),
         paymentCollectionStatus:
-          order.payment?.method === "cash" || order.payment?.method === "cod"
-            ? order.status === "delivered"
-              ? "Collected"
-              : "Not Collected"
-            : "Collected",
+          isPaymentCollected ? "Collected" : "Not Collected",
         orderStatus: orderStatusDisplay,
         status: order.status, // Backend status
         deliveryType: deliveryType,
@@ -989,7 +1013,7 @@ export const getTransactionReport = asyncHandler(async (req, res) => {
       toDate,
     } = req.query;
     // Build query for orders
-    const query = {};
+    const query = { $and: [payableOrderVisibilityQuery] };
 
     // Date range filter
     if (fromDate || toDate) {
@@ -1136,7 +1160,7 @@ export const getTransactionReport = asyncHandler(async (req, res) => {
       0,
     );
 
-    // Get admin earning from AdminCommission
+    // Try AdminCommission first, fallback to calculating from orders
     const adminCommissionQuery = {
       status: "completed",
       ...summaryDateQuery,
@@ -1144,25 +1168,56 @@ export const getTransactionReport = asyncHandler(async (req, res) => {
     };
     const adminCommissions =
       await AdminCommission.find(adminCommissionQuery).lean();
-    const adminEarning = adminCommissions.reduce(
+
+    let adminEarning = adminCommissions.reduce(
       (sum, comm) => sum + (comm.commissionAmount || 0),
       0,
     );
-
-    // Calculate restaurant earning (order total - admin commission - delivery commission)
-    // For simplicity, we'll use restaurantEarning from AdminCommission if available
-    const restaurantEarning = adminCommissions.reduce(
+    let restaurantEarning = adminCommissions.reduce(
       (sum, comm) => sum + (comm.restaurantEarning || 0),
       0,
     );
 
-    // Calculate deliveryman earning (from delivery commissions)
-    // This would need to be calculated from delivery wallet transactions or order assignment info
-    // For now, we'll estimate based on delivery fee or use a placeholder
+    // Fallback: calculate from orders directly if AdminCommission has no data
+    if (adminEarning === 0 && restaurantEarning === 0 && completedOrders.length > 0) {
+      // Try to load settlement data for platformFee
+      let settlementMap = new Map();
+      try {
+        const Settlement = (await import("../models/Settlement.js")).default;
+        const orderIds = completedOrders.map((o) => o._id);
+        const settlements = await Settlement.find({ orderId: { $in: orderIds } })
+          .select("orderId userPayment.platformFee")
+          .lean();
+        for (const s of settlements) {
+          if (s.userPayment?.platformFee !== undefined) {
+            settlementMap.set(s.orderId.toString(), s.userPayment.platformFee);
+          }
+        }
+      } catch (_) {
+        // Settlement model may not exist, skip
+      }
+
+      for (const order of completedOrders) {
+        const subtotal = order.pricing?.subtotal || 0;
+        const discount = order.pricing?.discount || 0;
+        const deliveryFee = order.pricing?.deliveryFee || 0;
+        const tax = order.pricing?.tax || 0;
+
+        let platformFee = order.pricing?.platformFee;
+        if (platformFee === undefined || platformFee === null) {
+          platformFee = settlementMap.get(order._id.toString());
+        }
+        if (platformFee === undefined || platformFee === null) {
+          platformFee = 0;
+        }
+
+        adminEarning += platformFee + tax;
+        restaurantEarning += Math.max(0, subtotal - discount - platformFee);
+      }
+    }
+
     const deliverymanEarning = completedOrders.reduce((sum, order) => {
-      // Delivery commission is typically calculated from distance
-      // For now, we'll use a simple estimate or fetch from delivery wallet
-      return sum + (order.pricing?.deliveryFee || 0) * 0.8; // Estimate 80% of delivery fee goes to deliveryman
+      return sum + (order.pricing?.deliveryFee || 0);
     }, 0);
 
     // Transform orders to match frontend format
@@ -1383,9 +1438,14 @@ export const getRestaurantReport = asyncHandler(async (req, res) => {
         // Build order query for this restaurant
         const orderQuery = {
           ...dateQuery,
-          $or: [
-            { restaurantId: restaurantId },
-            { restaurantId: restaurantIdField },
+          $and: [
+            {
+              $or: [
+                { restaurantId: restaurantId },
+                { restaurantId: restaurantIdField },
+              ],
+            },
+            payableOrderVisibilityQuery,
           ],
         };
 
@@ -1550,7 +1610,7 @@ export const getRefundRequests = asyncHandler(async (req, res) => {
       restaurant,
     } = req.query;
     // Build query for restaurant cancelled orders with pending refunds
-    const query = {
+    let query = {
       status: "cancelled",
       cancellationReason: {
         $regex:

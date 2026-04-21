@@ -5,6 +5,7 @@ import { formatCurrency } from "../../restaurant/utils/currency"
 import { useProgressStore } from "../store/progressStore"
 import { deliveryAPI } from "@/lib/api"
 import { toast } from "sonner"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
 
 export default function Earnings() {
   const navigate = useNavigate()
@@ -514,17 +515,11 @@ export default function Earnings() {
     : 1
 
   // Handle share
-  const handleShare = () => {
-    if (navigator.share) {
-      navigator.share({
-        title: 'My Earnings',
-        text: `My earnings for ${formatDateDisplay(selectedDate)}: ${formatCurrency(earningsData.totalEarnings)}`
-      })
-    } else {
-      // Fallback: copy to clipboard
-      navigator.clipboard.writeText(`My earnings: ${formatCurrency(earningsData.totalEarnings)}`)
-      alert('Earnings copied to clipboard!')
-    }
+  const handleShare = async () => {
+    await shareWithFallback({
+      title: "My Earnings",
+      text: `My earnings for ${formatDateDisplay(selectedDate)}: ${formatCurrency(earningsData.totalEarnings)}`,
+    })
   }
 
   if (isLoading) {

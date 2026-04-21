@@ -170,7 +170,7 @@ export default function TableBookingConfirmation() {
     const formattedDate = new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
 
     return (
-        <AnimatedPage className="bg-slate-50 min-h-screen pb-24">
+        <AnimatedPage className="bg-slate-50 min-h-screen pt-2 pb-24">
             {/* Header */}
             {/* Header */}
             <div className="bg-white text-gray-900 px-4 py-4 sticky top-0 z-50 shadow-sm border-b border-slate-100">
@@ -178,7 +178,7 @@ export default function TableBookingConfirmation() {
                     <button onClick={() => navigate(-1)} className="p-1 hover:bg-slate-100 rounded-full transition-colors">
                         <ArrowLeft className="w-6 h-6" />
                     </button>
-                    <p className="font-semibold text-sm text-[#1FCAD3] bg-[#1FCAD3]/10 px-3 py-1 rounded-full">
+                    <p className="font-semibold text-sm text-[#2B9C64] bg-[#2B9C64]/10 px-3 py-1 rounded-full">
                         Reach 15 mins before booking
                     </p>
                 </div>
@@ -189,8 +189,8 @@ export default function TableBookingConfirmation() {
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
                     <div className="p-4 space-y-4">
                         <div className="flex items-start gap-3">
-                            <div className="bg-[#1FCAD3]/10 p-2 rounded-xl">
-                                <Calendar className="w-5 h-5 text-[#1FCAD3]" />
+                            <div className="bg-[#2B9C64]/10 p-2 rounded-xl">
+                                <Calendar className="w-5 h-5 text-[#2B9C64]" />
                             </div>
                             <div>
                                 <p className="font-bold text-gray-900">{formattedDate} at {timeSlot}</p>
@@ -202,8 +202,8 @@ export default function TableBookingConfirmation() {
                         </div>
 
                         <div className="flex items-start gap-3 pt-4 border-t border-dashed border-slate-100">
-                            <div className="bg-[#1FCAD3]/10 p-2 rounded-xl">
-                                <MapPin className="w-5 h-5 text-[#1FCAD3]" />
+                            <div className="bg-[#2B9C64]/10 p-2 rounded-xl">
+                                <MapPin className="w-5 h-5 text-[#2B9C64]" />
                             </div>
                             <div>
                                 <p className="font-bold text-gray-900">{restaurant.name}</p>
@@ -252,7 +252,7 @@ export default function TableBookingConfirmation() {
                             className="w-full bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex items-center justify-between hover:bg-slate-50 active:scale-[0.99] transition-all text-left"
                         >
                             <div className="flex items-start gap-3">
-                                <div className="text-[#1FCAD3] mt-1">
+                                <div className="text-green-500 mt-1">
                                     <Edit2 className="w-5 h-5" />
                                 </div>
                                 <div>
@@ -278,7 +278,7 @@ export default function TableBookingConfirmation() {
                             <p className="font-bold text-gray-900">{user?.name || "Shailu"}</p>
                             <p className="text-sm text-slate-400 mt-1">{user?.phone || user?.email || "8090512291"}</p>
                         </div>
-                        <button type="button" onClick={openEditModal} className="text-[#1FCAD3] text-sm font-bold hover:underline">Edit</button>
+                        <button type="button" onClick={openEditModal} className="text-[#2B9C64] text-sm font-bold hover:underline">Edit</button>
                     </div>
                 </div>
 
@@ -317,7 +317,7 @@ export default function TableBookingConfirmation() {
                 <Button
                     onClick={handleBooking}
                     disabled={bookingInProgress}
-                    className="w-full h-14 bg-[#1FCAD3] hover:bg-[#14a7b3] text-white font-bold text-lg rounded-2xl shadow-2xl shadow-[#1FCAD3]/20 transition-all active:scale-[0.98]"
+                    className="w-full h-14 bg-[#2B9C64] hover:bg-[#218a56] text-white font-bold text-lg rounded-2xl shadow-xl shadow-[#2B9C64]/20 transition-all active:scale-[0.98]"
                 >
                     {bookingInProgress ? "Confirming..." : "Confirm your seat"}
                 </Button>
@@ -361,7 +361,7 @@ export default function TableBookingConfirmation() {
                                         value={tempRequest}
                                         onChange={(e) => setTempRequest(e.target.value)}
                                         placeholder="e.g. It's our anniversary, would love a quiet table by the window."
-                                        className="w-full h-40 p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-[#1FCAD3] focus:bg-white outline-none transition-all resize-none font-medium text-gray-700"
+                                        className="w-full h-40 p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-[#2B9C64] focus:bg-white outline-none transition-all resize-none font-medium text-gray-700"
                                         maxLength={250}
                                     />
                                     <div className="absolute bottom-4 right-4 text-[10px] font-bold text-slate-400">
@@ -379,7 +379,7 @@ export default function TableBookingConfirmation() {
                                     </Button>
                                     <Button
                                         onClick={handleSaveRequest}
-                                        className="flex-1 h-14 bg-[#1FCAD3] hover:bg-[#14a7b3] rounded-2xl font-bold shadow-lg shadow-[#1FCAD3]/20"
+                                        className="flex-1 h-14 bg-[#2B9C64] hover:bg-[#218a56] rounded-2xl font-bold shadow-lg shadow-[#2B9C64]/20"
                                     >
                                         Save Request
                                     </Button>
@@ -426,7 +426,7 @@ export default function TableBookingConfirmation() {
                                         value={editName}
                                         onChange={(e) => handleEditNameChange(e.target.value)}
                                         placeholder="Your name"
-                                        className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-[#1FCAD3] focus:bg-white outline-none transition-all font-medium text-gray-700"
+                                        className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-[#2B9C64] focus:bg-white outline-none transition-all font-medium text-gray-700"
                                     />
                                 </div>
                                 <div>
@@ -436,7 +436,7 @@ export default function TableBookingConfirmation() {
                                         value={editPhone}
                                         onChange={(e) => handleEditPhoneChange(e.target.value)}
                                         placeholder="Phone number"
-                                        className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-[#1FCAD3] focus:bg-white outline-none transition-all font-medium text-gray-700"
+                                        className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-[#2B9C64] focus:bg-white outline-none transition-all font-medium text-gray-700"
                                     />
                                 </div>
                             </div>
@@ -452,7 +452,7 @@ export default function TableBookingConfirmation() {
                                 <Button
                                     onClick={handleSaveEdit}
                                     disabled={savingEdit}
-                                    className="flex-1 h-14 bg-[#1FCAD3] hover:bg-[#14a7b3] rounded-2xl font-bold shadow-lg shadow-[#1FCAD3]/20"
+                                    className="flex-1 h-14 bg-[#2B9C64] hover:bg-[#218a56] rounded-2xl font-bold shadow-lg shadow-[#2B9C64]/20"
                                 >
                                     {savingEdit ? "Saving..." : "Save"}
                                 </Button>

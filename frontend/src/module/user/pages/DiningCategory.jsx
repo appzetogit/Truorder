@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import AnimatedPage from "../components/AnimatedPage"
 import { useLocationSelector } from "../components/UserLayout"
 import { useLocation as useLocationHook } from "../hooks/useLocation"
+import { useZone } from "../hooks/useZone"
 import { useProfile } from "../context/ProfileContext"
 import { FaLocationDot } from "react-icons/fa6"
 import { restaurantAPI } from "@/lib/api"
@@ -26,6 +27,7 @@ export default function DiningCategory() {
   const rightContentRef = useRef(null)
   const { openLocationSelector } = useLocationSelector()
   const { location } = useLocationHook()
+  const { zoneId, currentLocation, locationRefreshKey } = useZone()
   const { addFavorite, removeFavorite, isFavorite } = useProfile()
   const cityName = location?.city || "Select"
 
@@ -34,12 +36,18 @@ export default function DiningCategory() {
     const fetchRestaurants = async () => {
       try {
         setIsLoading(true)
-        const response = await restaurantAPI.getRestaurants({
-          // Send both params so it works with either field the backend expects
+        const params = {
           diningCategory: category,
-          diningType: category,
-          limit: 100,
-        })
+          limit: 100
+        }
+        if (zoneId) {
+          params.zoneId = zoneId
+        }
+        if (currentLocation?.latitude && currentLocation?.longitude) {
+          params.lat = currentLocation.latitude
+          params.lng = currentLocation.longitude
+        }
+        const response = await restaurantAPI.getRestaurants(params)
         if (response.data && response.data.success) {
           // Map backend data to UI format
           const mappedData = (response.data.data.restaurants || response.data.data || [])
@@ -71,7 +79,7 @@ export default function DiningCategory() {
       }
     }
     fetchRestaurants()
-  }, [])
+  }, [category, currentLocation?.latitude, currentLocation?.longitude, locationRefreshKey, zoneId])
 
   // Category headings mapping
   const categoryHeadings = {
@@ -159,7 +167,7 @@ export default function DiningCategory() {
   }, [openLocationSelector])
 
   return (
-    <AnimatedPage className="min-h-screen bg-[#1FCAD3]">
+    <AnimatedPage className="min-h-screen pt-4 bg-[#2B9C64]">
       {/* Header with Back Button and Location */}
       <div className="relative w-full z-20 px-3 sm:px-6 lg:px-8 py-3 sm:py-4">
         <div className="flex items-center justify-start gap-3 sm:gap-4">
@@ -240,7 +248,7 @@ export default function DiningCategory() {
                       variant="outline"
                       onClick={() => toggleFilter(filter.id)}
                       className={`h-8 sm:h-9 px-3 rounded-full flex items-center gap-1.5 whitespace-nowrap flex-shrink-0 transition-all font-medium shadow-sm border-0 ${isActive
-                        ? 'bg-[#1FCAD3] text-white hover:bg-[#1FCAD3]/90'
+                        ? 'bg-[#2B9C64] text-white hover:bg-[#2B9C64]/90'
                         : 'bg-white text-gray-700 hover:bg-gray-50'
                         }`}
                     >
@@ -293,7 +301,7 @@ export default function DiningCategory() {
                           alt={restaurant.name}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           onError={(e) => {
-                            e.target.src = "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&h=600&fit=crop"
+                            e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex';
                           }}
                         />
 
@@ -336,12 +344,12 @@ export default function DiningCategory() {
                         {/* Restaurant Name & Rating */}
                         <div className="flex items-start justify-between gap-2 mb-1">
                           <div className="flex-1 min-w-0">
-                            <h3 className="text-lg font-bold text-gray-900 line-clamp-1 group-hover:text-[#1FCAD3] transition-colors">
+                            <h3 className="text-lg font-bold text-gray-900 line-clamp-1 group-hover:text-[#2B9C64] transition-colors">
                               {restaurant.name}
                             </h3>
                             <p className="text-sm text-gray-500 line-clamp-1 truncate">{restaurant.cuisine}</p>
                           </div>
-                          <div className="flex-shrink-0 bg-[#1FCAD3] text-white px-2 py-0.5 rounded-md flex items-center gap-0.5 shadow-sm">
+                          <div className="flex-shrink-0 bg-[#2B9C64] text-white px-2 py-0.5 rounded-md flex items-center gap-0.5 shadow-sm">
                             <span className="text-sm font-bold">{restaurant.rating}</span>
                             <Star className="h-3 w-3 fill-white text-white" />
                           </div>
@@ -388,7 +396,7 @@ export default function DiningCategory() {
                   setSortBy(null)
                   setSelectedCuisine(null)
                 }}
-                className="text-[#1FCAD3] font-bold text-sm hover:bg-[#E0FBFD] px-3 py-1 rounded-lg transition-colors"
+                className="text-[#2B9C64] font-bold text-sm hover:bg-green-50 px-3 py-1 rounded-lg transition-colors"
               >
                 Clear all
               </button>
@@ -412,11 +420,11 @@ export default function DiningCategory() {
                     <button
                       key={tab.id}
                       onClick={() => setActiveFilterTab(tab.id)}
-                      className={`flex flex-col items-center gap-1.5 py-4 px-2 text-center relative transition-all ${isActive ? 'bg-white text-[#1FCAD3] shadow-sm' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+                      className={`flex flex-col items-center gap-1.5 py-4 px-2 text-center relative transition-all ${isActive ? 'bg-white text-[#2B9C64] shadow-sm' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
                         }`}
                     >
                       {isActive && (
-                        <div className="absolute left-0 top-3 bottom-3 w-1 bg-[#1FCAD3] rounded-r-full" />
+                        <div className="absolute left-0 top-3 bottom-3 w-1 bg-[#2B9C64] rounded-r-full" />
                       )}
                       <Icon className={`h-5 w-5 ${isActive ? 'stroke-current' : ''}`} strokeWidth={isActive ? 2 : 1.5} />
                       <span className={`text-xs font-semibold leading-tight ${isActive ? '' : 'font-medium'}`}>{tab.label}</span>
@@ -441,14 +449,14 @@ export default function DiningCategory() {
                           key={option.id || 'relevance'}
                           onClick={() => setSortBy(option.id)}
                           className={`px-4 py-3.5 rounded-xl border text-left transition-all flex items-center justify-between group ${sortBy === option.id
-                            ? 'border-[#1FCAD3] bg-[#1FCAD3]/5 shadow-sm'
-                            : 'border-gray-200 hover:border-[#1FCAD3] hover:bg-gray-50'
+                            ? 'border-[#2B9C64] bg-[#2B9C64]/5 shadow-sm'
+                            : 'border-gray-200 hover:border-[#2B9C64] hover:bg-gray-50'
                             }`}
                         >
-                          <span className={`text-sm font-bold ${sortBy === option.id ? 'text-[#1FCAD3]' : 'text-gray-700'}`}>
+                          <span className={`text-sm font-bold ${sortBy === option.id ? 'text-[#2B9C64]' : 'text-gray-700'}`}>
                             {option.label}
                           </span>
-                          {sortBy === option.id && <div className="h-2 w-2 rounded-full bg-[#1FCAD3]" />}
+                          {sortBy === option.id && <div className="h-2 w-2 rounded-full bg-[#2B9C64]" />}
                         </button>
                       ))}
                     </div>
@@ -463,26 +471,26 @@ export default function DiningCategory() {
                       <button
                         onClick={() => toggleFilter('delivery-under-30')}
                         className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${activeFilters.has('delivery-under-30')
-                          ? 'border-[#1FCAD3] bg-[#1FCAD3]/5'
-                          : 'border-gray-200 hover:border-[#1FCAD3]'
+                          ? 'border-[#2B9C64] bg-[#2B9C64]/5'
+                          : 'border-gray-200 hover:border-[#2B9C64]'
                           }`}
                       >
-                        <div className={`p-2 rounded-full ${activeFilters.has('delivery-under-30') ? 'bg-[#1FCAD3]/10 text-[#1FCAD3]' : 'bg-gray-100 text-gray-500'}`}>
+                        <div className={`p-2 rounded-full ${activeFilters.has('delivery-under-30') ? 'bg-[#2B9C64]/10 text-[#2B9C64]' : 'bg-gray-100 text-gray-500'}`}>
                           <Timer className="h-5 w-5" strokeWidth={2} />
                         </div>
-                        <span className={`text-sm font-bold ${activeFilters.has('delivery-under-30') ? 'text-[#1FCAD3]' : 'text-gray-700'}`}>Under 30 mins</span>
+                        <span className={`text-sm font-bold ${activeFilters.has('delivery-under-30') ? 'text-[#2B9C64]' : 'text-gray-700'}`}>Under 30 mins</span>
                       </button>
                       <button
                         onClick={() => toggleFilter('delivery-under-45')}
                         className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${activeFilters.has('delivery-under-45')
-                          ? 'border-[#1FCAD3] bg-[#1FCAD3]/5'
-                          : 'border-gray-200 hover:border-[#1FCAD3]'
+                          ? 'border-[#2B9C64] bg-[#2B9C64]/5'
+                          : 'border-gray-200 hover:border-[#2B9C64]'
                           }`}
                       >
-                        <div className={`p-2 rounded-full ${activeFilters.has('delivery-under-45') ? 'bg-[#1FCAD3]/10 text-[#1FCAD3]' : 'bg-gray-100 text-gray-500'}`}>
+                        <div className={`p-2 rounded-full ${activeFilters.has('delivery-under-45') ? 'bg-[#2B9C64]/10 text-[#2B9C64]' : 'bg-gray-100 text-gray-500'}`}>
                           <Timer className="h-5 w-5" strokeWidth={2} />
                         </div>
-                        <span className={`text-sm font-bold ${activeFilters.has('delivery-under-45') ? 'text-[#1FCAD3]' : 'text-gray-700'}`}>Under 45 mins</span>
+                        <span className={`text-sm font-bold ${activeFilters.has('delivery-under-45') ? 'text-[#2B9C64]' : 'text-gray-700'}`}>Under 45 mins</span>
                       </button>
                     </div>
                   </div>
@@ -496,38 +504,38 @@ export default function DiningCategory() {
                       <button
                         onClick={() => toggleFilter('rating-35-plus')}
                         className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${activeFilters.has('rating-35-plus')
-                          ? 'border-[#1FCAD3] bg-[#1FCAD3]/5'
-                          : 'border-gray-200 hover:border-[#1FCAD3]'
+                          ? 'border-[#2B9C64] bg-[#2B9C64]/5'
+                          : 'border-gray-200 hover:border-[#2B9C64]'
                           }`}
                       >
-                        <div className={`p-2 rounded-full ${activeFilters.has('rating-35-plus') ? 'bg-[#1FCAD3]/10 text-[#1FCAD3]' : 'bg-gray-100 text-gray-500'}`}>
-                          <Star className={`h-5 w-5 ${activeFilters.has('rating-35-plus') ? 'fill-[#1FCAD3]' : ''}`} />
+                        <div className={`p-2 rounded-full ${activeFilters.has('rating-35-plus') ? 'bg-[#2B9C64]/10 text-[#2B9C64]' : 'bg-gray-100 text-gray-500'}`}>
+                          <Star className={`h-5 w-5 ${activeFilters.has('rating-35-plus') ? 'fill-[#2B9C64]' : ''}`} />
                         </div>
-                        <span className={`text-sm font-bold ${activeFilters.has('rating-35-plus') ? 'text-[#1FCAD3]' : 'text-gray-700'}`}>Rated 3.5+</span>
+                        <span className={`text-sm font-bold ${activeFilters.has('rating-35-plus') ? 'text-[#2B9C64]' : 'text-gray-700'}`}>Rated 3.5+</span>
                       </button>
                       <button
                         onClick={() => toggleFilter('rating-4-plus')}
                         className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${activeFilters.has('rating-4-plus')
-                          ? 'border-[#1FCAD3] bg-[#1FCAD3]/5'
-                          : 'border-gray-200 hover:border-[#1FCAD3]'
+                          ? 'border-[#2B9C64] bg-[#2B9C64]/5'
+                          : 'border-gray-200 hover:border-[#2B9C64]'
                           }`}
                       >
-                        <div className={`p-2 rounded-full ${activeFilters.has('rating-4-plus') ? 'bg-[#1FCAD3]/10 text-[#1FCAD3]' : 'bg-gray-100 text-gray-500'}`}>
-                          <Star className={`h-5 w-5 ${activeFilters.has('rating-4-plus') ? 'fill-[#1FCAD3]' : ''}`} />
+                        <div className={`p-2 rounded-full ${activeFilters.has('rating-4-plus') ? 'bg-[#2B9C64]/10 text-[#2B9C64]' : 'bg-gray-100 text-gray-500'}`}>
+                          <Star className={`h-5 w-5 ${activeFilters.has('rating-4-plus') ? 'fill-[#2B9C64]' : ''}`} />
                         </div>
-                        <span className={`text-sm font-bold ${activeFilters.has('rating-4-plus') ? 'text-[#1FCAD3]' : 'text-gray-700'}`}>Rated 4.0+</span>
+                        <span className={`text-sm font-bold ${activeFilters.has('rating-4-plus') ? 'text-[#2B9C64]' : 'text-gray-700'}`}>Rated 4.0+</span>
                       </button>
                       <button
                         onClick={() => toggleFilter('rating-45-plus')}
                         className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${activeFilters.has('rating-45-plus')
-                          ? 'border-[#1FCAD3] bg-[#1FCAD3]/5'
-                          : 'border-gray-200 hover:border-[#1FCAD3]'
+                          ? 'border-[#2B9C64] bg-[#2B9C64]/5'
+                          : 'border-gray-200 hover:border-[#2B9C64]'
                           }`}
                       >
-                        <div className={`p-2 rounded-full ${activeFilters.has('rating-45-plus') ? 'bg-[#1FCAD3]/10 text-[#1FCAD3]' : 'bg-gray-100 text-gray-500'}`}>
-                          <Star className={`h-5 w-5 ${activeFilters.has('rating-45-plus') ? 'fill-[#1FCAD3]' : ''}`} />
+                        <div className={`p-2 rounded-full ${activeFilters.has('rating-45-plus') ? 'bg-[#2B9C64]/10 text-[#2B9C64]' : 'bg-gray-100 text-gray-500'}`}>
+                          <Star className={`h-5 w-5 ${activeFilters.has('rating-45-plus') ? 'fill-[#2B9C64]' : ''}`} />
                         </div>
-                        <span className={`text-sm font-bold ${activeFilters.has('rating-45-plus') ? 'text-[#1FCAD3]' : 'text-gray-700'}`}>Rated 4.5+</span>
+                        <span className={`text-sm font-bold ${activeFilters.has('rating-45-plus') ? 'text-[#2B9C64]' : 'text-gray-700'}`}>Rated 4.5+</span>
                       </button>
                     </div>
                   </div>
@@ -541,26 +549,26 @@ export default function DiningCategory() {
                       <button
                         onClick={() => toggleFilter('distance-under-1km')}
                         className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${activeFilters.has('distance-under-1km')
-                          ? 'border-[#1FCAD3] bg-[#1FCAD3]/5'
-                          : 'border-gray-200 hover:border-[#1FCAD3]'
+                          ? 'border-[#2B9C64] bg-[#2B9C64]/5'
+                          : 'border-gray-200 hover:border-[#2B9C64]'
                           }`}
                       >
-                        <div className={`p-2 rounded-full ${activeFilters.has('distance-under-1km') ? 'bg-[#1FCAD3]/10 text-[#1FCAD3]' : 'bg-gray-100 text-gray-500'}`}>
+                        <div className={`p-2 rounded-full ${activeFilters.has('distance-under-1km') ? 'bg-[#2B9C64]/10 text-[#2B9C64]' : 'bg-gray-100 text-gray-500'}`}>
                           <MapPin className="h-5 w-5" strokeWidth={2} />
                         </div>
-                        <span className={`text-sm font-bold ${activeFilters.has('distance-under-1km') ? 'text-[#1FCAD3]' : 'text-gray-700'}`}>Under 1 km</span>
+                        <span className={`text-sm font-bold ${activeFilters.has('distance-under-1km') ? 'text-[#2B9C64]' : 'text-gray-700'}`}>Under 1 km</span>
                       </button>
                       <button
                         onClick={() => toggleFilter('distance-under-2km')}
                         className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${activeFilters.has('distance-under-2km')
-                          ? 'border-[#1FCAD3] bg-[#1FCAD3]/5'
-                          : 'border-gray-200 hover:border-[#1FCAD3]'
+                          ? 'border-[#2B9C64] bg-[#2B9C64]/5'
+                          : 'border-gray-200 hover:border-[#2B9C64]'
                           }`}
                       >
-                        <div className={`p-2 rounded-full ${activeFilters.has('distance-under-2km') ? 'bg-[#1FCAD3]/10 text-[#1FCAD3]' : 'bg-gray-100 text-gray-500'}`}>
+                        <div className={`p-2 rounded-full ${activeFilters.has('distance-under-2km') ? 'bg-[#2B9C64]/10 text-[#2B9C64]' : 'bg-gray-100 text-gray-500'}`}>
                           <MapPin className="h-5 w-5" strokeWidth={2} />
                         </div>
-                        <span className={`text-sm font-bold ${activeFilters.has('distance-under-2km') ? 'text-[#1FCAD3]' : 'text-gray-700'}`}>Under 2 km</span>
+                        <span className={`text-sm font-bold ${activeFilters.has('distance-under-2km') ? 'text-[#2B9C64]' : 'text-gray-700'}`}>Under 2 km</span>
                       </button>
                     </div>
                   </div>
@@ -603,8 +611,8 @@ export default function DiningCategory() {
                           key={cuisine}
                           onClick={() => setSelectedCuisine(selectedCuisine === cuisine ? null : cuisine)}
                           className={`px-3 py-3 rounded-xl border text-center transition-all ${selectedCuisine === cuisine
-                            ? 'border-[#1FCAD3] bg-[#1FCAD3]/5 shadow-sm'
-                            : 'border-gray-200 hover:border-[#1FCAD3] hover:bg-gray-50'
+                            ? 'border-[#2B9C64] bg-[#2B9C64]/5 shadow-sm'
+                            : 'border-gray-200 hover:border-[#2B9C64] hover:bg-gray-50'
                             }`}
                         >
                           <span className={`text-sm font-bold ${selectedCuisine === cuisine ? 'text-[#2B9C64]' : 'text-gray-700'}`}>

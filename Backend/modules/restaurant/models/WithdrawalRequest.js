@@ -58,7 +58,9 @@ const withdrawalRequestSchema = new mongoose.Schema({
 });
 
 // Indexes
+withdrawalRequestSchema.index({ restaurantId: 1, status: 1 });
 withdrawalRequestSchema.index({ status: 1, createdAt: -1 });
 withdrawalRequestSchema.index({ createdAt: -1 });
 
 export default mongoose.model('WithdrawalRequest', withdrawalRequestSchema);
+

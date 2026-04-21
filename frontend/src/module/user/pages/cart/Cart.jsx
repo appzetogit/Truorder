@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useMemo } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { Plus, Minus, ArrowLeft, ChevronRight, Clock, MapPin, Phone, FileText, Utensils, Tag, Percent, Share2, ChevronUp, ChevronDown, X, Check, Settings, CreditCard, Wallet, Building2, Sparkles } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
-import confetti from "canvas-confetti"
 
 import AnimatedPage from "../../components/AnimatedPage"
 import { Button } from "@/components/ui/button"
@@ -12,11 +11,13 @@ import { useLocationSelector } from "../../components/UserLayout"
 import { useOrders } from "../../context/OrdersContext"
 import { useLocation as useUserLocation } from "../../hooks/useLocation"
 import { useZone } from "../../hooks/useZone"
-import { orderAPI, restaurantAPI, adminAPI, userAPI, API_ENDPOINTS } from "@/lib/api"
+import { orderAPI, restaurantAPI, adminAPI, userAPI, cartAPI, API_ENDPOINTS } from "@/lib/api"
 import { API_BASE_URL } from "@/lib/api/config"
 import { initRazorpayPayment } from "@/lib/utils/razorpay"
+import { isModuleAuthenticated } from "@/lib/utils/auth"
 import { toast } from "sonner"
 import { getCompanyNameAsync } from "@/lib/utils/businessSettings"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
 
 
 // Removed hardcoded suggested items - now fetching approved addons from backend
@@ -83,12 +84,22 @@ export default function Cart() {
     );
   }
 
-  const { cart, updateQuantity, addToCart, getCartCount, clearCart, cleanCartForRestaurant } = cartContext;
+  const {
+    cart,
+    updateQuantity,
+    addToCart,
+    getCartCount,
+    clearCart,
+    cleanCartForRestaurant,
+    isCartReady,
+    isCartSyncing,
+    isCartMerging,
+  } = cartContext;
   const { getDefaultAddress, getDefaultPaymentMethod, addresses, paymentMethods, userProfile } = useProfile()
   const { createOrder } = useOrders()
   const { openLocationSelector } = useLocationSelector()
   const { location: currentLocation } = useUserLocation() // Get live location address
-  const { zoneId } = useZone(currentLocation) // Get user's zone
+  const { zoneId } = useZone() // Get user's zone
 
   const [showCoupons, setShowCoupons] = useState(false)
   const [appliedCoupon, setAppliedCoupon] = useState(null)
@@ -105,11 +116,10 @@ export default function Cart() {
   const billDetailsRef = useRef(null)
   const [showPlacingOrder, setShowPlacingOrder] = useState(false)
   const [orderProgress, setOrderProgress] = useState(0)
-  const [showOrderSuccess, setShowOrderSuccess] = useState(false)
-  const [placedOrderId, setPlacedOrderId] = useState(null)
   const [isEditingContact, setIsEditingContact] = useState(false)
   const [contactName, setContactName] = useState(userProfile?.name || "")
   const [contactPhoneInput, setContactPhoneInput] = useState(userProfile?.phone || "")
+  const [contactErrors, setContactErrors] = useState({ name: "", phone: "" })
 
   // Restaurant and pricing state
   const [restaurantData, setRestaurantData] = useState(null)
@@ -179,7 +189,45 @@ export default function Cart() {
   useEffect(() => {
     setContactName(userProfile?.name || "")
     setContactPhoneInput(userProfile?.phone || "")
+    setContactErrors({ name: "", phone: "" })
   }, [userProfile?.name, userProfile?.phone])
+
+  const validateContactDetails = (nameValue, phoneValue) => {
+    const errors = { name: "", phone: "" }
+    const nameTrimmed = String(nameValue || "").trim()
+    const digits = String(phoneValue || "").replace(/\D/g, "")
+
+    if (!nameTrimmed) {
+      errors.name = "Please enter contact name."
+    } else if (!/^[A-Za-z][A-Za-z\s.'-]{1,49}$/.test(nameTrimmed)) {
+      errors.name = "Name should be alphabetic (2-50 chars)."
+    }
+
+    if (!digits) {
+      errors.phone = "Please enter phone number."
+    } else if (digits.length !== 10) {
+      errors.phone = "Phone number must be exactly 10 digits."
+    } else if (!/^[6-9]/.test(digits)) {
+      errors.phone = "Phone number should start with 6, 7, 8, or 9."
+    }
+
+    return {
+      isValid: !errors.name && !errors.phone,
+      errors,
+      normalizedName: nameTrimmed,
+      normalizedPhone: digits,
+    }
+  }
+
+  const formatContactName = (value) => {
+    const lettersOnly = String(value || "").replace(/[^A-Za-z\s]/g, "")
+    return lettersOnly
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(" ")
+      .slice(0, 50)
+  }
 
   // Sync selected address type from saved default address (for initial render / refresh)
   useEffect(() => {
@@ -192,7 +240,7 @@ export default function Cart() {
 
   // Lock body scroll and scroll to top when any full-screen modal opens
   useEffect(() => {
-    if (showPlacingOrder || showOrderSuccess) {
+    if (showPlacingOrder) {
       // Lock body scroll
       document.body.style.overflow = 'hidden'
       document.body.style.position = 'fixed'
@@ -220,7 +268,7 @@ export default function Cart() {
       document.body.style.width = ''
       document.body.style.top = ''
     }
-  }, [showPlacingOrder, showOrderSuccess])
+  }, [showPlacingOrder])
 
   // Scroll to bill details when shown
   useEffect(() => {
@@ -230,6 +278,32 @@ export default function Cart() {
       }, 100);
     }
   }, [showBillDetails]);
+
+  const redirectToOrderConfirmation = async (placedOrderId, paymentMethod = "") => {
+    clearCart()
+    setIsPlacingOrder(false)
+
+    try {
+      await cartAPI.replaceCart({
+        items: [],
+        restaurantId: null,
+        restaurantName: null,
+        zoneId: null,
+      })
+    } catch (error) {
+      console.warn("Failed to clear server cart after order placement:", error)
+    }
+
+    if (!placedOrderId) {
+      navigate("/user/orders", { replace: true })
+      return
+    }
+
+    navigate(`/user/orders/${placedOrderId}/confirmation`, {
+      replace: true,
+      state: { paymentMethod },
+    })
+  }
 
   // Fetch restaurant data when cart has items
   useEffect(() => {
@@ -314,7 +388,11 @@ export default function Cart() {
       if (cart[0]?.restaurant && !restaurantData) {
         try {
           console.log("🔍 Searching restaurant by name:", cart[0].restaurant)
-          const searchResponse = await restaurantAPI.getRestaurants({ limit: 100 })
+          const params = { limit: 100 }
+          if (zoneId) {
+            params.zoneId = zoneId
+          }
+          const searchResponse = await restaurantAPI.getRestaurants(params)
           const restaurants = searchResponse?.data?.data?.restaurants || searchResponse?.data?.data || []
           console.log("📋 Fetched", restaurants.length, "restaurants for name search")
 
@@ -376,7 +454,7 @@ export default function Cart() {
     }
 
     fetchRestaurantData()
-  }, [cart.length, cart[0]?.restaurantId, cart[0]?.restaurant])
+  }, [cart.length, cart[0]?.restaurantId, cart[0]?.restaurant, zoneId])
 
   // Fetch approved addons for the restaurant
   useEffect(() => {
@@ -579,6 +657,7 @@ export default function Cart() {
           restaurantId: restaurantData?.restaurantId || restaurantData?._id || restaurantId || null,
           deliveryAddress: defaultAddress,
           couponCode: appliedCoupon?.code || couponCode || null,
+          zoneId: zoneId || null,
           deliveryFleet: deliveryFleet || 'standard'
         })
 
@@ -785,6 +864,7 @@ export default function Cart() {
             restaurantId: restaurantData?.restaurantId || restaurantData?._id || restaurantId || null,
             deliveryAddress: defaultAddress,
             couponCode: coupon.code,
+            zoneId: zoneId || null,
             deliveryFleet: deliveryFleet || 'standard'
           })
 
@@ -821,6 +901,7 @@ export default function Cart() {
           restaurantId: restaurantData?.restaurantId || restaurantData?._id || restaurantId || null,
           deliveryAddress: defaultAddress,
           couponCode: null,
+          zoneId: zoneId || null,
           deliveryFleet: deliveryFleet || 'standard'
         })
 
@@ -835,6 +916,11 @@ export default function Cart() {
 
 
   const handlePlaceOrder = async () => {
+    if (!isModuleAuthenticated("user")) {
+      navigate("/user/auth/sign-in", { state: { from: "/user/cart" } })
+      return
+    }
+
     if (!defaultAddress) {
       alert("Please add a delivery address")
       return
@@ -888,6 +974,18 @@ export default function Cart() {
             variationName: item.selectedVariation.variationName,
             price: item.selectedVariation.price,
           },
+        }),
+        ...(item.selectedAddons?.length > 0 && {
+          selectedAddons: item.selectedAddons,
+        }),
+        ...(item.customizations && {
+          customizations: item.customizations,
+        }),
+        ...(item.specialInstructions && {
+          specialInstructions: item.specialInstructions,
+        }),
+        ...(item.pricingSnapshot && {
+          pricingSnapshot: item.pricingSnapshot,
         }),
       }))
 
@@ -1095,20 +1193,15 @@ export default function Cart() {
       // Cash flow: order placed without online payment
       if (selectedPaymentMethod === "cash") {
         toast.success("Order placed with Cash on Delivery")
-        setPlacedOrderId(order?.orderId || order?.id || null)
-        setShowOrderSuccess(true)
-        clearCart()
-        setIsPlacingOrder(false)
+        const placedOrderId = order?.orderId || order?.id || order?._id
+        await redirectToOrderConfirmation(placedOrderId, selectedPaymentMethod)
         return
       }
 
       // Wallet flow: order placed with wallet payment (already processed in backend)
       if (selectedPaymentMethod === "wallet") {
         toast.success("Order placed with Wallet payment")
-        setPlacedOrderId(order?.orderId || order?.id || null)
-        setShowOrderSuccess(true)
-        clearCart()
-        setIsPlacingOrder(false)
+        const placedOrderId = order?.orderId || order?.id || order?._id
         // Refresh wallet balance
         try {
           const walletResponse = await userAPI.getWallet()
@@ -1118,6 +1211,7 @@ export default function Cart() {
         } catch (error) {
           console.error("Error refreshing wallet balance:", error)
         }
+        await redirectToOrderConfirmation(placedOrderId, selectedPaymentMethod)
         return
       }
 
@@ -1150,6 +1244,20 @@ export default function Cart() {
 
       // Get company name for Razorpay
       const companyName = await getCompanyNameAsync()
+      let paymentFinalized = false
+
+      const markPaymentFailed = async (reason) => {
+        if (paymentFinalized) return
+        paymentFinalized = true
+        try {
+          await orderAPI.markPaymentFailed({
+            orderId: order.id,
+            reason,
+          })
+        } catch (failureUpdateError) {
+          console.error("Failed to mark payment as failed:", failureUpdateError)
+        }
+      }
 
       // Initialize Razorpay payment
       await initRazorpayPayment({
@@ -1170,6 +1278,7 @@ export default function Cart() {
           restaurantId: restaurantId || "unknown"
         },
         handler: async (response) => {
+          paymentFinalized = true
           try {
             console.log("✅ Payment successful, verifying...", {
               razorpay_order_id: response.razorpay_order_id,
@@ -1192,10 +1301,8 @@ export default function Cart() {
                 orderId: order.orderId,
                 paymentId: verifyResponse.data.data?.payment?.paymentId
               })
-              setPlacedOrderId(order.orderId)
-              setShowOrderSuccess(true)
-              clearCart()
-              setIsPlacingOrder(false)
+              const placedOrderId = order?.orderId || order?.id || order?._id
+              await redirectToOrderConfirmation(placedOrderId, selectedPaymentMethod)
             } else {
               throw new Error(verifyResponse.data.message || "Payment verification failed")
             }
@@ -1206,8 +1313,9 @@ export default function Cart() {
             setIsPlacingOrder(false)
           }
         },
-        onError: (error) => {
+        onError: async (error) => {
           console.error("❌ Razorpay payment error:", error)
+          await markPaymentFailed(error?.description || error?.message || "Razorpay payment failed")
           // Don't show alert for user cancellation
           if (error?.code !== 'PAYMENT_CANCELLED' && error?.message !== 'PAYMENT_CANCELLED') {
             const errorMessage = error?.description || error?.message || "Payment failed. Please try again."
@@ -1215,8 +1323,9 @@ export default function Cart() {
           }
           setIsPlacingOrder(false)
         },
-        onClose: () => {
+        onClose: async () => {
           console.log("⚠️ Payment modal closed by user")
+          await markPaymentFailed("Payment modal closed before payment completion")
           setIsPlacingOrder(false)
         }
       })
@@ -1287,16 +1396,23 @@ export default function Cart() {
     }
   }
 
-  const handleGoToOrders = () => {
-    setShowOrderSuccess(false)
-    navigate(`/user/orders/${placedOrderId}?confirmed=true`)
+  if (!isCartReady && !showPlacingOrder) {
+    return (
+      <AnimatedPage className="min-h-screen bg-gray-50 dark:bg-[#0a0a0a] max-md:pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
+        <div className="flex min-h-screen items-center justify-center px-4">
+          <p className="text-sm font-medium text-gray-600 dark:text-gray-300">
+            Loading your cart...
+          </p>
+        </div>
+      </AnimatedPage>
+    )
   }
 
   // Empty cart state - but don't show if order success or placing order modal is active
-  if (cart.length === 0 && !showOrderSuccess && !showPlacingOrder) {
+  if (cart.length === 0 && !showPlacingOrder) {
     return (
-      <AnimatedPage className="min-h-screen bg-gray-50 dark:bg-[#0a0a0a]">
-        <div className="bg-white dark:bg-[#1a1a1a] border-b dark:border-gray-800 sticky top-0 z-10">
+      <AnimatedPage className="min-h-screen bg-gray-50 dark:bg-[#0a0a0a] max-md:pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
+        <div className="bg-white dark:bg-[#1a1a1a] border-b dark:border-gray-800 sticky top-0 z-10 pt-[calc(env(safe-area-inset-top,0px))]">
           <div className="flex items-center gap-3 px-4 py-3">
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => navigate(-1)}>
               <ArrowLeft className="h-4 w-4" />
@@ -1304,7 +1420,7 @@ export default function Cart() {
             <span className="font-semibold text-gray-800 dark:text-white">Cart</span>
           </div>
         </div>
-        <div className="flex flex-col items-center justify-center py-20 px-4">
+        <div className="flex flex-col items-center justify-center pt-2 pb-20 px-4">
           <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-4">
             <Utensils className="h-10 w-10 text-gray-400" />
           </div>
@@ -1321,7 +1437,7 @@ export default function Cart() {
   return (
     <div className="relative min-h-screen bg-white dark:bg-[#0a0a0a]">
       {/* Header - Sticky at top */}
-      <div className="bg-white dark:bg-[#1a1a1a] border-b dark:border-gray-800 sticky top-0 z-20 flex-shrink-0">
+      <div className="bg-white dark:bg-[#1a1a1a] border-b dark:border-gray-800 sticky top-0 z-20 flex-shrink-0 pt-[calc(0.75rem+env(safe-area-inset-top,0px))]">
         <div className="max-w-7xl mx-auto">
           <div className="flex items-center justify-between px-3 md:px-6 py-2 md:py-3">
             <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -1346,15 +1462,9 @@ export default function Cart() {
                   const companyName = await getCompanyNameAsync()
                   const text = `${restaurantName} on ${companyName} – ${cart.length} item(s). Order from the app.`
                   const url = window.location.href
-                  if (navigator.share) {
-                    await navigator.share({ title: restaurantName, text, url })
-                    toast.success("Shared")
-                  } else {
-                    await navigator.clipboard?.writeText(`${text}\n${url}`)
-                    toast.success("Link copied to clipboard")
-                  }
+                  await shareWithFallback({ title: restaurantName, text, url })
                 } catch (e) {
-                  if (e?.name !== "AbortError") toast.error("Share failed")
+                  // Share fallback handles browser/app behavior silently.
                 }
               }}
             >
@@ -1365,7 +1475,7 @@ export default function Cart() {
       </div>
 
       {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden pb-24 md:pb-32">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden pb-[calc(6rem+env(safe-area-inset-bottom,0px))] md:pb-[calc(8rem+env(safe-area-inset-bottom,0px))]">
         {/* Savings Banner */}
         {savings > 0 && (
           <div className="bg-blue-100 dark:bg-blue-900/20 px-4 md:px-6 py-2 md:py-3 flex-shrink-0">
@@ -1804,23 +1914,18 @@ export default function Cart() {
                     className="flex flex-col gap-3 md:gap-4"
                     onSubmit={async (e) => {
                       e.preventDefault()
-                      const nameTrimmed = (contactName || "").trim()
-                      const trimmed = (contactPhoneInput || "").replace(/\D/g, "")
-                      if (!nameTrimmed) {
-                        toast.error("Please enter a contact name.")
+                      const validation = validateContactDetails(contactName, contactPhoneInput)
+                      setContactErrors(validation.errors)
+                      if (!validation.isValid) {
+                        toast.error(validation.errors.name || validation.errors.phone || "Please enter valid contact details.")
                         return
                       }
-                      if (!trimmed || trimmed.length < 6) {
-                        toast.error("Please enter a valid phone number.")
-                        return
-                      }
-                      const maxLen = 10
-                      const normalized = trimmed.slice(0, maxLen)
 
                       // Locally update contact info just for this order view
-                      setContactName(nameTrimmed)
-                      setContactPhoneInput(normalized)
+                      setContactName(validation.normalizedName)
+                      setContactPhoneInput(validation.normalizedPhone)
                       setIsEditingContact(false)
+                      setContactErrors({ name: "", phone: "" })
                       toast.success("Contact details updated for this order.")
                     }}
                   >
@@ -1833,21 +1938,38 @@ export default function Cart() {
                         <input
                           type="text"
                           value={contactName}
-                          onChange={(e) => setContactName(e.target.value)}
-                          className="mb-2 w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#0f0f0f] px-3 py-2 text-sm md:text-base text-gray-900 dark:text-gray-100 focus:border-green-600 focus:outline-none focus:ring-1 focus:ring-green-600"
+                          onChange={(e) => {
+                            const formatted = formatContactName(e.target.value)
+                            setContactName(formatted)
+                            if (contactErrors.name) {
+                              setContactErrors((prev) => ({ ...prev, name: "" }))
+                            }
+                          }}
+                          className={`mb-2 w-full rounded-md border ${
+                            contactErrors.name ? "border-red-400 focus:border-red-500 focus:ring-red-500" : "border-gray-300 dark:border-gray-600 focus:border-green-600 focus:ring-green-600"
+                          } bg-white dark:bg-[#0f0f0f] px-3 py-2 text-sm md:text-base text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1`}
                           placeholder="Contact name"
                         />
+                        {contactErrors.name && (
+                          <p className="mb-2 text-xs text-red-600">{contactErrors.name}</p>
+                        )}
                         <input
                           type="tel"
                           value={contactPhoneInput}
-                          onChange={(e) =>
-                            setContactPhoneInput(
-                              e.target.value.replace(/\D/g, "").slice(0, 10),
-                            )
-                          }
-                          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#0f0f0f] px-3 py-2 text-sm md:text-base text-gray-900 dark:text-gray-100 focus:border-green-600 focus:outline-none focus:ring-1 focus:ring-green-600"
-                          placeholder="+91XXXXXXXXXX"
+                          onChange={(e) => {
+                            setContactPhoneInput(e.target.value.replace(/\D/g, "").slice(0, 10))
+                            if (contactErrors.phone) {
+                              setContactErrors((prev) => ({ ...prev, phone: "" }))
+                            }
+                          }}
+                          className={`w-full rounded-md border ${
+                            contactErrors.phone ? "border-red-400 focus:border-red-500 focus:ring-red-500" : "border-gray-300 dark:border-gray-600 focus:border-green-600 focus:ring-green-600"
+                          } bg-white dark:bg-[#0f0f0f] px-3 py-2 text-sm md:text-base text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1`}
+                          placeholder="10-digit mobile number"
                         />
+                        {contactErrors.phone && (
+                          <p className="mt-2 text-xs text-red-600">{contactErrors.phone}</p>
+                        )}
                       </div>
                     </div>
                     <div className="flex justify-end gap-2">
@@ -1857,6 +1979,7 @@ export default function Cart() {
                           setIsEditingContact(false)
                           setContactName(userProfile?.name || "")
                           setContactPhoneInput(userProfile?.phone || "")
+                          setContactErrors({ name: "", phone: "" })
                         }}
                         className="rounded-md border border-gray-300 px-3 py-1.5 text-xs md:text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
                       >
@@ -1979,7 +2102,7 @@ export default function Cart() {
       <div className="h-4 md:h-6 flex-shrink-0" aria-hidden />
 
       {/* Bottom Sticky - Place Order */}
-      <div className="bg-white dark:bg-[#1a1a1a] border-t dark:border-gray-800 shadow-lg z-30 flex-shrink-0 fixed bottom-0 left-0 right-0">
+      <div className="bg-white dark:bg-[#1a1a1a] border-t dark:border-gray-800 shadow-lg z-30 flex-shrink-0 fixed bottom-0 left-0 right-0 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
         <div className="max-w-7xl mx-auto">
           <div className="px-4 md:px-6 py-3 md:py-4">
             <div className="w-full max-w-md md:max-w-lg mx-auto">
@@ -2030,6 +2153,8 @@ export default function Cart() {
                 <span className="font-bold text-base md:text-lg">
                   {isPlacingOrder
                     ? "Processing..."
+                    : !isModuleAuthenticated("user")
+                      ? "Login to Continue"
                     : selectedPaymentMethod === "razorpay"
                       ? "Select Payment"
                       : selectedPaymentMethod === "wallet"
@@ -2040,6 +2165,11 @@ export default function Cart() {
                 </span>
                 <ChevronRight className="h-5 w-5 md:h-6 md:w-6 ml-2" />
               </Button>
+              {(isCartSyncing || isCartMerging) && (
+                <p className="mt-2 text-xs text-center text-gray-500 dark:text-gray-400">
+                  {isCartMerging ? "Merging your cart..." : "Saving your cart..."}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -2130,116 +2260,6 @@ export default function Cart() {
                 </span>
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Order Success Celebration Page */}
-      {showOrderSuccess && (
-        <div
-          className="fixed inset-0 z-[70] bg-white flex flex-col items-center justify-center h-screen w-screen overflow-hidden"
-          style={{ animation: 'fadeIn 0.3s ease-out' }}
-        >
-          {/* Confetti Background */}
-          <div className="absolute inset-0 overflow-hidden pointer-events-none">
-            {/* Animated confetti pieces */}
-            {[...Array(50)].map((_, i) => (
-              <div
-                key={i}
-                className="absolute w-3 h-3 rounded-sm"
-                style={{
-                  left: `${Math.random() * 100}%`,
-                  top: `-10%`,
-                  backgroundColor: ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'][Math.floor(Math.random() * 6)],
-                  animation: `confettiFall ${2 + Math.random() * 2}s linear ${Math.random() * 2}s infinite`,
-                  transform: `rotate(${Math.random() * 360}deg)`,
-                }}
-              />
-            ))}
-          </div>
-
-          {/* Success Content */}
-          <div className="relative z-10 flex flex-col items-center px-6">
-            {/* Success Tick Circle */}
-            <div
-              className="relative mb-8"
-              style={{ animation: 'scaleIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both' }}
-            >
-              {/* Outer ring animation */}
-              <div
-                className="absolute inset-0 w-32 h-32 rounded-full border-4 border-green-500"
-                style={{
-                  animation: 'ringPulse 1.5s ease-out infinite',
-                  opacity: 0.3
-                }}
-              />
-              {/* Main circle */}
-              <div className="w-32 h-32 bg-gradient-to-br from-green-500 to-green-600 rounded-full flex items-center justify-center shadow-2xl">
-                <svg
-                  className="w-16 h-16 text-white"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="3"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ animation: 'checkDraw 0.5s ease-out 0.5s both' }}
-                >
-                  <path d="M5 12l5 5L19 7" className="check-path" />
-                </svg>
-              </div>
-              {/* Sparkles */}
-              {[...Array(6)].map((_, i) => (
-                <div
-                  key={i}
-                  className="absolute w-2 h-2 bg-yellow-400 rounded-full"
-                  style={{
-                    top: '50%',
-                    left: '50%',
-                    animation: `sparkle 0.6s ease-out ${0.3 + i * 0.1}s both`,
-                    transform: `rotate(${i * 60}deg) translateY(-80px)`,
-                  }}
-                />
-              ))}
-            </div>
-
-            {/* Location Info */}
-            <div
-              className="text-center"
-              style={{ animation: 'slideUp 0.5s ease-out 0.6s both' }}
-            >
-              <div className="flex items-center justify-center gap-2 mb-2">
-                <div className="w-5 h-5 text-red-500">
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
-                  </svg>
-                </div>
-                <h2 className="text-2xl font-bold text-gray-900">
-                  {defaultAddress?.city || "Your Location"}
-                </h2>
-              </div>
-              <p className="text-gray-500 text-base">
-                {defaultAddress ? (formatFullAddress(defaultAddress) || defaultAddress?.formattedAddress || defaultAddress?.address || "Delivery Address") : "Delivery Address"}
-              </p>
-            </div>
-
-            {/* Order Placed Message */}
-            <div
-              className="mt-12 text-center"
-              style={{ animation: 'slideUp 0.5s ease-out 0.8s both' }}
-            >
-              <h3 className="text-3xl font-bold text-green-600 mb-2">Order Placed!</h3>
-              <p className="text-gray-600">Your delicious food is on its way</p>
-            </div>
-
-            {/* Action Button */}
-            <button
-              onClick={handleGoToOrders}
-              className="mt-10 bg-green-600 hover:bg-green-700 text-white font-semibold py-4 px-12 rounded-xl shadow-lg transition-all hover:shadow-xl hover:scale-105"
-              style={{ animation: 'slideUp 0.5s ease-out 1s both' }}
-            >
-              Track Your Order
-            </button>
           </div>
         </div>
       )}
@@ -2350,84 +2370,8 @@ export default function Cart() {
             transform: translateX(100%);
           }
         }
-        @keyframes fadeIn {
-          from {
-            opacity: 0;
-          }
-          to {
-            opacity: 1;
-          }
-        }
-        @keyframes scaleIn {
-          from {
-            transform: scale(0);
-            opacity: 0;
-          }
-          to {
-            transform: scale(1);
-            opacity: 1;
-          }
-        }
-        @keyframes checkDraw {
-          0% {
-            stroke-dasharray: 100;
-            stroke-dashoffset: 100;
-          }
-          100% {
-            stroke-dasharray: 100;
-            stroke-dashoffset: 0;
-          }
-        }
-        @keyframes ringPulse {
-          0% {
-            transform: scale(1);
-            opacity: 0.3;
-          }
-          50% {
-            transform: scale(1.3);
-            opacity: 0;
-          }
-          100% {
-            transform: scale(1);
-            opacity: 0;
-          }
-        }
-        @keyframes sparkle {
-          0% {
-            transform: rotate(var(--rotation, 0deg)) translateY(0) scale(0);
-            opacity: 1;
-          }
-          100% {
-            transform: rotate(var(--rotation, 0deg)) translateY(-80px) scale(1);
-            opacity: 0;
-          }
-        }
-        @keyframes slideUp {
-          from {
-            transform: translateY(30px);
-            opacity: 0;
-          }
-          to {
-            transform: translateY(0);
-            opacity: 1;
-          }
-        }
-        @keyframes confettiFall {
-          0% {
-            transform: translateY(-10vh) rotate(0deg);
-            opacity: 1;
-          }
-          100% {
-            transform: translateY(110vh) rotate(720deg);
-            opacity: 0;
-          }
-        }
         .animate-slideUpFull {
           animation: slideUpFull 0.3s ease-out;
-        }
-        .check-path {
-          stroke-dasharray: 100;
-          stroke-dashoffset: 0;
         }
       `}</style>
     </div>

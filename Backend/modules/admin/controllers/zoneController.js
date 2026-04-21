@@ -19,6 +19,11 @@ export const getZones = asyncHandler(async (req, res) => {
 
     // Build query
     const query = {};
+    const assignedZoneIds = req.zoneFilter?.zoneIds || [];
+
+    if (assignedZoneIds.length > 0) {
+      query._id = { $in: assignedZoneIds };
+    }
 
     if (search) {
       query.$or = [
@@ -324,6 +329,34 @@ export const getZonesByRestaurant = asyncHandler(async (req, res) => {
   } catch (error) {
     console.error('Error fetching zones by restaurant:', error);
     return errorResponse(res, 500, 'Failed to fetch zones');
+  }
+});
+
+/**
+ * Get all active zones (PUBLIC API)
+ * GET /api/zones/active
+ */
+export const getActiveZonesPublic = asyncHandler(async (req, res) => {
+  try {
+    const zones = await Zone.find({ isActive: true })
+      .select("_id name zoneName country unit coordinates serviceLocation")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return successResponse(res, 200, "Active zones retrieved successfully", {
+      zones: zones.map((zone) => ({
+        _id: zone._id.toString(),
+        name: zone.name || zone.zoneName || "Zone",
+        zoneName: zone.zoneName || zone.name || "Zone",
+        country: zone.country || "",
+        unit: zone.unit || "kilometer",
+        serviceLocation: zone.serviceLocation || "",
+        coordinates: Array.isArray(zone.coordinates) ? zone.coordinates : [],
+      })),
+    });
+  } catch (error) {
+    console.error("Error fetching active zones:", error);
+    return errorResponse(res, 500, "Failed to fetch active zones");
   }
 });
 

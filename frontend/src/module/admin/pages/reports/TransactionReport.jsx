@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect } from "react"
-import { BarChart3, ChevronDown, Info, Settings, FileText, FileSpreadsheet, Code, Loader2 } from "lucide-react"
+import { useState, useMemo, useEffect, useCallback } from "react"
+import { BarChart3, ChevronDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Info, Settings, FileText, FileSpreadsheet, Code, Loader2 } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { exportTransactionReportToCSV, exportTransactionReportToExcel, exportTransactionReportToPDF, exportTransactionReportToJSON } from "../../components/reports/reportsExportUtils"
@@ -18,7 +18,13 @@ import searchIcon from "../../assets/Dashboard-icons/image8.png"
 import exportIcon from "../../assets/Dashboard-icons/image9.png"
 
 export default function TransactionReport() {
+  const defaultFilters = {
+    zone: "All Zones",
+    restaurant: "All restaurants",
+    time: "All Time",
+  }
   const [searchQuery, setSearchQuery] = useState("")
+  const [searchInput, setSearchInput] = useState("")
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(true)
   const [summary, setSummary] = useState({
@@ -28,14 +34,18 @@ export default function TransactionReport() {
     restaurantEarning: 0,
     deliverymanEarning: 0
   })
-  const [filters, setFilters] = useState({
-    zone: "All Zones",
-    restaurant: "All restaurants",
-    time: "All Time",
-  })
+  const [filters, setFilters] = useState(defaultFilters)
+  const [pendingFilters, setPendingFilters] = useState(defaultFilters)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [tableSettings, setTableSettings] = useState({
+    wrapText: false,
+  })
   const [zones, setZones] = useState([])
   const [restaurants, setRestaurants] = useState([])
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [perPage, setPerPage] = useState(25)
 
   // Fetch zones and restaurants for filters
   useEffect(() => {
@@ -59,37 +69,47 @@ export default function TransactionReport() {
     fetchFilterData()
   }, [])
 
+  // Build date range params from time filter
+  const getDateRange = useCallback(() => {
+    let fromDate = null
+    let toDate = null
+    const now = new Date()
+    
+    if (filters.time === "Today") {
+      fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59)
+    } else if (filters.time === "This Week") {
+      const dayOfWeek = now.getDay()
+      const diff = now.getDate() - dayOfWeek
+      fromDate = new Date(now.getFullYear(), now.getMonth(), diff)
+      toDate = new Date(now.getFullYear(), now.getMonth(), diff + 6, 23, 59, 59)
+    } else if (filters.time === "This Month") {
+      fromDate = new Date(now.getFullYear(), now.getMonth(), 1)
+      toDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59)
+    }
+    return { fromDate, toDate }
+  }, [filters.time])
+
+  // Reset to page 1 when applied filters or search change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchQuery, filters])
+
   // Fetch transaction report data
   useEffect(() => {
     const fetchTransactionReport = async () => {
       try {
         setLoading(true)
-        
-        // Build date range based on time filter
-        let fromDate = null
-        let toDate = null
-        const now = new Date()
-        
-        if (filters.time === "Today") {
-          fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-          toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59)
-        } else if (filters.time === "This Week") {
-          const dayOfWeek = now.getDay()
-          const diff = now.getDate() - dayOfWeek
-          fromDate = new Date(now.getFullYear(), now.getMonth(), diff)
-          toDate = new Date(now.getFullYear(), now.getMonth(), diff + 6, 23, 59, 59)
-        } else if (filters.time === "This Month") {
-          fromDate = new Date(now.getFullYear(), now.getMonth(), 1)
-          toDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59)
-        }
+        const { fromDate, toDate } = getDateRange()
 
         const params = {
+          page: currentPage,
+          limit: perPage,
           search: searchQuery || undefined,
           zone: filters.zone !== "All Zones" ? filters.zone : undefined,
           restaurant: filters.restaurant !== "All restaurants" ? filters.restaurant : undefined,
           fromDate: fromDate ? fromDate.toISOString() : undefined,
           toDate: toDate ? toDate.toISOString() : undefined,
-          limit: 1000
         }
 
         const response = await adminAPI.getTransactionReport(params)
@@ -103,6 +123,10 @@ export default function TransactionReport() {
             restaurantEarning: 0,
             deliverymanEarning: 0
           })
+          if (response.data.data.pagination) {
+            setTotalPages(response.data.data.pagination.pages || 1)
+            setTotalItems(response.data.data.pagination.total || 0)
+          }
         } else {
           setTransactions([])
           if (response?.data?.message) {
@@ -110,7 +134,6 @@ export default function TransactionReport() {
           }
         }
       } catch (error) {
-        console.error("Error fetching transaction report:", error)
         toast.error("Failed to fetch transaction report")
         setTransactions([])
       } finally {
@@ -119,7 +142,7 @@ export default function TransactionReport() {
     }
 
     fetchTransactionReport()
-  }, [searchQuery, filters])
+  }, [currentPage, perPage, searchQuery, filters, getDateRange])
 
   const filteredTransactions = useMemo(() => {
     return transactions // Backend already filters, so just return transactions
@@ -139,18 +162,19 @@ export default function TransactionReport() {
   }
 
   const handleFilterApply = () => {
-    // Filters are already applied via useMemo
+    setFilters(pendingFilters)
+    setSearchQuery(searchInput.trim())
+    setCurrentPage(1)
   }
 
   const handleResetFilters = () => {
-    setFilters({
-      zone: "All Zones",
-      restaurant: "All restaurants",
-      time: "All Time",
-    })
+    setFilters(defaultFilters)
+    setPendingFilters(defaultFilters)
+    setSearchInput("")
+    setSearchQuery("")
   }
 
-  const activeFiltersCount = (filters.zone !== "All Zones" ? 1 : 0) + (filters.restaurant !== "All restaurants" ? 1 : 0) + (filters.time !== "All Time" ? 1 : 0)
+  const activeFiltersCount = (pendingFilters.zone !== "All Zones" ? 1 : 0) + (pendingFilters.restaurant !== "All restaurants" ? 1 : 0) + (pendingFilters.time !== "All Time" ? 1 : 0)
 
   const formatCurrency = (amount) => {
     const value = Number(amount || 0)
@@ -197,8 +221,8 @@ export default function TransactionReport() {
           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
             <div className="relative flex-1 min-w-0">
               <select
-                value={filters.zone}
-                onChange={(e) => setFilters(prev => ({ ...prev, zone: e.target.value }))}
+                value={pendingFilters.zone}
+                onChange={(e) => setPendingFilters(prev => ({ ...prev, zone: e.target.value }))}
                 className="w-full px-2.5 py-1.5 pr-5 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs appearance-none cursor-pointer"
               >
                 <option value="All Zones">All Zones</option>
@@ -211,8 +235,8 @@ export default function TransactionReport() {
 
             <div className="relative flex-1 min-w-0">
               <select
-                value={filters.restaurant}
-                onChange={(e) => setFilters(prev => ({ ...prev, restaurant: e.target.value }))}
+                value={pendingFilters.restaurant}
+                onChange={(e) => setPendingFilters(prev => ({ ...prev, restaurant: e.target.value }))}
                 className="w-full px-2.5 py-1.5 pr-5 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs appearance-none cursor-pointer"
               >
                 <option value="All restaurants">All restaurants</option>
@@ -225,8 +249,8 @@ export default function TransactionReport() {
 
             <div className="relative flex-1 min-w-0">
               <select
-                value={filters.time}
-                onChange={(e) => setFilters(prev => ({ ...prev, time: e.target.value }))}
+                value={pendingFilters.time}
+                onChange={(e) => setPendingFilters(prev => ({ ...prev, time: e.target.value }))}
                 className="w-full px-2.5 py-1.5 pr-5 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs appearance-none cursor-pointer"
               >
                 <option value="All Time">All Time</option>
@@ -357,15 +381,20 @@ export default function TransactionReport() {
         {/* Order Transactions Section */}
         <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-3">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
-            <h2 className="text-base font-bold text-slate-900">Order Transactions {filteredTransactions.length}</h2>
+            <h2 className="text-base font-bold text-slate-900">Order Transactions <span className="text-slate-500 font-medium text-sm">({totalItems})</span></h2>
 
             <div className="flex items-center gap-2">
               <div className="relative flex-1 sm:flex-initial min-w-[180px]">
                 <input
                   type="text"
                   placeholder="Search by Order ID"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      handleFilterApply()
+                    }
+                  }}
                   className="pl-7 pr-2 py-1.5 w-full text-[11px] rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
                 <img src={searchIcon} alt="Search" className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3" />
@@ -411,7 +440,7 @@ export default function TransactionReport() {
 
           {/* Table */}
           <div className="overflow-x-auto scrollbar-hide">
-            <table className="w-full" style={{ tableLayout: 'fixed', width: '100%' }}>
+            <table className="w-full min-w-[1260px]" style={{ tableLayout: "auto", width: "100%" }}>
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   <th className="px-1.5 py-1 text-left text-[8px] font-bold text-slate-700 uppercase tracking-wider" style={{ width: '3%' }}>SI</th>
@@ -445,13 +474,13 @@ export default function TransactionReport() {
                       className="hover:bg-slate-50 transition-colors"
                     >
                       <td className="px-1.5 py-1">
-                        <span className="text-[10px] font-medium text-slate-700">{index + 1}</span>
+                        <span className="text-[10px] font-medium text-slate-700">{(currentPage - 1) * perPage + index + 1}</span>
                       </td>
                       <td className="px-1.5 py-1">
-                        <span className="text-[10px] text-slate-700">{transaction.orderId}</span>
+                        <span className={`text-[10px] text-slate-700 block ${tableSettings.wrapText ? "whitespace-normal break-all" : "whitespace-nowrap truncate max-w-[120px]"}`}>{transaction.orderId}</span>
                       </td>
                       <td className="px-1.5 py-1">
-                        <span className="text-[10px] text-slate-700 truncate block">{transaction.restaurant}</span>
+                        <span className={`text-[10px] text-slate-700 block ${tableSettings.wrapText ? "whitespace-normal break-words" : "whitespace-nowrap truncate max-w-[170px]"}`}>{transaction.restaurant}</span>
                       </td>
                       <td className="px-1.5 py-1">
                         <span className={`text-[10px] truncate block ${
@@ -497,6 +526,86 @@ export default function TransactionReport() {
               </tbody>
             </table>
           </div>
+
+          {/* Pagination */}
+          {totalPages > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4 pt-3 border-t border-slate-200">
+              <div className="flex items-center gap-2 text-xs text-slate-600">
+                <span>Rows per page:</span>
+                <select
+                  value={perPage}
+                  onChange={(e) => {
+                    setPerPage(Number(e.target.value))
+                    setCurrentPage(1)
+                  }}
+                  className="px-2 py-1 border border-slate-300 rounded-md bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  {[10, 25, 50, 100].map(size => (
+                    <option key={size} value={size}>{size}</option>
+                  ))}
+                </select>
+                <span className="ml-2">
+                  Showing {totalItems === 0 ? 0 : (currentPage - 1) * perPage + 1}–{Math.min(currentPage * perPage, totalItems)} of {totalItems}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setCurrentPage(1)}
+                  disabled={currentPage === 1}
+                  className="p-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronsLeft className="w-3.5 h-3.5 text-slate-700" />
+                </button>
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="p-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5 text-slate-700" />
+                </button>
+
+                {(() => {
+                  const pages = []
+                  let start = Math.max(1, currentPage - 2)
+                  let end = Math.min(totalPages, start + 4)
+                  if (end - start < 4) start = Math.max(1, end - 4)
+
+                  for (let i = start; i <= end; i++) {
+                    pages.push(
+                      <button
+                        key={i}
+                        onClick={() => setCurrentPage(i)}
+                        className={`min-w-[28px] h-7 px-1 rounded-md text-xs font-medium transition-colors ${
+                          currentPage === i
+                            ? "bg-blue-600 text-white shadow-sm"
+                            : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        {i}
+                      </button>
+                    )
+                  }
+                  return pages
+                })()}
+
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="p-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-700" />
+                </button>
+                <button
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className="p-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronsRight className="w-3.5 h-3.5 text-slate-700" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -510,9 +619,15 @@ export default function TransactionReport() {
             </DialogTitle>
           </DialogHeader>
           <div className="px-6 pb-6">
-            <p className="text-sm text-slate-700">
-              Transaction report settings and preferences will be available here.
-            </p>
+            <label className="flex items-center justify-between gap-3 text-sm text-slate-700">
+              <span>Wrap long Order ID/Restaurant text</span>
+              <input
+                type="checkbox"
+                checked={tableSettings.wrapText}
+                onChange={(e) => setTableSettings((prev) => ({ ...prev, wrapText: e.target.checked }))}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+            </label>
           </div>
           <div className="px-6 pb-6 flex items-center justify-end">
             <button

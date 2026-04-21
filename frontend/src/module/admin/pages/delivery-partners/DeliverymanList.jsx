@@ -1,12 +1,14 @@
 import { useState, useMemo, useEffect } from "react"
-import { Link } from "react-router-dom"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import { Search, Download, ChevronDown, Eye, Trash2, User, Star, ArrowUpDown, Settings, FileText, FileSpreadsheet, Loader2, Check, Columns, ExternalLink, Calendar, MapPin, CreditCard, Mail, Phone, Bike, FileCheck, UserPlus } from "lucide-react"
 import { adminAPI } from "@/lib/api"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { exportDeliverymenToExcel, exportDeliverymenToPDF } from "../../components/deliveryman/deliverymanExportUtils"
 
-export default function DeliverymanList({ isHub = false }) {
+export default function DeliverymanList() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const [searchQuery, setSearchQuery] = useState("")
   const [deliverymen, setDeliverymen] = useState([])
   const [loading, setLoading] = useState(true)
@@ -17,6 +19,7 @@ export default function DeliverymanList({ isHub = false }) {
   const [selectedDeliveryman, setSelectedDeliveryman] = useState(null)
   const [viewDetails, setViewDetails] = useState(null)
   const [processing, setProcessing] = useState(false)
+  const [autoOpenHandled, setAutoOpenHandled] = useState(false)
   const [visibleColumns, setVisibleColumns] = useState({
     si: true,
     name: true,
@@ -90,6 +93,36 @@ export default function DeliverymanList({ isHub = false }) {
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery])
+
+  useEffect(() => {
+    const openDeliveryId = location?.state?.openDeliveryId
+    if (!openDeliveryId) return
+    setAutoOpenHandled(false)
+    setSearchQuery(String(openDeliveryId))
+  }, [location?.state?.openDeliveryId])
+
+  useEffect(() => {
+    const openDeliveryId = location?.state?.openDeliveryId
+    if (!openDeliveryId || autoOpenHandled || deliverymen.length === 0 || loading) return
+    const targetId = String(openDeliveryId).toLowerCase().trim()
+    const matched = deliverymen.find(
+      (dm) =>
+        String(dm.deliveryId || "").toLowerCase() === targetId ||
+        String(dm._id || "").toLowerCase() === targetId ||
+        String(dm.deliveryIdString || "").toLowerCase() === targetId
+    )
+    if (matched) {
+      handleView(matched)
+      setAutoOpenHandled(true)
+    }
+  }, [autoOpenHandled, deliverymen, loading, location?.state?.openDeliveryId])
+
+  const handleViewDialogOpenChange = (open) => {
+    setIsViewOpen(open)
+    if (!open && location?.state?.openDeliveryId) {
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  }
 
   const filteredDeliverymen = useMemo(() => {
     // Backend already handles search, but we can do client-side filtering if needed
@@ -197,7 +230,7 @@ export default function DeliverymanList({ isHub = false }) {
 
             <div className="flex items-center gap-3 flex-wrap">
               <Link
-                to={isHub ? "/hub/delivery-partners/add" : "/admin/delivery-partners/add"}
+                to="/admin/delivery-partners/add"
                 className="px-4 py-2.5 text-sm font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-md"
               >
                 <UserPlus className="w-4 h-4" />
@@ -403,16 +436,14 @@ export default function DeliverymanList({ isHub = false }) {
                               >
                                 <Eye className="w-4 h-4" />
                               </button>
-                              {!isHub && (
-                                <button
-                                  onClick={() => handleDelete(dm)}
-                                  disabled={processing}
-                                  className="p-1.5 rounded text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                  title="Delete"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              )}
+                              <button
+                                onClick={() => handleDelete(dm)}
+                                disabled={processing}
+                                className="p-1.5 rounded text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="Delete"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </td>
                         )}
@@ -458,7 +489,7 @@ export default function DeliverymanList({ isHub = false }) {
       </Dialog>
 
       {/* View Details Dialog */}
-      <Dialog open={isViewOpen} onOpenChange={setIsViewOpen}>
+      <Dialog open={isViewOpen} onOpenChange={handleViewDialogOpenChange}>
         <DialogContent className="max-w-3xl bg-white p-0 opacity-0 data-[state=open]:opacity-100 data-[state=closed]:opacity-0 transition-opacity duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:scale-100 data-[state=closed]:scale-100 max-h-[85vh] overflow-y-auto">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-slate-200">
             <DialogTitle className="text-xl font-bold text-slate-900">Delivery Partner Details</DialogTitle>

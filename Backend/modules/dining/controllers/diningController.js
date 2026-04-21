@@ -11,17 +11,107 @@ import DiningCoupon from "../models/DiningCoupon.js";
 import Restaurant from "../../restaurant/models/Restaurant.js";
 import RestaurantDiningOffer from "../../restaurant/models/RestaurantDiningOffer.js";
 import RestaurantWallet from "../../restaurant/models/RestaurantWallet.js";
+import Zone from "../../admin/models/Zone.js";
+import mongoose from "mongoose";
 import emailService from "../../auth/services/emailService.js";
 import {
   createOrder as createRazorpayOrder,
   verifyPayment as verifyRazorpayPayment,
 } from "../../payment/services/razorpayService.js";
 import { getRazorpayCredentials } from "../../../shared/utils/envService.js";
+import {
+  RESTAURANT_NOTIFICATION_EVENTS,
+  sendNotificationToRestaurant,
+} from "../../restaurant/services/restaurantNotificationService.js";
+
+const MAX_BOOKINGS_PER_SLOT = 4;
+const MAX_GUESTS_PER_BOOKING = 4;
+const BLOCKING_SLOT_STATUSES = [
+  "pending",
+  "confirmed",
+  "checked-in",
+  "completed",
+  "dining_completed",
+];
+
+function getDayRange(dateInput) {
+  const parsed = new Date(dateInput);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const dayStart = new Date(parsed);
+  dayStart.setHours(0, 0, 0, 0);
+
+  const dayEnd = new Date(parsed);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  return { dayStart, dayEnd };
+}
+
+function isPointInZone(lat, lng, zoneCoordinates = []) {
+  if (!zoneCoordinates || zoneCoordinates.length < 3) return false;
+
+  let inside = false;
+  for (let i = 0, j = zoneCoordinates.length - 1; i < zoneCoordinates.length; j = i++) {
+    const coordI = zoneCoordinates[i];
+    const coordJ = zoneCoordinates[j];
+    const xi = typeof coordI === "object" ? coordI.latitude || coordI.lat : null;
+    const yi = typeof coordI === "object" ? coordI.longitude || coordI.lng : null;
+    const xj = typeof coordJ === "object" ? coordJ.latitude || coordJ.lat : null;
+    const yj = typeof coordJ === "object" ? coordJ.longitude || coordJ.lng : null;
+
+    if (xi === null || yi === null || xj === null || yj === null) continue;
+
+    const intersect =
+      yi > lng !== yj > lng && lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
+}
+
+function getDiningCoordinates(restaurant) {
+  const lat = Number(
+    restaurant?.coordinates?.latitude ??
+      restaurant?.location?.latitude ??
+      restaurant?.location?.coordinates?.[1],
+  );
+  const lng = Number(
+    restaurant?.coordinates?.longitude ??
+      restaurant?.location?.longitude ??
+      restaurant?.location?.coordinates?.[0],
+  );
+
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    return { lat, lng };
+  }
+
+  return null;
+}
+
+async function getValidatedUserZone(zoneId) {
+  if (!zoneId) return null;
+
+  const userZone = await Zone.findById(zoneId).lean();
+  if (!userZone || !userZone.isActive) {
+    return undefined;
+  }
+
+  return userZone;
+}
+
+function isDiningRestaurantAccessibleInZone(restaurant, userZone) {
+  if (!userZone) return true;
+
+  const coords = getDiningCoordinates(restaurant);
+  if (!coords) return false;
+
+  return isPointInZone(coords.lat, coords.lng, userZone.coordinates || []);
+}
 
 // Get all dining restaurants (with filtering)
 export const getRestaurants = async (req, res) => {
   try {
-    const { city } = req.query;
+    const { city, zoneId } = req.query;
     let query = {};
 
     // Simple filter support
@@ -29,7 +119,24 @@ export const getRestaurants = async (req, res) => {
       query.location = { $regex: city, $options: "i" };
     }
 
-    const restaurants = await DiningRestaurant.find(query);
+    const userZone = await getValidatedUserZone(zoneId);
+    if (zoneId && !userZone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or inactive zone. Please select your address again.",
+      });
+    }
+
+    let restaurants = await DiningRestaurant.find(query).lean();
+
+    if (userZone) {
+      restaurants = restaurants.filter((restaurant) => {
+        const coords = getDiningCoordinates(restaurant);
+        if (!coords) return false;
+        return isPointInZone(coords.lat, coords.lng, userZone.coordinates || []);
+      });
+    }
+
     res.status(200).json({
       success: true,
       count: restaurants.length,
@@ -47,6 +154,16 @@ export const getRestaurants = async (req, res) => {
 // Get single restaurant by slug
 export const getRestaurantBySlug = async (req, res) => {
   try {
+    const { zoneId } = req.query;
+    const userZone = await getValidatedUserZone(zoneId);
+
+    if (zoneId && !userZone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or inactive zone. Please select your address again.",
+      });
+    }
+
     const restaurant = await DiningRestaurant.findOne({
       slug: req.params.slug,
     });
@@ -69,6 +186,13 @@ export const getRestaurantBySlug = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Restaurant not found",
+      });
+    }
+
+    if (!isDiningRestaurantAccessibleInZone(actualRestaurant, userZone)) {
+      return res.status(404).json({
+        success: false,
+        message: "Restaurant not available in your current zone",
       });
     }
 
@@ -209,6 +333,45 @@ export const createBooking = async (req, res) => {
     const { restaurant, guests, date, timeSlot, specialRequest } = req.body;
     const userId = req.user._id;
 
+    if (!restaurant || !guests || !date || !timeSlot) {
+      return res.status(400).json({
+        success: false,
+        message: "Restaurant, guests, date and time slot are required",
+      });
+    }
+
+    if (!Number.isInteger(Number(guests)) || Number(guests) < 1 || Number(guests) > MAX_GUESTS_PER_BOOKING) {
+      return res.status(400).json({
+        success: false,
+        message: `A dining slot can be booked for 1 to ${MAX_GUESTS_PER_BOOKING} guests only`,
+      });
+    }
+
+    const dayRange = getDayRange(date);
+    if (!dayRange) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking date",
+      });
+    }
+
+    const slotCount = await TableBooking.countDocuments({
+      restaurant,
+      timeSlot,
+      date: {
+        $gte: dayRange.dayStart,
+        $lte: dayRange.dayEnd,
+      },
+      status: { $in: BLOCKING_SLOT_STATUSES },
+    });
+
+    if (slotCount >= MAX_BOOKINGS_PER_SLOT) {
+      return res.status(409).json({
+        success: false,
+        message: "This time slot is fully booked. Please choose another slot.",
+      });
+    }
+
     const booking = await TableBooking.create({
       restaurant,
       user: userId,
@@ -242,6 +405,22 @@ export const createBooking = async (req, res) => {
       data: bookingObj,
     });
 
+    sendNotificationToRestaurant({
+      restaurantId: booking.restaurant,
+      type: RESTAURANT_NOTIFICATION_EVENTS.NEW_DINING_BOOKING,
+      bookingId: booking._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.NEW_DINING_BOOKING}:${booking._id}`,
+      redirectUrl: "/restaurant/reservations",
+      metadata: {
+        guests,
+        date,
+        timeSlot,
+      },
+      source: "diningController.createBooking",
+    }).catch((err) => {
+      console.error("Failed to create restaurant dining booking notification:", err);
+    });
+
     // Send confirmation email asynchronously if user has email
     if (req.user.email) {
       emailService
@@ -254,6 +433,78 @@ export const createBooking = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to create booking",
+      error: error.message,
+    });
+  }
+};
+
+// Get booked counts for restaurant slots on a specific date
+export const getSlotAvailability = async (req, res) => {
+  try {
+    const { restaurantId, date } = req.query;
+
+    if (!restaurantId || !date) {
+      return res.status(400).json({
+        success: false,
+        message: "restaurantId and date are required",
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(restaurantId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid restaurantId",
+      });
+    }
+
+    const dayRange = getDayRange(date);
+    if (!dayRange) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid date",
+      });
+    }
+
+    const rows = await TableBooking.aggregate([
+      {
+        $match: {
+          restaurant: new mongoose.Types.ObjectId(restaurantId),
+          date: { $gte: dayRange.dayStart, $lte: dayRange.dayEnd },
+          status: { $in: BLOCKING_SLOT_STATUSES },
+        },
+      },
+      {
+        $group: {
+          _id: "$timeSlot",
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const availability = {};
+    for (const row of rows) {
+      const count = row?.count || 0;
+      availability[row._id] = {
+        bookedCount: count,
+        remaining: Math.max(MAX_BOOKINGS_PER_SLOT - count, 0),
+        isBooked: count >= MAX_BOOKINGS_PER_SLOT,
+      };
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        date,
+        restaurantId,
+        maxGuestsPerBooking: MAX_GUESTS_PER_BOOKING,
+        maxBookingsPerSlot: MAX_BOOKINGS_PER_SLOT,
+        availability,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch slot availability",
       error: error.message,
     });
   }
@@ -341,6 +592,7 @@ export const updateBookingStatus = async (req, res) => {
       updateData.checkOutTime = new Date();
     }
 
+    const existingBooking = await TableBooking.findById(bookingId).lean();
     const booking = await TableBooking.findByIdAndUpdate(
       bookingId,
       updateData,
@@ -359,6 +611,23 @@ export const updateBookingStatus = async (req, res) => {
       message: `Booking status updated to ${status}`,
       data: booking,
     });
+
+    if (status === "cancelled" && existingBooking?.status !== "cancelled") {
+      sendNotificationToRestaurant({
+        restaurantId: booking.restaurant,
+        type: RESTAURANT_NOTIFICATION_EVENTS.DINING_BOOKING_CANCELLED,
+        bookingId: booking._id,
+        eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.DINING_BOOKING_CANCELLED}:${booking._id}`,
+        redirectUrl: "/restaurant/reservations",
+        metadata: {
+          previousStatus: existingBooking?.status,
+          status,
+        },
+        source: "diningController.updateBookingStatus",
+      }).catch((err) => {
+        console.error("Failed to create dining cancellation notification:", err);
+      });
+    }
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -407,6 +676,22 @@ export const createDiningReview = async (req, res) => {
     res.status(201).json({
       success: true,
       data: review,
+    });
+
+    sendNotificationToRestaurant({
+      restaurantId: booking.restaurant,
+      type: RESTAURANT_NOTIFICATION_EVENTS.NEW_REVIEW_RECEIVED,
+      bookingId: booking._id,
+      reviewId: review._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.NEW_REVIEW_RECEIVED}:dining:${review._id}`,
+      redirectUrl: "/restaurant/reviews",
+      metadata: {
+        bookingId: booking._id,
+        rating,
+      },
+      source: "diningController.createDiningReview",
+    }).catch((err) => {
+      console.error("Failed to create dining review notification:", err);
     });
   } catch (error) {
     res.status(500).json({

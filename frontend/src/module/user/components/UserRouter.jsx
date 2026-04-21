@@ -34,6 +34,7 @@ const Checkout = lazy(() => import("../pages/cart/Checkout"))
 
 // Orders
 const Orders = lazy(() => import("../pages/orders/Orders"))
+const OrderConfirmation = lazy(() => import("../pages/orders/OrderConfirmation"))
 const OrderTracking = lazy(() => import("../pages/orders/OrderTracking"))
 const OrderInvoice = lazy(() => import("../pages/orders/OrderInvoice"))
 const UserOrderDetails = lazy(() => import("../pages/orders/UserOrderDetails"))
@@ -47,6 +48,7 @@ const Gourmet = lazy(() => import("../pages/Gourmet"))
 
 // Top 10
 const Top10 = lazy(() => import("../pages/Top10"))
+const Truorder = lazy(() => import("../pages/Truorder"))
 
 // Collections
 const Collections = lazy(() => import("../pages/Collections"))
@@ -144,7 +146,6 @@ export default function UserRouter() {
           <Route path="/search" element={<SearchResults />} />
           <Route path="/product/:id" element={<ProductDetail />} />
 
-          {/* Cart - Protected */}
           <Route
             path="/cart"
             element={
@@ -168,6 +169,14 @@ export default function UserRouter() {
             element={
               <ProtectedRoute requiredRole="user" loginPath="/user/auth/sign-in">
                 <Orders />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/orders/:orderId/confirmation"
+            element={
+              <ProtectedRoute requiredRole="user" loginPath="/user/auth/sign-in">
+                <OrderConfirmation />
               </ProtectedRoute>
             }
           />
@@ -212,6 +221,7 @@ export default function UserRouter() {
 
           {/* Top 10 */}
           <Route path="/top-10" element={<Top10 />} />
+          <Route path="/truorder" element={<Truorder />} />
 
           {/* Collections */}
           <Route path="/collections" element={<Collections />} />
@@ -445,4 +455,3 @@ export default function UserRouter() {
     </Suspense>
   )
 }
-

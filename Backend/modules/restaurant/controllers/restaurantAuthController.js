@@ -1,4 +1,5 @@
 import Restaurant from "../models/Restaurant.js";
+import Zone from "../../admin/models/Zone.js";
 import otpService from "../../auth/services/otpService.js";
 import jwtService from "../../auth/services/jwtService.js";
 import firebaseAuthService from "../../auth/services/firebaseAuthService.js";
@@ -52,6 +53,53 @@ const logger = winston.createLogger({
     }),
   ],
 });
+
+function isPointInZone(lat, lng, zoneCoordinates = []) {
+  if (!zoneCoordinates || zoneCoordinates.length < 3) return false;
+
+  let inside = false;
+  for (let i = 0, j = zoneCoordinates.length - 1; i < zoneCoordinates.length; j = i++) {
+    const coordI = zoneCoordinates[i];
+    const coordJ = zoneCoordinates[j];
+    const xi = typeof coordI === "object" ? (coordI.latitude || coordI.lat) : null;
+    const yi = typeof coordI === "object" ? (coordI.longitude || coordI.lng) : null;
+    const xj = typeof coordJ === "object" ? (coordJ.latitude || coordJ.lat) : null;
+    const yj = typeof coordJ === "object" ? (coordJ.longitude || coordJ.lng) : null;
+
+    if (xi === null || yi === null || xj === null || yj === null) continue;
+
+    const intersect =
+      yi > lng !== yj > lng && lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
+}
+
+async function getRestaurantZone(location) {
+  const lat = Number(location?.latitude ?? location?.coordinates?.[1]);
+  const lng = Number(location?.longitude ?? location?.coordinates?.[0]);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  const activeZones = await Zone.find({ isActive: true })
+    .select("_id name zoneName country unit coordinates")
+    .lean();
+
+  const matchedZone = activeZones.find((zone) =>
+    isPointInZone(lat, lng, zone.coordinates || []),
+  );
+
+  if (!matchedZone) return null;
+
+  return {
+    _id: matchedZone._id.toString(),
+    name: matchedZone.name || matchedZone.zoneName || "Zone",
+    zoneName: matchedZone.zoneName || matchedZone.name || "Zone",
+    country: matchedZone.country || "",
+    unit: matchedZone.unit || "kilometer",
+  };
+}
 
 /**
  * Send OTP for restaurant phone number or email
@@ -126,7 +174,9 @@ export const verifyOTP = asyncHandler(async (req, res) => {
     const identifierType = normalizedPhone ? "phone" : "email";
 
     if (purpose === "register") {
-      // Registration flow - requires referral code
+      // Registration flow
+      // Check if restaurant already exists with normalized phone
+      // For phone, search in both formats (with and without country code) to handle old data
       const findQuery = normalizedPhone
         ? buildPhoneQuery(normalizedPhone)
         : { email: email?.toLowerCase().trim() };
@@ -140,6 +190,7 @@ export const verifyOTP = asyncHandler(async (req, res) => {
         );
       }
 
+      // Name is mandatory for explicit registration
       if (!name) {
         return errorResponse(
           res,
@@ -150,7 +201,6 @@ export const verifyOTP = asyncHandler(async (req, res) => {
 
       await otpService.verifyOTP(phone || null, otp, purpose, email || null);
 
-      // Don't create restaurant yet - require referral code first
       const tempToken = jwtService.generateReferralTempToken({
         phone: normalizedPhone,
         email: email?.toLowerCase().trim() || null,
@@ -159,10 +209,15 @@ export const verifyOTP = asyncHandler(async (req, res) => {
         type: "restaurant",
       });
 
-      return successResponse(res, 200, "OTP verified. Enter referral code to continue.", {
-        needsReferralCode: true,
-        tempToken,
-      });
+      return successResponse(
+        res,
+        200,
+        "OTP verified. Enter referral code to continue.",
+        {
+          needsReferralCode: true,
+          tempToken,
+        },
+      );
     } else {
       // Login (with optional auto-registration)
       // For phone, search in both formats (with and without country code) to handle old data
@@ -236,7 +291,6 @@ export const verifyOTP = asyncHandler(async (req, res) => {
       await otpService.verifyOTP(phone || null, otp, purpose, email || null);
 
       if (!restaurant) {
-        // New user - require referral code before creating restaurant
         const tempToken = jwtService.generateReferralTempToken({
           phone: normalizedPhone,
           email: email?.toLowerCase().trim() || null,
@@ -245,10 +299,15 @@ export const verifyOTP = asyncHandler(async (req, res) => {
           type: "restaurant",
         });
 
-        return successResponse(res, 200, "OTP verified. Enter referral code to continue.", {
-          needsReferralCode: true,
-          tempToken,
-        });
+        return successResponse(
+          res,
+          200,
+          "OTP verified. Enter referral code to continue.",
+          {
+            needsReferralCode: true,
+            tempToken,
+          },
+        );
       } else {
         // Existing restaurant login - update verification status if needed
         if (phone && !restaurant.phoneVerified) {
@@ -295,10 +354,6 @@ export const verifyOTP = asyncHandler(async (req, res) => {
   }
 });
 
-/**
- * Complete restaurant registration with referral code (after OTP verified)
- * POST /api/restaurant/auth/complete-registration-with-referral
- */
 export const completeRegistrationWithReferral = asyncHandler(async (req, res) => {
   const { tempToken, referralCode } = req.body;
 
@@ -319,12 +374,15 @@ export const completeRegistrationWithReferral = asyncHandler(async (req, res) =>
 
   const { phone, email, name, password } = decoded;
   const normalizedPhone = phone || null;
-
   const normalizedRefCode = referralCode.trim().toUpperCase();
 
   const trulifeResult = await verifyTrulifeReferral(normalizedRefCode);
   if (!trulifeResult.valid) {
-    return errorResponse(res, 400, trulifeResult.message || "Invalid Referral Code");
+    return errorResponse(
+      res,
+      400,
+      trulifeResult.message || "Invalid Referral Code",
+    );
   }
 
   const findQuery = normalizedPhone
@@ -335,7 +393,7 @@ export const completeRegistrationWithReferral = asyncHandler(async (req, res) =>
     return errorResponse(
       res,
       400,
-      "Restaurant already exists with this contact. Please login."
+      "Restaurant already exists with this contact. Please login.",
     );
   }
 
@@ -344,7 +402,7 @@ export const completeRegistrationWithReferral = asyncHandler(async (req, res) =>
     signupMethod: normalizedPhone ? "phone" : "email",
     referralCode: normalizedRefCode,
     ownerName: name || "Restaurant",
-    isActive: process.env.NODE_ENV === "development",
+    isActive: false,
   };
 
   if (normalizedPhone) {
@@ -377,12 +435,10 @@ export const completeRegistrationWithReferral = asyncHandler(async (req, res) =>
     if (createError.code === 11000) {
       const keyPattern = createError.keyPattern || {};
       if (keyPattern.slug) {
-        restaurantData.slug = `${(restaurantData.name || "restaurant").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now().toString(36)}`;
-        try {
-          restaurant = await createDoc();
-        } catch (retryError) {
-          throw retryError;
-        }
+        restaurantData.slug = `${(restaurantData.name || "restaurant")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")}-${Date.now().toString(36)}`;
+        restaurant = await createDoc();
       } else {
         const existing = await Restaurant.findOne(findQuery);
         if (existing) {
@@ -408,22 +464,27 @@ export const completeRegistrationWithReferral = asyncHandler(async (req, res) =>
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
-  return successResponse(res, 200, "Registration complete. Please complete onboarding.", {
-    accessToken: tokens.accessToken,
-    restaurant: {
-      id: restaurant._id,
-      restaurantId: restaurant.restaurantId,
-      name: restaurant.name,
-      email: restaurant.email,
-      phone: restaurant.phone,
-      phoneVerified: restaurant.phoneVerified,
-      signupMethod: restaurant.signupMethod,
-      profileImage: restaurant.profileImage,
-      isActive: restaurant.isActive,
-      onboarding: restaurant.onboarding,
+  return successResponse(
+    res,
+    200,
+    "Registration complete. Please complete onboarding.",
+    {
+      accessToken: tokens.accessToken,
+      restaurant: {
+        id: restaurant._id,
+        restaurantId: restaurant.restaurantId,
+        name: restaurant.name,
+        email: restaurant.email,
+        phone: restaurant.phone,
+        phoneVerified: restaurant.phoneVerified,
+        signupMethod: restaurant.signupMethod,
+        profileImage: restaurant.profileImage,
+        isActive: restaurant.isActive,
+        onboarding: restaurant.onboarding,
+      },
+      sponsorName: trulifeResult.sponsorName || null,
     },
-    sponsorName: trulifeResult.sponsorName || null,
-  });
+  );
 });
 
 /**
@@ -481,9 +542,8 @@ export const register = asyncHandler(async (req, res) => {
     ownerName: ownerName || name,
     ownerEmail: (ownerEmail || email).toLowerCase().trim(),
     signupMethod: "email",
-    // Set isActive to false - restaurant needs admin approval before becoming active
-    // Auto-approve in development
-    isActive: process.env.NODE_ENV === "development",
+    // Always require admin approval before restaurant can access protected actions
+    isActive: false,
   };
 
   // Only include phone if provided (don't set to null)
@@ -549,14 +609,7 @@ export const login = asyncHandler(async (req, res) => {
     return errorResponse(res, 401, "Invalid email or password");
   }
 
-  // Allow login if active OR in development mode
-  if (!restaurant.isActive && process.env.NODE_ENV !== "development") {
-    return errorResponse(
-      res,
-      401,
-      "Restaurant account is inactive. Please contact support.",
-    );
-  }
+  // Keep login allowed; route-level middleware controls unapproved account access.
 
   // Check if restaurant has a password set
   if (!restaurant.password) {
@@ -739,6 +792,8 @@ export const logout = asyncHandler(async (req, res) => {
  */
 export const getCurrentRestaurant = asyncHandler(async (req, res) => {
   // Restaurant is attached by authenticate middleware
+  const zone = await getRestaurantZone(req.restaurant.location);
+
   return successResponse(res, 200, "Restaurant retrieved successfully", {
     restaurant: {
       id: req.restaurant._id,
@@ -767,6 +822,7 @@ export const getCurrentRestaurant = asyncHandler(async (req, res) => {
       rejectionReason: req.restaurant.rejectionReason || null,
       approvedAt: req.restaurant.approvedAt || null,
       rejectedAt: req.restaurant.rejectedAt || null,
+      zone,
     },
   });
 });
@@ -914,9 +970,8 @@ export const firebaseGoogleLogin = asyncHandler(async (req, res) => {
         profileImage: picture ? { url: picture } : null,
         ownerName: name.trim(),
         ownerEmail: email.toLowerCase().trim(),
-        // Set isActive to false - restaurant needs admin approval before becoming active
-        // Auto-approve in development
-        isActive: process.env.NODE_ENV === "development",
+        // Always require admin approval before restaurant can access protected actions
+        isActive: false,
       };
 
       try {
@@ -964,18 +1019,7 @@ export const firebaseGoogleLogin = asyncHandler(async (req, res) => {
       }
     }
 
-    // Ensure restaurant is active (allow in development)
-    if (!restaurant.isActive && process.env.NODE_ENV !== "development") {
-      logger.warn("Inactive restaurant attempted login", {
-        restaurantId: restaurant._id,
-        email,
-      });
-      return errorResponse(
-        res,
-        403,
-        "Your restaurant account has been deactivated. Please contact support.",
-      );
-    }
+    // Keep login allowed; route-level middleware controls unapproved account access.
 
     // Generate JWT tokens for our app (email may be null for phone signups)
     const tokens = jwtService.generateTokens({

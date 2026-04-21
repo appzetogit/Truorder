@@ -9,6 +9,38 @@ import { toast } from "sonner"
 import jsPDF from "jspdf"
 import autoTable from "jspdf-autotable"
 
+function StableCategoryImage({ src, alt, name, objectFitClass = "object-cover" }) {
+  const [hasError, setHasError] = useState(false)
+
+  useEffect(() => {
+    setHasError(false)
+  }, [src])
+
+  const initial =
+    String(name || "")
+      .trim()
+      .charAt(0)
+      .toUpperCase() || "C"
+
+  if (!src || hasError) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-slate-100 text-slate-600">
+        <span className="text-sm font-semibold">{initial}</span>
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt || name || "Category"}
+      className={`w-full h-full ${objectFitClass}`}
+      onError={() => setHasError(true)}
+      loading="lazy"
+    />
+  )
+}
+
 export default function Category() {
   const [searchQuery, setSearchQuery] = useState("")
   const [categories, setCategories] = useState([])
@@ -25,7 +57,8 @@ export default function Category() {
     name: "",
     image: "https://via.placeholder.com/40",
     status: true,
-    type: ""
+    type: "",
+    dietType: "Both"
   })
   const [selectedImageFile, setSelectedImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
@@ -230,7 +263,8 @@ export default function Category() {
       name: category.name || "",
       image: category.image || "https://via.placeholder.com/40",
       status: category.status !== undefined ? category.status : true,
-      type: category.type || ""
+      type: category.type || "",
+      dietType: category.dietType || "Both"
     })
     setSelectedImageFile(null)
     setImagePreview(category.image || null)
@@ -243,7 +277,8 @@ export default function Category() {
       name: "",
       image: "https://via.placeholder.com/40",
       status: true,
-      type: ""
+      type: "",
+      dietType: "Both"
     })
     setSelectedImageFile(null)
     setImagePreview(null)
@@ -406,7 +441,8 @@ export default function Category() {
       name: "",
       image: "https://via.placeholder.com/40",
       status: true,
-      type: ""
+      type: "",
+      dietType: "Both"
     })
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
@@ -416,13 +452,21 @@ export default function Category() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     try {
+      const trimmedName = String(formData.name || "").trim()
+      const hasImage = !!selectedImageFile || (!!formData.image && formData.image !== 'https://via.placeholder.com/40')
+      if (!trimmedName || !hasImage) {
+        toast.error("Name and Image are required")
+        return
+      }
+
       setUploadingImage(true)
 
       // Prepare FormData for file upload
       const formDataToSend = new FormData()
-      formDataToSend.append('name', formData.name)
+      formDataToSend.append('name', trimmedName)
       formDataToSend.append('type', formData.type)
       formDataToSend.append('status', formData.status.toString())
+      formDataToSend.append('dietType', formData.dietType || 'Both')
 
       // Add image file if selected, otherwise use existing image URL
       if (selectedImageFile) {
@@ -525,7 +569,7 @@ export default function Category() {
             <div className="relative flex-1 sm:flex-initial min-w-[200px]">
               <input
                 type="text"
-                placeholder="Ex : Categories"
+                placeholder="Search by order, Customer, Restaurant name"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value.replace(/\s/g, ""))}
                 className="pl-10 pr-4 py-2.5 w-full text-sm rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-slate-400"
@@ -555,80 +599,9 @@ export default function Category() {
       </div>
 
       {/* Filters Section */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3 mb-6">
-        <div className="flex flex-col gap-1.5">
-          {/* Row 1 */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <Button
-              variant="outline"
-              onClick={() => setIsFilterOpen(true)}
-              className="h-5 px-1.5 rounded-md flex items-center gap-1 whitespace-nowrap shrink-0 transition-all bg-white border border-gray-200 hover:bg-gray-50"
-            >
-              <SlidersHorizontal className="h-2.5 w-2.5" />
-              <span className="text-[10px] font-bold text-black">Filters</span>
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setActiveFilters(new Set())
-                setSortBy(null)
-                setSelectedCuisine(null)
-                setIsFilterOpen(false)
-              }}
-              className="h-5 px-1.5 rounded-md flex items-center gap-1 whitespace-nowrap shrink-0 transition-all bg-white border border-gray-200 hover:bg-gray-50"
-            >
-              <X className="h-2.5 w-2.5" />
-              <span className="text-[10px] font-bold text-black">Remove All filters</span>
-            </Button>
-            {[
-              { id: 'delivery-under-30', label: 'Under 30 mins' },
-              { id: 'delivery-under-45', label: 'Under 45 mins' },
-            ].map((filter) => {
-              const isActive = activeFilters.has(filter.id)
-              return (
-                <Button
-                  key={filter.id}
-                  variant="outline"
-                  onClick={() => toggleFilter(filter.id)}
-                  className={`h-5 px-1.5 rounded-md flex items-center gap-1 whitespace-nowrap shrink-0 transition-all ${
-                    isActive
-                      ? 'bg-green-600 text-white border border-green-600 hover:bg-green-600/90'
-                      : 'bg-white border border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  <span className={`text-[10px] font-bold ${isActive ? 'text-white' : 'text-black'}`}>{filter.label}</span>
-                </Button>
-              )
-            })}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3 mb-6">
+            <p className="text-sm text-slate-500">Manage your category list here.</p>
           </div>
-          
-          {/* Row 2 */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {[
-              { id: 'distance-under-1km', label: 'Under 1km', icon: MapPin },
-              { id: 'distance-under-2km', label: 'Under 2km', icon: MapPin },
-            ].map((filter) => {
-              const Icon = filter.icon
-              const isActive = activeFilters.has(filter.id)
-              return (
-                <Button
-                  key={filter.id}
-                  variant="outline"
-                  onClick={() => toggleFilter(filter.id)}
-                  className={`h-5 px-1.5 rounded-md flex items-center gap-1 whitespace-nowrap shrink-0 transition-all ${
-                    isActive
-                      ? 'bg-green-600 text-white border border-green-600 hover:bg-green-600/90'
-                      : 'bg-white border border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {Icon && <Icon className={`h-2.5 w-2.5 ${isActive ? 'text-white' : 'text-gray-900'}`} />}
-                  <span className={`text-[10px] font-bold ${isActive ? 'text-white' : 'text-black'}`}>{filter.label}</span>
-                </Button>
-              )
-            })}
-          </div>
-        </div>
-      </div>
 
       {/* Table */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -647,6 +620,9 @@ export default function Category() {
                 </th>
                 <th className="px-6 py-4 text-left text-[10px] font-bold text-slate-700 uppercase tracking-wider">
                   Type
+                </th>
+                <th className="px-6 py-4 text-left text-[10px] font-bold text-slate-700 uppercase tracking-wider">
+                  Diet
                 </th>
                 <th className="px-6 py-4 text-left text-[10px] font-bold text-slate-700 uppercase tracking-wider">
                   Status
@@ -686,13 +662,11 @@ export default function Category() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="w-10 h-10 rounded-full overflow-hidden bg-slate-100 flex items-center justify-center">
-                        <img
+                        <StableCategoryImage
                           src={category.image}
                           alt={category.name}
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            e.target.src = "https://via.placeholder.com/40"
-                          }}
+                          name={category.name}
+                          objectFitClass="object-cover"
                         />
                       </div>
                     </td>
@@ -701,6 +675,9 @@ export default function Category() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className="text-sm font-medium text-slate-700">{category.type || 'N/A'}</span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className="text-sm font-medium text-slate-700">{category.dietType || 'Both'}</span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <button
@@ -1126,6 +1103,25 @@ export default function Category() {
 
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-2">
+                        Category Diet Type *
+                      </label>
+                      <select
+                        required
+                        value={formData.dietType}
+                        onChange={(e) => setFormData({ ...formData, dietType: e.target.value })}
+                        className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      >
+                        <option value="Both">Both (Veg + Non-Veg)</option>
+                        <option value="Veg">Veg Only</option>
+                        <option value="Non-Veg">Non-Veg Only</option>
+                      </select>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Choose how this category should behave when users enable veg mode.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">
                         Category Name *
                       </label>
                       <input
@@ -1146,13 +1142,11 @@ export default function Category() {
                         {/* Image Preview */}
                         {(imagePreview || formData.image) && (
                           <div className="relative w-32 h-32 rounded-lg overflow-hidden border border-slate-300">
-                            <img
+                            <StableCategoryImage
                               src={imagePreview || formData.image}
                               alt="Category preview"
-                              className="w-full h-full object-cover"
-                              onError={(e) => {
-                                e.target.src = "https://via.placeholder.com/128"
-                              }}
+                              name={formData.name || (editingCategory && editingCategory.name)}
+                              objectFitClass="object-cover"
                             />
                             {imagePreview && (
                               <button

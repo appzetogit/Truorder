@@ -1,6 +1,6 @@
-import { useParams, Link, useSearchParams, useNavigate } from "react-router-dom"
+import { useParams, Link, useNavigate } from "react-router-dom"
 import { useState, useEffect } from "react"
-import { motion, AnimatePresence } from "framer-motion"
+import { motion } from "framer-motion"
 import { toast } from "sonner"
 import {
   ArrowLeft,
@@ -35,42 +35,38 @@ import { useProfile } from "../../context/ProfileContext"
 import { useLocation as useUserLocation } from "../../hooks/useLocation"
 import DeliveryTrackingMap from "../../components/DeliveryTrackingMap"
 import { orderAPI, restaurantAPI } from "@/lib/api"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
 import circleIcon from "@/assets/circleicon.png"
+import {
+  RESTAURANT_CONTACT_UNAVAILABLE_MESSAGE,
+  normalizeTelPhone,
+  resolveRestaurantPhone,
+} from "./restaurantContact"
 
-// Animated checkmark component
-const AnimatedCheckmark = ({ delay = 0 }) => (
-  <motion.svg
-    width="80"
-    height="80"
-    viewBox="0 0 80 80"
-    initial="hidden"
-    animate="visible"
-    className="mx-auto"
-  >
-    <motion.circle
-      cx="40"
-      cy="40"
-      r="36"
-      fill="none"
-      stroke="#22c55e"
-      strokeWidth="4"
-      initial={{ pathLength: 0, opacity: 0 }}
-      animate={{ pathLength: 1, opacity: 1 }}
-      transition={{ duration: 0.5, delay, ease: "easeOut" }}
-    />
-    <motion.path
-      d="M24 40 L35 51 L56 30"
-      fill="none"
-      stroke="#22c55e"
-      strokeWidth="4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      initial={{ pathLength: 0, opacity: 0 }}
-      animate={{ pathLength: 1, opacity: 1 }}
-      transition={{ duration: 0.4, delay: delay + 0.4, ease: "easeOut" }}
-    />
-  </motion.svg>
-)
+const hasAssignedDeliveryPartner = (order) => {
+  return !!(
+    order?.deliveryPartnerId ||
+    order?.deliveryPartner?._id ||
+    order?.assignmentInfo?.deliveryPartnerId
+  );
+};
+
+const getOrderTrackingStatus = (order) => {
+  const status = order?.status;
+  const phase = order?.deliveryState?.currentPhase;
+
+  if (status === "cancelled") return "cancelled";
+  if (status === "delivered") return "delivered";
+  if (status === "out_for_delivery" || phase === "en_route_to_delivery" || phase === "at_delivery") {
+    return "pickup";
+  }
+  if (status === "ready") return "prepared";
+  if (status === "preparing") return "preparing";
+
+  return "placed";
+};
+
+const isTerminalOrderStatus = (status) => status === "delivered" || status === "cancelled";
 
 // Real Delivery Map Component with User Live Location
 const DeliveryMap = ({ orderId, order, isVisible }) => {
@@ -209,8 +205,6 @@ const SectionItem = ({ icon: Icon, title, subtitle, onClick, showArrow = true, r
 export default function OrderTracking() {
   const { orderId } = useParams()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
-  const confirmed = searchParams.get("confirmed") === "true"
   const { getOrderById } = useOrders()
   const { profile, getDefaultAddress } = useProfile()
 
@@ -219,7 +213,6 @@ export default function OrderTracking() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  const [showConfirmation, setShowConfirmation] = useState(confirmed)
   const [orderStatus, setOrderStatus] = useState('placed')
   const [estimatedTime, setEstimatedTime] = useState(29)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -242,6 +235,7 @@ export default function OrderTracking() {
   // Only poll if delivery partner is not yet assigned to avoid unnecessary updates
   useEffect(() => {
     if (!orderId || !order) return;
+    if (isTerminalOrderStatus(getOrderTrackingStatus(order))) return;
 
     // Skip polling if delivery partner is already assigned and accepted
     const currentDeliveryStatus = order?.deliveryState?.status;
@@ -266,11 +260,6 @@ export default function OrderTracking() {
           const newPhase = apiOrder.deliveryState?.currentPhase;
           const newOrderStatus = apiOrder.status;
           const currentOrderStatus = order?.status;
-
-          // Check if order was cancelled
-          if (newOrderStatus === 'cancelled' && currentOrderStatus !== 'cancelled') {
-            setOrderStatus('cancelled');
-          }
 
           // Only update if status actually changed
           if (newDeliveryStatus === 'accepted' ||
@@ -315,6 +304,7 @@ export default function OrderTracking() {
             };
 
             setOrder(transformedOrder);
+            setOrderStatus(getOrderTrackingStatus(transformedOrder));
           }
         }
       } catch (err) {
@@ -323,7 +313,7 @@ export default function OrderTracking() {
     }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [orderId, order?.deliveryState?.status, order?.deliveryState?.currentPhase]);
+  }, [orderId, order?.status, order?.deliveryState?.status, order?.deliveryState?.currentPhase]);
 
   // Fetch order from API if not found in context
   useEffect(() => {
@@ -343,13 +333,15 @@ export default function OrderTracking() {
           console.log('⚠️ Context order missing restaurantId, will fetch from API');
         }
         setOrder(contextOrder)
+        setOrderStatus(getOrderTrackingStatus(contextOrder))
         setLoading(false)
-        return
       }
 
-      // If not in context, fetch from API
+      // Always hydrate from API so the restaurant phone belongs to the current order.
       try {
-        setLoading(true)
+        if (!contextOrder) {
+          setLoading(true)
+        }
         setError(null)
 
         const response = await orderAPI.getOrderDetails(orderId)
@@ -415,6 +407,7 @@ export default function OrderTracking() {
             mongoId: apiOrder._id,
             restaurant: apiOrder.restaurantName || 'Restaurant',
             restaurantId: apiOrder.restaurantId || null, // Include restaurantId for location access
+            restaurantPhone: resolveRestaurantPhone(apiOrder),
             userId: apiOrder.userId || null, // Include user data for phone number
             userName: apiOrder.userName || apiOrder.userId?.name || apiOrder.userId?.fullName || '',
             userPhone: apiOrder.userPhone || apiOrder.userId?.phone || '',
@@ -439,6 +432,7 @@ export default function OrderTracking() {
               price: item.price
             })) || [],
             total: apiOrder.pricing?.total || 0,
+            paymentMethod: apiOrder.payment?.method || apiOrder.paymentMethod || "",
             status: apiOrder.status || 'pending',
             deliveryPartner: apiOrder.deliveryPartnerId ? {
               name: apiOrder.deliveryPartnerId.name || 'Delivery Partner',
@@ -450,31 +444,23 @@ export default function OrderTracking() {
             deliveryState: apiOrder.deliveryState || null,
             deliveryInstructions: apiOrder.deliveryInstructions || "",
             deliveryAddress: apiOrder.deliveryAddress || undefined,
-            phoneNumber: apiOrder.phoneNumber || undefined
+            phoneNumber: apiOrder.phoneNumber || undefined,
+            deliveryVerification: apiOrder.deliveryVerification || null,
+            review: apiOrder.review || null,
+            rating: apiOrder.rating || apiOrder.review?.rating || null,
+            hasReview: Boolean(apiOrder.hasReview || apiOrder.review?.rating || apiOrder.rating)
           }
 
           setOrder(transformedOrder)
-
-          // Update orderStatus based on API order status
-          // 'ready' = food ready at restaurant, waiting for delivery partner (show "Food is ready")
-          // 'out_for_delivery' = delivery partner picked up and on the way (show "Order picked up")
-          if (apiOrder.status === 'cancelled') {
-            setOrderStatus('cancelled');
-          } else if (apiOrder.status === 'preparing') {
-            setOrderStatus('preparing');
-          } else if (apiOrder.status === 'ready') {
-            setOrderStatus('prepared');
-          } else if (apiOrder.status === 'out_for_delivery') {
-            setOrderStatus('pickup');
-          } else if (apiOrder.status === 'delivered') {
-            setOrderStatus('delivered');
-          }
+          setOrderStatus(getOrderTrackingStatus(apiOrder))
         } else {
           throw new Error('Order not found')
         }
       } catch (err) {
         console.error('Error fetching order:', err)
-        setError(err.response?.data?.message || err.message || 'Failed to fetch order')
+        if (!contextOrder) {
+          setError(err.response?.data?.message || err.message || 'Failed to fetch order')
+        }
       } finally {
         setLoading(false)
       }
@@ -484,17 +470,6 @@ export default function OrderTracking() {
       fetchOrder()
     }
   }, [orderId, getOrderById])
-
-  // Simulate order status progression
-  useEffect(() => {
-    if (confirmed) {
-      const timer1 = setTimeout(() => {
-        setShowConfirmation(false)
-        setOrderStatus('preparing')
-      }, 3000)
-      return () => clearTimeout(timer1)
-    }
-  }, [confirmed])
 
   // Countdown timer
   useEffect(() => {
@@ -513,7 +488,7 @@ export default function OrderTracking() {
 
       // Update order status in UI
       if (status === 'out_for_delivery') {
-        setOrderStatus('on_way');
+        setOrderStatus('pickup');
       }
 
       // Show notification toast
@@ -621,12 +596,27 @@ export default function OrderTracking() {
       if (response.data?.success) {
         toast.success("Review submitted! Thank you for your feedback.")
         setReviewSubmitted(true)
+        setOrder((prev) =>
+          prev
+            ? {
+              ...prev,
+              review: { rating, comment: reviewComment?.trim() || "" },
+              rating,
+              hasReview: true,
+            }
+            : prev,
+        )
       } else {
         toast.error(response.data?.message || "Failed to submit review")
       }
     } catch (error) {
       console.error("Error submitting review:", error)
       const message = error?.response?.data?.message || "Failed to submit review. Please try again."
+      if ([400, 409].includes(error?.response?.status) && message.toLowerCase().includes("already")) {
+        setReviewSubmitted(true)
+        toast.info("You have already rated this order.")
+        return
+      }
       toast.error(message)
     } finally {
       setIsSubmittingReview(false)
@@ -640,48 +630,37 @@ export default function OrderTracking() {
       url: window.location.href,
     };
 
-    try {
-      if (navigator.share) {
-        await navigator.share(shareData);
-        toast.success("Shared successfully");
-      } else {
-        await navigator.clipboard.writeText(window.location.href);
-        toast.success("Link copied to clipboard");
-      }
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error("Error sharing:", err);
-        toast.error("Failed to share");
-      }
-    }
+    await shareWithFallback(shareData)
   };
 
   const handleCallRestaurant = async () => {
     if (!order) return;
-    let restaurantPhone =
-      (typeof order.restaurantId === "object" &&
-        (order.restaurantId?.primaryContactNumber ||
-          order.restaurantId?.phone ||
-          order.restaurantId?.contactNumber)) ||
-      order.restaurantPhone ||
-      "";
-    if (!restaurantPhone && order.restaurantId && typeof order.restaurantId === "string") {
+    let restaurantPhone = resolveRestaurantPhone(order);
+    const restaurantId =
+      typeof order.restaurantId === "string"
+        ? order.restaurantId
+        : order.restaurantId?._id || order.restaurantId?.id;
+
+    if (!restaurantPhone && restaurantId) {
       try {
-        const res = await restaurantAPI.getRestaurantById(order.restaurantId);
+        const res = await restaurantAPI.getRestaurantById(restaurantId);
         const r = res?.data?.data?.restaurant;
-        restaurantPhone =
-          r?.primaryContactNumber || r?.phone || r?.contactNumber || "";
+        restaurantPhone = resolveRestaurantPhone(order, r);
       } catch (e) {
         console.error("Error fetching restaurant for phone:", e);
       }
     }
-    restaurantPhone = String(restaurantPhone).replace(/\s/g, "").trim();
-    if (!restaurantPhone) {
-      toast.error("Restaurant phone number not available");
+    const telPhone = normalizeTelPhone(restaurantPhone);
+    if (!telPhone) {
+      console.warn("Restaurant contact number unavailable for order", {
+        orderId: order.id || order.orderId || order.mongoId || orderId,
+        restaurantId,
+        hasRestaurantPhone: Boolean(restaurantPhone),
+      });
+      toast.error(RESTAURANT_CONTACT_UNAVAILABLE_MESSAGE);
       return;
     }
-    const digits = restaurantPhone.replace(/\D/g, "").slice(-10);
-    window.location.href = `tel:${digits}`;
+    window.location.href = `tel:${telPhone}`;
   };
 
   const handleOpenDeliveryInstructions = () => {
@@ -783,6 +762,7 @@ export default function OrderTracking() {
           mongoId: apiOrder._id,
           restaurant: apiOrder.restaurantName || 'Restaurant',
           restaurantId: apiOrder.restaurantId || null, // Include restaurantId for location access
+          restaurantPhone: resolveRestaurantPhone(apiOrder),
           userId: apiOrder.userId || null, // Include user data for phone number
           userName: apiOrder.userName || apiOrder.userId?.name || apiOrder.userId?.fullName || '',
           userPhone: apiOrder.userPhone || apiOrder.userId?.phone || '',
@@ -807,31 +787,26 @@ export default function OrderTracking() {
             price: item.price
           })) || [],
           total: apiOrder.pricing?.total || 0,
+          paymentMethod: apiOrder.payment?.method || apiOrder.paymentMethod || "",
           status: apiOrder.status || 'pending',
           deliveryPartner: apiOrder.deliveryPartnerId ? {
             name: apiOrder.deliveryPartnerId.name || 'Delivery Partner',
             avatar: null
           } : null,
           tracking: apiOrder.tracking || {},
+          deliveryPartnerId: apiOrder.deliveryPartnerId?._id || apiOrder.deliveryPartnerId || apiOrder.assignmentInfo?.deliveryPartnerId || null,
+          assignmentInfo: apiOrder.assignmentInfo || null,
           deliveryState: apiOrder.deliveryState || null,
           deliveryInstructions: apiOrder.deliveryInstructions || "",
           deliveryAddress: apiOrder.deliveryAddress || undefined,
-          phoneNumber: apiOrder.phoneNumber || undefined
+          phoneNumber: apiOrder.phoneNumber || undefined,
+          deliveryVerification: apiOrder.deliveryVerification || null,
+          review: apiOrder.review || null,
+          rating: apiOrder.rating || apiOrder.review?.rating || null,
+          hasReview: Boolean(apiOrder.hasReview || apiOrder.review?.rating || apiOrder.rating)
         }
         setOrder(transformedOrder)
-
-        // Update order status for UI
-        if (apiOrder.status === 'cancelled') {
-          setOrderStatus('cancelled');
-        } else if (apiOrder.status === 'preparing') {
-          setOrderStatus('preparing')
-        } else if (apiOrder.status === 'ready') {
-          setOrderStatus('prepared')
-        } else if (apiOrder.status === 'out_for_delivery') {
-          setOrderStatus('pickup')
-        } else if (apiOrder.status === 'delivered') {
-          setOrderStatus('delivered')
-        }
+        setOrderStatus(getOrderTrackingStatus(apiOrder))
       }
     } catch (err) {
       console.error('Error refreshing order:', err)
@@ -870,12 +845,12 @@ export default function OrderTracking() {
   const statusConfig = {
     placed: {
       title: "Order placed",
-      subtitle: "Food preparation will begin shortly",
+      subtitle: "Waiting for restaurant confirmation",
       color: "bg-green-700"
     },
     preparing: {
-      title: "Preparing your order",
-      subtitle: `Arriving in ${estimatedTime} mins`,
+      title: "Processing your order",
+      subtitle: `Restaurant accepted · Arriving in ${estimatedTime} mins`,
       color: "bg-green-700"
     },
     prepared: {
@@ -901,55 +876,12 @@ export default function OrderTracking() {
   }
 
   const currentStatus = statusConfig[orderStatus] || statusConfig.placed
+  const shouldShowMap = order !== null && !isTerminalOrderStatus(orderStatus)
+  const deliveryOtp = order?.deliveryVerification?.otp || ""
+  const shouldShowDeliveryOtp = Boolean(deliveryOtp)
 
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-[#0a0a0a]">
-      {/* Order Confirmed Modal */}
-      <AnimatePresence>
-        {showConfirmation && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-white dark:bg-[#1a1a1a] flex flex-col items-center justify-center"
-          >
-            <motion.div
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ delay: 0.2, type: "spring" }}
-              className="text-center px-8"
-            >
-              <AnimatedCheckmark delay={0.3} />
-              <motion.h1
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.9 }}
-                className="text-2xl font-bold text-gray-900 mt-6"
-              >
-                Order Confirmed!
-              </motion.h1>
-              <motion.p
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 1.1 }}
-                className="text-gray-600 mt-2"
-              >
-                Your order has been placed successfully
-              </motion.p>
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 1.5 }}
-                className="mt-8"
-              >
-                <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin mx-auto" />
-                <p className="text-sm text-gray-500 mt-3">Loading order details...</p>
-              </motion.div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Green Header */}
       <motion.div
         className={`${currentStatus.color} text-white sticky top-0 z-40`}
@@ -957,7 +889,7 @@ export default function OrderTracking() {
         animate={{ opacity: 1 }}
       >
         {/* Navigation bar */}
-        <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center justify-between px-4 pt-6 pb-3">
           <Link to="/user/orders">
             <motion.button
               className="w-10 h-10 flex items-center justify-center"
@@ -1014,11 +946,13 @@ export default function OrderTracking() {
       </motion.div>
 
       {/* Map Section */}
-      <DeliveryMap
-        orderId={orderId}
-        order={order}
-        isVisible={!showConfirmation && order !== null}
-      />
+      {shouldShowMap && (
+        <DeliveryMap
+          orderId={orderId}
+          order={order}
+          isVisible={shouldShowMap}
+        />
+      )}
 
       {/* Scrollable Content */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 lg:px-8 py-4 md:py-6 space-y-4 md:space-y-6 pb-24 md:pb-32">
@@ -1133,7 +1067,7 @@ export default function OrderTracking() {
             order?.deliveryState?.status === 'order_confirmed'
 
           // Show "Food is Cooking" until delivery partner accepts pickup
-          if (!hasAcceptedPickup) {
+          if (['preparing', 'prepared'].includes(orderStatus) && !hasAcceptedPickup) {
             return (
               <motion.div
                 className="bg-white rounded-xl p-4 shadow-sm"
@@ -1185,6 +1119,40 @@ export default function OrderTracking() {
             All your delivery details in one place 👇
           </p>
         </motion.div>
+
+        {shouldShowDeliveryOtp && (
+          <motion.div
+            className="rounded-2xl border border-green-100 bg-white p-4 shadow-sm"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.68 }}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-green-700">
+                  Share this OTP with your delivery partner
+                </p>
+                <p className="mt-2 text-sm text-gray-600">
+                  Required to confirm prepaid order delivery.
+                </p>
+                <p className="mt-2 text-xs text-gray-500">
+                  Do not share this OTP before receiving your order.
+                </p>
+                <p className="mt-3 text-xs font-medium text-gray-500">
+                  Order ID: {order?.id || order?.orderId || 'N/A'}
+                </p>
+              </div>
+              <div className="rounded-xl bg-green-600 px-4 py-3 text-center shadow-sm">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-green-100">
+                  OTP
+                </p>
+                <p className="mt-1 text-2xl font-bold tracking-[0.35em] text-white">
+                  {deliveryOtp}
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         {/* Contact & Address Section */}
         <motion.div
@@ -1265,23 +1233,25 @@ export default function OrderTracking() {
         </motion.div>
 
         {/* Chat with delivery partner */}
-        <motion.button
-          onClick={() => navigate(`/orders/${orderId}/chat`)}
-          className="w-full bg-white rounded-xl p-4 shadow-sm flex items-center gap-3 text-left border-0"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.72 }}
-          whileTap={{ scale: 0.99 }}
-        >
-          <div className="w-10 h-10 rounded-full bg-[#ff8100]/10 flex items-center justify-center flex-shrink-0">
-            <MessageCircle className="w-5 h-5 text-[#ff8100]" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="font-semibold text-gray-900">Chat with delivery partner</p>
-            <p className="text-sm text-gray-500">Message your delivery partner about this order</p>
-          </div>
-          <ChevronRight className="w-5 h-5 text-gray-400 flex-shrink-0" />
-        </motion.button>
+        {orderStatus !== 'delivered' && hasAssignedDeliveryPartner(order) && (
+          <motion.button
+            onClick={() => navigate(`/orders/${orderId}/chat`)}
+            className="w-full bg-white rounded-xl p-4 shadow-sm flex items-center gap-3 text-left border-0"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.72 }}
+            whileTap={{ scale: 0.99 }}
+          >
+            <div className="w-10 h-10 rounded-full bg-[#ff8100]/10 flex items-center justify-center flex-shrink-0">
+              <MessageCircle className="w-5 h-5 text-[#ff8100]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold text-gray-900">Chat with delivery partner</p>
+              <p className="text-sm text-gray-500">Message your delivery partner about this order</p>
+            </div>
+            <ChevronRight className="w-5 h-5 text-gray-400 flex-shrink-0" />
+          </motion.button>
+        )}
 
         {/* Restaurant Section */}
         <motion.div
@@ -1298,14 +1268,16 @@ export default function OrderTracking() {
               <p className="font-semibold text-gray-900">{order.restaurant}</p>
               <p className="text-sm text-gray-500">{order.address?.city || 'Local Area'}</p>
             </div>
-            <motion.button
-              type="button"
-              onClick={handleCallRestaurant}
-              className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center"
-              whileTap={{ scale: 0.9 }}
-            >
-              <Phone className="w-5 h-5 text-green-700" />
-            </motion.button>
+            {orderStatus !== 'delivered' && (
+              <motion.button
+                type="button"
+                onClick={handleCallRestaurant}
+                className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center"
+                whileTap={{ scale: 0.9 }}
+              >
+                <Phone className="w-5 h-5 text-green-700" />
+              </motion.button>
+            )}
           </div>
 
           {/* Order Items */}
@@ -1330,20 +1302,21 @@ export default function OrderTracking() {
           </div>
         </motion.div>
 
-        {/* Help Section */}
-        <motion.div
-          className="bg-white rounded-xl shadow-sm overflow-hidden"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.8 }}
-        >
-          <SectionItem
-            icon={CircleSlash}
-            title="Cancel order"
-            subtitle=""
-            onClick={handleCancelOrder}
-          />
-        </motion.div>
+        {!isTerminalOrderStatus(orderStatus) && (
+          <motion.div
+            className="bg-white rounded-xl shadow-sm overflow-hidden"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.8 }}
+          >
+            <SectionItem
+              icon={CircleSlash}
+              title="Cancel order"
+              subtitle=""
+              onClick={handleCancelOrder}
+            />
+          </motion.div>
+        )}
 
       </div>
 

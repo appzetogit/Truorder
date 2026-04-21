@@ -14,11 +14,11 @@ import {
 } from "@/components/ui/select"
 import { authAPI } from "@/lib/api"
 import { firebaseAuth, googleProvider, ensureFirebaseInitialized } from "@/lib/firebase"
+import { performGoogleSignIn } from "@/lib/utils/googleSignIn"
 import { setAuthData } from "@/lib/utils/auth"
-import { signInWithGoogleBridge } from "@/lib/utils/googleSignInBridge"
 import { registerFcmTokenForLoggedInUser } from "@/lib/notifications/fcmWeb"
 import loginBanner from "@/assets/loginbanner.jpg"
-import truorderLogo from "@/assets/truorder-login.png"
+import tastizoLogo from "@/assets/tastizologo.png"
 
 // Common country codes
 const countryCodes = [
@@ -407,23 +407,15 @@ export default function SignIn() {
         throw new Error("Firebase Auth is not initialized. Please check your Firebase configuration.")
       }
 
-      // Log current origin for debugging
-      console.log("🚀 Starting Google sign-in popup...")
+      // Flutter WebView: uses native Google picker; Browser: uses popup
+      const user = await performGoogleSignIn(firebaseAuth, googleProvider)
 
-      // Use Flutter bridge inside the app and popup in normal browsers
-      const result = await signInWithGoogleBridge({
-        firebaseAuth,
-        googleProvider,
-      })
-
-      console.log("✅ Popup sign-in successful:", {
-        user: result?.user?.email,
-        operationType: result.operationType
-      })
-
-      if (result && result.user) {
-        // Process signed-in user
-        await processSignedInUser(result.user, "popup-result")
+      if (user) {
+        await processSignedInUser(user, "popup-result")
+      } else {
+        // User cancelled (e.g. in Flutter native picker)
+        setIsLoading(false)
+        redirectHandledRef.current = false
       }
     } catch (error) {
       console.error("❌ Google sign-in redirect error:", error)
@@ -476,29 +468,21 @@ export default function SignIn() {
 
       {/* Mobile: Top Section - Banner Image */}
       {/* Desktop: Left Section - Banner Image */}
-      {/* Mobile: Top Section - TruOrder logo on white background */}
-      <div
-        className="relative md:hidden w-full shrink-0 flex items-center justify-center"
-        style={{ height: "45vh", minHeight: "300px", backgroundColor: "#FCFCFC" }}
-      >
+      {/* Mobile: Top Section - Logo with matching green background */}
+      <div className="relative md:hidden w-full shrink-0 flex items-center justify-center" style={{ height: "45vh", minHeight: "300px", backgroundColor: "#2B9C64" }}>
         <img
-          src={truorderLogo}
-          alt="TruOrder Delivery logo"
-          className="object-contain"
-          style={{ width: "320px", height: "240px" }}
+          src={tastizoLogo}
+          alt="Tastizo Logo"
+          className="w-64 h-auto object-contain"
         />
       </div>
 
-      {/* Desktop: Left Section - TruOrder logo on light background (full height) */}
-      <div
-        className="relative hidden md:flex md:w-1/2 md:min-h-full shrink-0 items-center justify-center"
-        style={{ backgroundColor: "#FCFCFC" }}
-      >
+      {/* Desktop: Left Section - Logo with matching green background (full height) */}
+      <div className="relative hidden md:flex md:w-1/2 md:min-h-full shrink-0 items-center justify-center" style={{ backgroundColor: "#2B9C64" }}>
         <img
-          src={truorderLogo}
-          alt="TruOrder Delivery logo"
-          className="object-contain"
-          style={{ width: "380px", height: "280px" }}
+          src={tastizoLogo}
+          alt="Tastizo Logo"
+          className="w-80 lg:w-96 h-auto object-contain"
         />
       </div>
 
@@ -629,7 +613,7 @@ export default function SignIn() {
                     setAuthMethod("phone")
                     setApiError("")
                   }}
-                  className="text-xs text-[#1FCAD3] hover:underline text-left"
+                  className="text-xs text-[#2B9C64] hover:underline text-left"
                 >
                   Use phone instead
                 </button>
@@ -644,7 +628,7 @@ export default function SignIn() {
                 onCheckedChange={(checked) =>
                   setFormData({ ...formData, rememberMe: checked })
                 }
-                className="w-4 h-4 border-2 border-gray-300 rounded data-[state=checked]:bg-[#1FCAD3] data-[state=checked]:border-[#1FCAD3] flex items-center justify-center"
+                className="w-4 h-4 border-2 border-gray-300 rounded data-[state=checked]:bg-[#2B9C64] data-[state=checked]:border-[#2B9C64] flex items-center justify-center"
               />
               <label
                 htmlFor="rememberMe"
@@ -658,7 +642,7 @@ export default function SignIn() {
             <Button
               type="submit"
               className="w-full h-12 md:h-14 text-white font-bold text-base md:text-lg rounded-lg transition-all hover:shadow-lg active:scale-[0.98]"
-              style={{ backgroundColor: "#1FCAD3" }}
+              style={{ backgroundColor: "#2B9C64" }}
               disabled={isLoading}
             >
               {isLoading ? (
@@ -717,7 +701,7 @@ export default function SignIn() {
             <button
               type="button"
               onClick={handleLoginMethodChange}
-              className="w-12 h-12 md:w-14 md:h-14 rounded-full border border-[#1FCAD3] flex items-center justify-center hover:opacity-90 transition-all hover:shadow-md active:scale-95 bg-[#1FCAD3]"
+              className="w-12 h-12 md:w-14 md:h-14 rounded-full border border-[#2B9C64] flex items-center justify-center hover:opacity-90 transition-all hover:shadow-md active:scale-95 bg-[#2B9C64]"
               aria-label="Sign in with Email"
             >
               {authMethod == "phone" ? <Mail className="h-5 w-5 md:h-6 md:w-6 text-white" /> : <Phone className="h-5 w-5 md:h-6 md:w-6 text-white" />}

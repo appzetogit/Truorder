@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Eye, EyeOff } from "lucide-react";
 import { adminAPI } from "@/lib/api";
-import { setAuthData, isModuleAuthenticated, decodeToken } from "@/lib/utils/auth";
+import { decodeToken, isModuleAuthenticated, setAuthData } from "@/lib/utils/auth";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -13,7 +14,6 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Eye, EyeOff } from "lucide-react";
 
 export default function HubLogin() {
   const navigate = useNavigate();
@@ -23,24 +23,18 @@ export default function HubLogin() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // If already logged in as hub_manager, go to /hub
   useEffect(() => {
-    if (isModuleAuthenticated("hub")) {
-      try {
-        const token = localStorage.getItem("hub_accessToken");
-        const decoded = decodeToken(token);
-        if (decoded?.hubRole === "hub_manager") {
-          navigate("/hub", { replace: true });
-          return;
-        }
-      } catch {
-        // ignore
-      }
+    if (!isModuleAuthenticated("hub")) return;
+
+    const token = localStorage.getItem("hub_accessToken");
+    const decoded = decodeToken(token);
+    if (decoded?.hubRole === "hub_manager") {
+      navigate("/hub", { replace: true });
     }
   }, [navigate]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleSubmit = async (event) => {
+    event.preventDefault();
     setError("");
     setIsLoading(true);
 
@@ -59,26 +53,21 @@ export default function HubLogin() {
       }
 
       const decoded = decodeToken(data.accessToken);
-
-      // Only allow hub_manager role on hub login
       if (decoded?.hubRole !== "hub_manager") {
-        setError("This account is an Admin account. Please use the Admin login page.");
+        setError("This account is not a hub manager account.");
         setIsLoading(false);
         return;
       }
 
-      // Store under hub module (token already contains hubRole)
       setAuthData("hub", data.accessToken, data.admin);
-
-      // Redirect hub managers to hub panel
       navigate("/hub", { replace: true });
     } catch (err) {
-      const message =
+      setError(
         err?.response?.data?.message ||
-        err?.response?.data?.error ||
-        err?.message ||
-        "Login failed. Please check your credentials.";
-      setError(message);
+          err?.response?.data?.error ||
+          err?.message ||
+          "Login failed. Please check your credentials.",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -97,32 +86,34 @@ export default function HubLogin() {
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
-            {error && (
+            {error ? (
               <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
                 {error}
               </div>
-            )}
+            ) : null}
+
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="hub-email">Email</Label>
               <Input
-                id="email"
+                id="hub-email"
                 type="email"
                 autoComplete="email"
                 placeholder="hub.manager@example.com"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(event) => setEmail(event.target.value)}
               />
             </div>
+
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="hub-password">Password</Label>
               <div className="relative">
                 <Input
-                  id="password"
+                  id="hub-password"
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
                   placeholder="Enter your password"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(event) => setPassword(event.target.value)}
                   className="pr-10"
                 />
                 <button
@@ -139,12 +130,9 @@ export default function HubLogin() {
               </div>
             </div>
           </CardContent>
+
           <CardFooter className="flex flex-col gap-3">
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={isLoading}
-            >
+            <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? "Signing in..." : "Sign in"}
             </Button>
           </CardFooter>
@@ -153,4 +141,3 @@ export default function HubLogin() {
     </div>
   );
 }
-

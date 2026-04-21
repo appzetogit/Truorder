@@ -1,183 +1,202 @@
-import { useState, useEffect } from "react"
-import { useNavigate } from "react-router-dom"
-import { getModuleToken } from "@/lib/utils/auth"
+import { useEffect, useState } from "react";
+import { Navigate, useNavigate } from "react-router-dom";
+import { format } from "date-fns";
 import {
   Building2,
-  Search,
-  Plus,
   Edit,
   Key,
+  Loader2,
   MapPin,
   MoreVertical,
-  Loader2,
-  UserX,
+  Plus,
+  Search,
   UserCheck,
-} from "lucide-react"
+  UserX,
+} from "lucide-react";
+import { toast } from "sonner";
+import { adminAPI } from "@/lib/api";
+import { decodeToken, getModuleToken } from "@/lib/utils/auth";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { adminAPI } from "@/lib/api"
-import { toast } from "sonner"
-import { format } from "date-fns"
+} from "@/components/ui/dropdown-menu";
 
 function getAdminRole() {
-  try {
-    const token = getModuleToken("admin")
-    if (!token) return null
-    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")))
-    return payload?.hubRole || payload?.adminRole || payload?.role
-  } catch {
-    return null
-  }
+  const token = getModuleToken("admin");
+  const decoded = decodeToken(token);
+  return decoded?.adminRole || decoded?.role || null;
 }
 
 export default function HubList() {
-  const navigate = useNavigate()
-  const [hubs, setHubs] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [searchQuery, setSearchQuery] = useState("")
+  const navigate = useNavigate();
+  const adminRole = getAdminRole();
+  const [hubs, setHubs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
   const [resetPasswordDialog, setResetPasswordDialog] = useState({
     open: false,
     hub: null,
     password: "",
     confirmPassword: "",
     loading: false,
-  })
+  });
   const [zonesDialog, setZonesDialog] = useState({
     open: false,
     hub: null,
     zoneIds: [],
     availableZones: [],
     loading: false,
-  })
+  });
 
-  useEffect(() => {
-    if (getAdminRole() === "hub_manager") {
-      navigate("/admin", { replace: true })
-    }
-  }, [navigate])
+  const isSuperAdmin = adminRole === "super_admin";
 
   const loadHubs = async () => {
     try {
-      setLoading(true)
-      const res = await adminAPI.getHubs()
-      const data = res.data?.data?.hubs || res.data?.hubs || []
-      setHubs(data)
+      setLoading(true);
+      const response = await adminAPI.getHubs();
+      setHubs(response?.data?.data?.hubs || response?.data?.hubs || []);
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to load hubs")
-      setHubs([])
+      toast.error(err?.response?.data?.message || "Failed to load hubs");
+      setHubs([]);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   useEffect(() => {
-    loadHubs()
-  }, [])
+    if (!isSuperAdmin) return;
+    loadHubs();
+  }, [isSuperAdmin]);
 
-  const filteredHubs = hubs.filter(
-    (h) =>
-      !searchQuery.trim() ||
-      h.hubName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      h.managerName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      h.email?.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  if (!isSuperAdmin) {
+    return <Navigate to="/admin" replace />;
+  }
+
+  const filteredHubs = hubs.filter((hub) => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return true;
+
+    return (
+      hub.hubName?.toLowerCase().includes(query) ||
+      hub.managerName?.toLowerCase().includes(query) ||
+      hub.email?.toLowerCase().includes(query)
+    );
+  });
 
   const handleDisable = async (hub) => {
-    if (!window.confirm(`Disable hub "${hub.hubName}"?`)) return
+    if (!window.confirm(`Disable hub "${hub.hubName}"?`)) return;
+
     try {
-      await adminAPI.disableHub(hub._id)
-      toast.success("Hub disabled")
-      loadHubs()
+      await adminAPI.disableHub(hub._id);
+      toast.success("Hub disabled");
+      loadHubs();
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to disable hub")
+      toast.error(err?.response?.data?.message || "Failed to disable hub");
     }
-  }
+  };
 
   const handleEnable = async (hub) => {
     try {
-      await adminAPI.enableHub(hub._id)
-      toast.success("Hub enabled")
-      loadHubs()
+      await adminAPI.enableHub(hub._id);
+      toast.success("Hub enabled");
+      loadHubs();
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to enable hub")
+      toast.error(err?.response?.data?.message || "Failed to enable hub");
     }
-  }
+  };
 
   const handleResetPassword = async () => {
-    const { hub, password, confirmPassword } = resetPasswordDialog
+    const { hub, password, confirmPassword } = resetPasswordDialog;
     if (!hub || !password || !confirmPassword) {
-      toast.error("Fill all fields")
-      return
+      toast.error("Fill all fields");
+      return;
     }
+
     if (password !== confirmPassword) {
-      toast.error("Passwords do not match")
-      return
+      toast.error("Passwords do not match");
+      return;
     }
+
     if (password.length < 6) {
-      toast.error("Password must be at least 6 characters")
-      return
+      toast.error("Password must be at least 6 characters");
+      return;
     }
+
     try {
-      setResetPasswordDialog((p) => ({ ...p, loading: true }))
-      await adminAPI.resetHubPassword(hub._id, password, confirmPassword)
-      toast.success("Password reset successfully")
-      setResetPasswordDialog({ open: false, hub: null, password: "", confirmPassword: "", loading: false })
+      setResetPasswordDialog((prev) => ({ ...prev, loading: true }));
+      await adminAPI.resetHubPassword(hub._id, password, confirmPassword);
+      toast.success("Password reset successfully");
+      setResetPasswordDialog({
+        open: false,
+        hub: null,
+        password: "",
+        confirmPassword: "",
+        loading: false,
+      });
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to reset password")
-      setResetPasswordDialog((p) => ({ ...p, loading: false }))
+      toast.error(err?.response?.data?.message || "Failed to reset password");
+      setResetPasswordDialog((prev) => ({ ...prev, loading: false }));
     }
-  }
+  };
 
   const openZonesDialog = async (hub) => {
     setZonesDialog({
       open: true,
       hub,
-      zoneIds: hub.assignedZones?.map((z) => z._id) || [],
+      zoneIds: hub.assignedZones?.map((zone) => zone._id) || [],
       availableZones: [],
       loading: false,
-    })
+    });
+
     try {
-      const res = await adminAPI.getZones({ limit: 500 })
-      const zones = res.data?.data?.zones || res.data?.zones || []
-      setZonesDialog((p) => ({ ...p, availableZones: zones }))
+      const response = await adminAPI.getZones({ limit: 500 });
+      setZonesDialog((prev) => ({
+        ...prev,
+        availableZones: response?.data?.data?.zones || response?.data?.zones || [],
+      }));
     } catch {
-      setZonesDialog((p) => ({ ...p, availableZones: [] }))
+      setZonesDialog((prev) => ({ ...prev, availableZones: [] }));
     }
-  }
+  };
 
   const handleUpdateZones = async () => {
-    const { hub, zoneIds } = zonesDialog
+    const { hub, zoneIds } = zonesDialog;
     if (!hub || !zoneIds?.length) {
-      toast.error("Select at least one zone")
-      return
+      toast.error("Select at least one zone");
+      return;
     }
+
     try {
-      setZonesDialog((p) => ({ ...p, loading: true }))
-      await adminAPI.updateHubZones(hub._id, zoneIds)
-      toast.success("Zones updated")
-      setZonesDialog({ open: false, hub: null, zoneIds: [], availableZones: [], loading: false })
-      loadHubs()
+      setZonesDialog((prev) => ({ ...prev, loading: true }));
+      await adminAPI.updateHubZones(hub._id, zoneIds);
+      toast.success("Zones updated");
+      setZonesDialog({
+        open: false,
+        hub: null,
+        zoneIds: [],
+        availableZones: [],
+        loading: false,
+      });
+      loadHubs();
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to update zones")
-      setZonesDialog((p) => ({ ...p, loading: false }))
+      toast.error(err?.response?.data?.message || "Failed to update zones");
+      setZonesDialog((prev) => ({ ...prev, loading: false }));
     }
-  }
+  };
 
   return (
     <div className="p-4 lg:p-6 bg-slate-50 min-h-screen">
@@ -190,7 +209,9 @@ export default function HubList() {
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-slate-900">Hub Management</h1>
-                <p className="text-slate-600 text-sm">Manage hub managers and their assigned zones</p>
+                <p className="text-slate-600 text-sm">
+                  Manage hub managers and their assigned zones
+                </p>
               </div>
             </div>
             <Button
@@ -204,16 +225,14 @@ export default function HubList() {
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-            <div className="relative flex-1 max-w-[280px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <Input
-                placeholder="Search by hub name, manager, email..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
-              />
-            </div>
+          <div className="relative flex-1 max-w-[280px] mb-6">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <Input
+              placeholder="Search by hub name, manager, email..."
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              className="pl-10"
+            />
           </div>
 
           {loading ? (
@@ -244,15 +263,15 @@ export default function HubList() {
                       <td className="py-3 px-4">{hub.phone || "-"}</td>
                       <td className="py-3 px-4">
                         <div className="flex flex-wrap gap-1">
-                          {(hub.assignedZones || []).map((z) => (
+                          {(hub.assignedZones || []).map((zone) => (
                             <span
-                              key={z._id}
+                              key={zone._id}
                               className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 text-xs"
                             >
-                              {z.name}
+                              {zone.name}
                             </span>
                           ))}
-                          {(!hub.assignedZones || hub.assignedZones.length === 0) && "-"}
+                          {!hub.assignedZones?.length ? "-" : null}
                         </div>
                       </td>
                       <td className="py-3 px-4">
@@ -321,18 +340,23 @@ export default function HubList() {
                   ))}
                 </tbody>
               </table>
-              {filteredHubs.length === 0 && (
+
+              {filteredHubs.length === 0 ? (
                 <div className="py-12 text-center text-slate-500">
                   No hubs found. Create your first hub to get started.
                 </div>
-              )}
+              ) : null}
             </div>
           )}
         </div>
       </div>
 
-      {/* Reset Password Dialog */}
-      <Dialog open={resetPasswordDialog.open} onOpenChange={(o) => setResetPasswordDialog((p) => ({ ...p, open: o }))}>
+      <Dialog
+        open={resetPasswordDialog.open}
+        onOpenChange={(open) =>
+          setResetPasswordDialog((prev) => ({ ...prev, open }))
+        }
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Reset Password</DialogTitle>
@@ -346,7 +370,12 @@ export default function HubList() {
               <Input
                 type="password"
                 value={resetPasswordDialog.password}
-                onChange={(e) => setResetPasswordDialog((p) => ({ ...p, password: e.target.value }))}
+                onChange={(event) =>
+                  setResetPasswordDialog((prev) => ({
+                    ...prev,
+                    password: event.target.value,
+                  }))
+                }
                 placeholder="Min 6 characters"
               />
             </div>
@@ -355,25 +384,42 @@ export default function HubList() {
               <Input
                 type="password"
                 value={resetPasswordDialog.confirmPassword}
-                onChange={(e) => setResetPasswordDialog((p) => ({ ...p, confirmPassword: e.target.value }))}
+                onChange={(event) =>
+                  setResetPasswordDialog((prev) => ({
+                    ...prev,
+                    confirmPassword: event.target.value,
+                  }))
+                }
                 placeholder="Confirm new password"
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setResetPasswordDialog((p) => ({ ...p, open: false }))}>
+            <Button
+              variant="outline"
+              onClick={() =>
+                setResetPasswordDialog((prev) => ({ ...prev, open: false }))
+              }
+            >
               Cancel
             </Button>
-            <Button onClick={handleResetPassword} disabled={resetPasswordDialog.loading}>
-              {resetPasswordDialog.loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+            <Button
+              onClick={handleResetPassword}
+              disabled={resetPasswordDialog.loading}
+            >
+              {resetPasswordDialog.loading ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : null}
               Reset Password
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Change Zones Dialog */}
-      <Dialog open={zonesDialog.open} onOpenChange={(o) => setZonesDialog((p) => ({ ...p, open: o }))}>
+      <Dialog
+        open={zonesDialog.open}
+        onOpenChange={(open) => setZonesDialog((prev) => ({ ...prev, open }))}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Change Assigned Zones</DialogTitle>
@@ -382,37 +428,45 @@ export default function HubList() {
             </DialogDescription>
           </DialogHeader>
           <div className="py-4 max-h-[300px] overflow-y-auto space-y-2">
-            {(zonesDialog.availableZones || []).map((z) => (
-              <label key={z._id} className="flex items-center gap-2 cursor-pointer">
+            {(zonesDialog.availableZones || []).map((zone) => (
+              <label key={zone._id} className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={zonesDialog.zoneIds?.includes(z._id)}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      setZonesDialog((p) => ({ ...p, zoneIds: [...(p.zoneIds || []), z._id] }))
+                  checked={zonesDialog.zoneIds?.includes(zone._id)}
+                  onChange={(event) => {
+                    if (event.target.checked) {
+                      setZonesDialog((prev) => ({
+                        ...prev,
+                        zoneIds: [...(prev.zoneIds || []), zone._id],
+                      }));
                     } else {
-                      setZonesDialog((p) => ({
-                        ...p,
-                        zoneIds: (p.zoneIds || []).filter((id) => id !== z._id),
-                      }))
+                      setZonesDialog((prev) => ({
+                        ...prev,
+                        zoneIds: (prev.zoneIds || []).filter((id) => id !== zone._id),
+                      }));
                     }
                   }}
                 />
-                <span>{z.name || z.zoneName || z.serviceLocation || z._id}</span>
+                <span>{zone.name || zone.zoneName || zone.serviceLocation || zone._id}</span>
               </label>
             ))}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setZonesDialog((p) => ({ ...p, open: false }))}>
+            <Button
+              variant="outline"
+              onClick={() => setZonesDialog((prev) => ({ ...prev, open: false }))}
+            >
               Cancel
             </Button>
             <Button onClick={handleUpdateZones} disabled={zonesDialog.loading}>
-              {zonesDialog.loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              {zonesDialog.loading ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : null}
               Update Zones
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
-  )
+  );
 }

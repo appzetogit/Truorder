@@ -1,8 +1,7 @@
 import { useLocation } from "react-router-dom"
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useState } from "react"
 import BottomNavigation from "./BottomNavigation"
-import { getUnreadDeliveryNotificationCount } from "../utils/deliveryNotifications"
-import { registerFcmTokenForDelivery, setupForegroundNotifications } from "@/lib/notifications/fcmWeb"
+import { deliveryAPI } from "@/lib/api"
 
 export default function DeliveryLayout({
   children,
@@ -12,34 +11,31 @@ export default function DeliveryLayout({
   onGigClick
 }) {
   const location = useLocation()
-  const fcmRegistered = useRef(false)
-  const [requestBadgeCount, setRequestBadgeCount] = useState(() =>
-    getUnreadDeliveryNotificationCount()
-  )
-
-  useEffect(() => {
-    if (!fcmRegistered.current) {
-      fcmRegistered.current = true
-      registerFcmTokenForDelivery()
-      setupForegroundNotifications()
-    }
-  }, [])
+  const [requestBadgeCount, setRequestBadgeCount] = useState(0)
 
   // Update badge count when location changes
   useEffect(() => {
-    setRequestBadgeCount(getUnreadDeliveryNotificationCount())
+    const refreshBadgeCount = async () => {
+      try {
+        const response = await deliveryAPI.getUnreadNotificationCount()
+        const count = response?.data?.data?.unreadCount ?? response?.data?.unreadCount ?? 0
+        setRequestBadgeCount(Number(count) || 0)
+      } catch (error) {
+        console.warn("Failed to fetch delivery notification badge count:", error?.message || error)
+        setRequestBadgeCount(0)
+      }
+    }
 
     // Listen for notification updates
     const handleNotificationUpdate = () => {
-      setRequestBadgeCount(getUnreadDeliveryNotificationCount())
+      refreshBadgeCount()
     }
 
+    refreshBadgeCount()
     window.addEventListener('deliveryNotificationsUpdated', handleNotificationUpdate)
-    window.addEventListener('storage', handleNotificationUpdate)
 
     return () => {
       window.removeEventListener('deliveryNotificationsUpdated', handleNotificationUpdate)
-      window.removeEventListener('storage', handleNotificationUpdate)
     }
   }, [location.pathname])
 

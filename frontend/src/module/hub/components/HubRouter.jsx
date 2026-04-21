@@ -1,7 +1,7 @@
 import { Suspense, lazy } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
-import HubLayout from "./HubLayout";
+import { Navigate, Route, Routes } from "react-router-dom";
 import Loader from "@/components/Loader";
+import HubLayout from "./HubLayout";
 
 const AdminHome = lazy(() => import("@/module/admin/pages/AdminHome"));
 const OrdersPage = lazy(() => import("@/module/admin/pages/orders/OrdersPage"));
@@ -27,12 +27,9 @@ export default function HubRouter() {
           <Route path="customers" element={<Customers isHub />} />
           <Route path="complaints" element={<RestaurantComplaints isHub />} />
           <Route path="profile" element={<HubProfile />} />
-          {/* Fallback */}
           <Route path="*" element={<Navigate to="/hub" replace />} />
         </Route>
       </Routes>
     </Suspense>
   );
 }
-
-

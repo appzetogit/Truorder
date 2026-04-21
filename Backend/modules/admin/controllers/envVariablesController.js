@@ -26,8 +26,10 @@ const logger = winston.createLogger({
  */
 export const getEnvVariables = asyncHandler(async (req, res) => {
   try {
-    // Read merged env values without mutating the DB document.
-    const envData = await getAllEnvVars();
+    const envVars = await EnvironmentVariable.getOrCreate();
+
+    // Return all variables (excluding sensitive data in response, but include in database)
+    const envData = envVars.toEnvObject();
 
     logger.info("Environment variables retrieved successfully");
 
@@ -52,7 +54,7 @@ export const getEnvVariables = asyncHandler(async (req, res) => {
  */
 export const getPublicEnvVariables = asyncHandler(async (req, res) => {
   try {
-    // Read merged env values without mutating the DB document.
+    // This now automatically handles injection for all schema fields via getAllEnvVars
     const envData = await getAllEnvVars();
 
     // Return only public variables that frontend needs
@@ -138,45 +140,28 @@ export const saveEnvVariables = asyncHandler(async (req, res) => {
       );
     }
 
-    // Update only fields that are explicitly provided with non-empty values.
-    // This prevents partial form submissions or empty defaults from wiping DB values.
+    // Update all fields (encryption will happen in pre-save hook)
     const updatedFields = [];
     Object.keys(envData).forEach((key) => {
       if (envVars.schema.paths[key]) {
+        // Set the value directly - pre-save hook will encrypt it
         let value = envData[key];
 
-        if (value === undefined) {
-          return;
-        }
-
-        if (value === null) {
-          return;
-        }
-
         // Convert to string for all fields (schema expects strings)
-        value = String(value);
-
-        // Ignore empty-string updates so existing DB values are not deleted
-        // by incomplete payloads or default-empty form state.
-        if (value.trim() === "") {
-          return;
+        if (value !== null && value !== undefined) {
+          value = String(value);
+        } else {
+          value = "";
         }
 
         envVars[key] = value;
+        // Mark field as modified to trigger encryption
         envVars.markModified(key);
         updatedFields.push(key);
       } else {
         logger.warn(`Unknown field in request: ${key}`);
       }
     });
-
-    if (updatedFields.length === 0) {
-      return errorResponse(
-        res,
-        400,
-        "No valid environment variables provided to update",
-      );
-    }
 
     logger.info(
       `Updated ${updatedFields.length} fields: ${updatedFields.join(", ")}`,

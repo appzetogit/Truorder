@@ -43,6 +43,7 @@ import { useCart } from "../../context/CartContext"
 import { useProfile } from "../../context/ProfileContext"
 import AddToCartAnimation from "../../components/AddToCartAnimation"
 import { getCompanyNameAsync } from "@/lib/utils/businessSettings"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
 import { isModuleAuthenticated } from "@/lib/utils/auth"
 
 
@@ -52,9 +53,10 @@ export default function RestaurantDetails() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const showOnlyUnder250 = searchParams.get('under250') === 'true'
-  const initialSearchQuery = searchParams.get('q') || ""
-  const categoryFromUrl = searchParams.get('q') || ""
+  const initialSearchQuery = searchParams.get('search') || searchParams.get('q') || ""
+  const categoryFromUrl = searchParams.get('category') || ""
   const { addToCart, updateQuantity, removeFromCart, getCartItem, cart, openVariantPicker, addItemOrAskVariant } = useCart()
+  const hasCartItems = cart.some((item) => (item.quantity || 0) > 0)
   const {
     vegMode,
     addDishFavorite,
@@ -70,7 +72,7 @@ export default function RestaurantDetails() {
     toggleItemInCollection
   } = useProfile()
   const { location: userLocation } = useLocation() // Get user's current location
-  const { zoneId, zone, loading: loadingZone, isOutOfService } = useZone(userLocation) // Get user's zone for zone-based filtering
+  const { zoneId, currentLocation, locationRefreshKey, loading: loadingZone, isOutOfService } = useZone() // Get user's zone for zone-based filtering
   const [currentImageIndex, setCurrentImageIndex] = useState(0)
   const [highlightIndex, setHighlightIndex] = useState(0)
   const [quantities, setQuantities] = useState({})
@@ -90,18 +92,21 @@ export default function RestaurantDetails() {
   const [showLargeOrderMenu, setShowLargeOrderMenu] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery)
+  const [showSearchSuggestions, setShowSearchSuggestions] = useState(
+    Boolean(initialSearchQuery.trim()),
+  )
   const [showMenuOptionsSheet, setShowMenuOptionsSheet] = useState(false)
   const [expandedAddButtons, setExpandedAddButtons] = useState(new Set())
   const [expandedSections, setExpandedSections] = useState(new Set([0])) // Default: Recommended section is expanded
   const [highlightedSection, setHighlightedSection] = useState(null)
   const [filters, setFilters] = useState({
     sortBy: null, // "low-to-high" | "high-to-low"
-    vegNonVeg: null, // "veg" | "non-veg"
+    vegNonVeg: null, // "veg" | "non-veg" | "egg"
   })
 
-  // When global Veg Mode is enabled, ensure local filter is never set to "non-veg"
+  // When global Veg Mode is enabled, ensure local filter is never set to non-veg/egg.
   useEffect(() => {
-    if (vegMode && filters.vegNonVeg === "non-veg") {
+    if (vegMode && (filters.vegNonVeg === "non-veg" || filters.vegNonVeg === "egg")) {
       setFilters((prev) => ({
         ...prev,
         vegNonVeg: null,
@@ -120,21 +125,28 @@ export default function RestaurantDetails() {
     const fetchRestaurant = async () => {
       if (!slug) return
 
-      // Prevent redundant fetches
-      if (fetchedRestaurantRef.current && restaurant && restaurant.slug === slug) {
-        if (zoneId && !loadingZone) return
-      }
-
       try {
         setLoadingRestaurant(true)
         setRestaurantError(null)
 
         console.log('Fetching restaurant with slug:', slug)
         let apiRestaurant = null
+        const requestParams = {
+          ...(zoneId ? { zoneId } : {}),
+          ...(currentLocation?.latitude && currentLocation?.longitude
+            ? {
+                lat: currentLocation.latitude,
+                lng: currentLocation.longitude,
+              }
+            : {}),
+        }
 
         // Try to get restaurant by slug
         try {
-          const response = await diningAPI.getRestaurantBySlug(slug)
+          const response = await diningAPI.getRestaurantBySlug(
+            slug,
+            requestParams,
+          )
           if (response.data?.success) {
             apiRestaurant = response.data.data
           }
@@ -145,7 +157,7 @@ export default function RestaurantDetails() {
         // Fallback to search
               if (!apiRestaurant) {
           try {
-            const searchRes = await diningAPI.searchRestaurants({ q: slug })
+            const searchRes = await diningAPI.searchRestaurants({ q: slug, ...requestParams })
             if (searchRes.data?.success && searchRes.data.data?.restaurants) {
               apiRestaurant = searchRes.data.data.restaurants.find(r => r.slug === slug)
               }
@@ -181,7 +193,10 @@ export default function RestaurantDetails() {
             try {
               console.log('📋 Fetching menu and inventory for:', restaurantId)
               const [menuRes, inventoryRes] = await Promise.allSettled([
-                restaurantAPI.getMenuByRestaurantId(restaurantId),
+                restaurantAPI.getMenuByRestaurantId(
+                  restaurantId,
+                  requestParams,
+                ),
                 restaurantAPI.getInventoryByRestaurantId(restaurantId)
               ])
 
@@ -256,7 +271,14 @@ export default function RestaurantDetails() {
     }
 
     if (!loadingZone) fetchRestaurant()
-  }, [slug, zoneId, loadingZone, restaurant?.slug])
+  }, [
+    currentLocation?.latitude,
+    currentLocation?.longitude,
+    loadingZone,
+    locationRefreshKey,
+    slug,
+    zoneId,
+  ])
 
 
   // Track previous values to prevent unnecessary recalculations
@@ -359,13 +381,6 @@ export default function RestaurantDetails() {
 
   // Helper function to update item quantity in both local state and cart
   const updateItemQuantity = (item, newQuantity, event = null) => {
-    // Check authentication
-    if (!isModuleAuthenticated('user')) {
-      toast.error("Please login to add items to cart")
-      navigate('/user/auth/sign-in', { state: { from: location.pathname } })
-      return
-    }
-
     // CRITICAL: Check if user is in service zone or restaurant is available
     if (isOutOfService) {
       toast.error('You are outside the service zone. Please select a location within the service area.');
@@ -564,7 +579,7 @@ export default function RestaurantDetails() {
     })
   }, [])
 
-  // When arriving with a ?q= from category/search page, auto-scroll to matching menu section
+  // When arriving with a dish search query, auto-scroll to the first matching menu section
   useEffect(() => {
     if (!initialSearchQuery || !restaurant || !restaurant.menuSections) return
 
@@ -682,27 +697,12 @@ export default function RestaurantDetails() {
     const shareUrl = `${window.location.origin}/user/restaurants/${restaurantSlug}`
     const shareText = `Check out ${restaurantName} on ${companyName}! ${shareUrl}`
 
-    // Try Web Share API first (mobile)
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: restaurantName,
-          text: shareText,
-          url: shareUrl,
-        })
-        toast.success("Restaurant shared successfully")
-        setShowMenuOptionsSheet(false)
-      } catch (error) {
-        // User cancelled or error occurred
-        if (error.name !== "AbortError") {
-          // Fallback to copy to clipboard
-          await copyToClipboard(shareUrl)
-        }
-      }
-    } else {
-      // Fallback to copy to clipboard
-      await copyToClipboard(shareUrl)
-    }
+    await shareWithFallback({
+      title: restaurantName,
+      text: shareText,
+      url: shareUrl,
+    })
+    setShowMenuOptionsSheet(false)
   }
 
 
@@ -717,49 +717,11 @@ export default function RestaurantDetails() {
     const shareUrl = `${window.location.origin}/user/restaurants/${restaurantSlug}?dish=${dishId}`
     const shareText = `Check out ${item.name} from ${restaurant?.name || "this restaurant"}! ${shareUrl}`
 
-    // Try Web Share API first (mobile)
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: `${item.name} - ${restaurant?.name || ""}`,
-          text: shareText,
-          url: shareUrl,
-        })
-        toast.success("Dish shared successfully")
-      } catch (error) {
-        // User cancelled or error occurred
-        if (error.name !== "AbortError") {
-          // Fallback to copy to clipboard
-          await copyToClipboard(shareUrl)
-        }
-      }
-    } else {
-      // Fallback to copy to clipboard
-      await copyToClipboard(shareUrl)
-    }
-  }
-
-  // Copy to clipboard helper
-  const copyToClipboard = async (text) => {
-    try {
-      await navigator.clipboard.writeText(text)
-      toast.success("Link copied to clipboard!")
-    } catch (error) {
-      // Fallback for older browsers
-      const textArea = document.createElement("textarea")
-      textArea.value = text
-      textArea.style.position = "fixed"
-      textArea.style.opacity = "0"
-      document.body.appendChild(textArea)
-      textArea.select()
-      try {
-        document.execCommand("copy")
-        toast.success("Link copied to clipboard!")
-      } catch (err) {
-        toast.error("Failed to copy link")
-      }
-      document.body.removeChild(textArea)
-    }
+    await shareWithFallback({
+      title: `${item.name} - ${restaurant?.name || ""}`,
+      text: shareText,
+      url: shareUrl,
+    })
   }
 
   // Handle item card click
@@ -828,7 +790,7 @@ export default function RestaurantDetails() {
     if (!items) return items
 
     return items.filter((item) => {
-      // Category filter (when coming from category page with ?q=)
+      // Category filter (when coming from category page with ?category=)
       if (categoryFromUrl.trim()) {
         if (!itemMatchesCategory(item, categoryFromUrl)) return false
       }
@@ -842,18 +804,27 @@ export default function RestaurantDetails() {
       // Search filter
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase().trim()
-        const itemName = item.name?.toLowerCase() || ""
-        if (!itemName.includes(query)) return false
+        const searchableText = [
+          item.name,
+          item.description,
+          item.category,
+          item.foodType,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+
+        if (!searchableText.includes(query)) return false
       }
 
       // VegMode filter - when vegMode is ON and no local override is selected,
-      // show only Veg items. If user explicitly selects Veg/Non-veg filter,
+      // show only Veg items. If user explicitly selects Veg/Non-veg/Egg filter,
       // that local choice takes precedence over global vegMode.
       if (vegMode === true && !filters.vegNonVeg) {
         if (item.foodType !== "Veg") return false
       }
 
-      // Veg/Non-veg filter (local filter override - has higher priority)
+      // Veg/Non-veg/Egg filter (local filter override - has higher priority)
       if (filters.vegNonVeg === "veg") {
         // Show only veg items
         if (item.foodType !== "Veg") return false
@@ -861,6 +832,10 @@ export default function RestaurantDetails() {
       if (filters.vegNonVeg === "non-veg") {
         // Show only non-veg items
         if (item.foodType !== "Non-Veg") return false
+      }
+      if (filters.vegNonVeg === "egg") {
+        // Show only egg items
+        if (item.foodType !== "Egg") return false
       }
 
 
@@ -926,6 +901,89 @@ export default function RestaurantDetails() {
     return sections
   }
 
+  const allMenuItems = (() => {
+    if (!restaurant?.menuSections || !Array.isArray(restaurant.menuSections)) return []
+
+    const seenItemKeys = new Set()
+    const flattenedItems = []
+
+    const appendItems = (items = []) => {
+      items.forEach((item) => {
+        if (!item || item.isAvailable === false) return
+        const uniqueKey = String(item.id || item._id || item.name || Math.random())
+        if (seenItemKeys.has(uniqueKey)) return
+        seenItemKeys.add(uniqueKey)
+        flattenedItems.push(item)
+      })
+    }
+
+    restaurant.menuSections.forEach((section) => {
+      appendItems(section?.items || [])
+      ;(section?.subsections || []).forEach((subsection) => {
+        appendItems(subsection?.items || [])
+      })
+    })
+
+    return flattenedItems
+  })()
+
+  const searchSuggestions = (() => {
+    const query = searchQuery.trim().toLowerCase()
+    if (!query) return []
+
+    return allMenuItems
+      .map((item) => {
+        const name = String(item.name || "").trim()
+        const description = String(item.description || "").trim()
+        const searchableText = [name, description, item.category, item.foodType]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+
+        let score = 0
+        if (name.toLowerCase().startsWith(query)) score += 4
+        if (name.toLowerCase().includes(query)) score += 3
+        if (description.toLowerCase().includes(query)) score += 1
+        if (searchableText.includes(query)) score += 1
+
+        return {
+          item,
+          name,
+          description,
+          score,
+        }
+      })
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+      .slice(0, 6)
+  })()
+
+  const hasVisibleMenuItems = getFilteredSections().some(({ section }) => {
+    const directItems = sortMenuItems(filterMenuItems(section.items || []))
+    if (directItems.length > 0) return true
+
+    if (!section.subsections || section.subsections.length === 0) return false
+
+    return section.subsections.some((subsection) => {
+      if (categoryFromUrl.trim()) {
+        if (!subsection.items || subsection.items.length === 0) return false
+        if (!subsection.items.some((item) => item.isAvailable !== false && itemMatchesCategory(item, categoryFromUrl))) {
+          return false
+        }
+      }
+      if (showOnlyUnder250) {
+        if (!subsection.items || subsection.items.length === 0) return false
+        const hasUnder250Item = subsection.items.some((item) => {
+          if (item.isAvailable === false) return false
+          return getFinalPrice(item) <= 250
+        })
+        if (!hasUnder250Item) return false
+      }
+
+      return sortMenuItems(filterMenuItems(subsection.items || [])).length > 0
+    })
+  })
+
   // Menu categories - use filtered sections so menu sheet matches main content
   const menuCategories = (() => {
     const filtered = getFilteredSections()
@@ -979,18 +1037,18 @@ export default function RestaurantDetails() {
     return (
     <AnimatedPage
       id="scrollingelement"
-      className={`min-h-screen bg-white dark:bg-[#0a0a0a] flex flex-col transition-all duration-300 ${shouldShowGrayscale ? 'grayscale opacity-75' : ''
+      className={`min-h-screen pt-2 bg-white dark:bg-[#0a0a0a] flex flex-col transition-all duration-300 ${shouldShowGrayscale ? 'grayscale opacity-75' : ''
         }`}
     >
       {loadingRestaurant ? (
-        <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-[#0a0a0a]">
+        <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-[#0a0a0a] pt-[env(safe-area-inset-top,0px)]">
           <div className="flex flex-col items-center gap-4">
             <Loader2 className="h-8 w-8 text-green-600 animate-spin" />
             <span className="text-sm text-gray-600 dark:text-gray-400">Loading restaurant...</span>
           </div>
         </div>
       ) : (restaurantError && !restaurant) || !restaurant ? (
-        <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-[#0a0a0a] px-4">
+        <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-[#0a0a0a] px-4 pt-[env(safe-area-inset-top,0px)]">
           <div className="flex flex-col items-center gap-4 text-center">
             <AlertCircle className={`h-12 w-12 ${restaurantError?.includes('Backend') ? 'text-orange-500' : 'text-red-500'}`} />
             <div>
@@ -1008,7 +1066,7 @@ export default function RestaurantDetails() {
         <>
 
       {/* Header - Back, Search, Menu (like reference image) */}
-      <div className="px-4 sm:px-6 md:px-8 lg:px-10 xl:px-12 pt-3 md:pt-4 lg:pt-5 pb-2 md:pb-3 bg-white dark:bg-[#1a1a1a]">
+      <div className="px-4 sm:px-6 md:px-8 lg:px-10 xl:px-12 max-md:pt-[max(1.25rem,calc(1.25rem+env(safe-area-inset-top,0px)))] md:pt-6 lg:pt-7 pb-2 md:pb-3 bg-white dark:bg-[#1a1a1a]">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           {/* Back Button */}
           <Button
@@ -1039,19 +1097,57 @@ export default function RestaurantDetails() {
                     type="text"
                     placeholder="Search for dishes..."
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value)
+                      setShowSearchSuggestions(Boolean(e.target.value.trim()))
+                    }}
                     className="w-full pl-10 pr-10 py-2 rounded-full border border-gray-200 dark:border-gray-800 shadow-sm bg-white dark:bg-[#1a1a1a] text-sm dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
                     autoFocus
+                    onFocus={() => {
+                      setShowSearchSuggestions(Boolean(searchQuery.trim()))
+                    }}
                     onBlur={() => {
-                      if (!searchQuery) {
-                        setShowSearch(false)
-                      }
+                      window.setTimeout(() => {
+                        setShowSearchSuggestions(false)
+                        if (!searchQuery) {
+                          setShowSearch(false)
+                        }
+                      }, 120)
                     }}
                   />
+                  {showSearchSuggestions && searchSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl">
+                      {searchSuggestions.map(({ item, name, description }) => (
+                        <button
+                          key={String(item.id || item._id || name)}
+                          type="button"
+                          onMouseDown={(event) => {
+                            event.preventDefault()
+                            setSearchQuery(name)
+                            setShowSearchSuggestions(false)
+                          }}
+                          className="flex w-full items-start gap-3 border-b border-gray-100 px-4 py-3 text-left last:border-b-0 hover:bg-gray-50"
+                        >
+                          <Search className="mt-0.5 h-4 w-4 flex-shrink-0 text-gray-400" />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-gray-900">
+                              {name}
+                            </div>
+                            {description && (
+                              <div className="truncate text-xs text-gray-500">
+                                {description}
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {searchQuery && (
                     <button
                       onClick={() => {
                         setSearchQuery("")
+                        setShowSearchSuggestions(false)
                         setShowSearch(false)
                       }}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
@@ -1194,6 +1290,26 @@ export default function RestaurantDetails() {
                   )}
                 </Button>
               )}
+              {!vegMode && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={`flex items-center gap-1.5 whitespace-nowrap border-gray-300 bg-white rounded-full ${filters.vegNonVeg === "egg" ? "border-[#795548] bg-amber-50" : ""
+                    }`}
+                  onClick={() =>
+                    setFilters((prev) => ({
+                      ...prev,
+                      vegNonVeg: prev.vegNonVeg === "egg" ? null : "egg",
+                    }))
+                  }
+                >
+                  <div className="h-3 w-3 rounded-full bg-[#795548]" />
+                  Egg
+                  {filters.vegNonVeg === "egg" && (
+                    <X className="h-3 w-3 text-gray-600" />
+                  )}
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -1216,7 +1332,7 @@ export default function RestaurantDetails() {
         )}
 
         {/* Menu Items Section */}
-        {restaurant?.menuSections && Array.isArray(restaurant.menuSections) && restaurant.menuSections.length > 0 && (
+        {restaurant?.menuSections && Array.isArray(restaurant.menuSections) && restaurant.menuSections.length > 0 && hasVisibleMenuItems && (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-8 lg:px-10 xl:px-12 py-6 sm:py-8 md:py-10 lg:py-12 space-y-6 md:space-y-8 lg:space-y-10">
             {getFilteredSections().map(({ section, originalIndex }, sectionIndex) => {
               // Handle section name - check for valid non-empty string
@@ -1315,6 +1431,7 @@ export default function RestaurantDetails() {
                         const quantity = quantities[item.id] || 0
                         // Determine veg/non-veg based on foodType
                         const isVeg = item.foodType === "Veg"
+                        const isEgg = item.foodType === "Egg"
 
                         // Debug: Log preparationTime for troubleshooting
                         if (item.preparationTime) {
@@ -1334,6 +1451,10 @@ export default function RestaurantDetails() {
                                 {isVeg ? (
                                   <div className="w-4 h-4 border-2 border-green-600 flex items-center justify-center rounded-sm flex-shrink-0">
                                     <div className="w-2 h-2 bg-green-600 rounded-full"></div>
+                                  </div>
+                                ) : isEgg ? (
+                                  <div className="w-4 h-4 border-2 border-[#795548] flex items-center justify-center rounded-sm flex-shrink-0">
+                                    <div className="w-2 h-2 bg-[#795548] rounded-full"></div>
                                   </div>
                                 ) : (
                                   <div className="w-4 h-4 border-2 border-orange-600 flex items-center justify-center rounded-sm flex-shrink-0">
@@ -1533,6 +1654,7 @@ export default function RestaurantDetails() {
                                   const quantity = quantities[item.id] || 0
                                   // Determine veg/non-veg based on foodType
                                   const isVeg = item.foodType === "Veg"
+                                  const isEgg = item.foodType === "Egg"
 
                                   // Debug: Log preparationTime for troubleshooting
                                   if (item.preparationTime) {
@@ -1552,6 +1674,10 @@ export default function RestaurantDetails() {
                                           {isVeg ? (
                                             <div className="w-4 h-4 border-2 border-green-600 flex items-center justify-center rounded-sm flex-shrink-0">
                                               <div className="w-2 h-2 bg-green-600 rounded-full"></div>
+                                            </div>
+                                          ) : isEgg ? (
+                                            <div className="w-4 h-4 border-2 border-[#795548] flex items-center justify-center rounded-sm flex-shrink-0">
+                                              <div className="w-2 h-2 bg-[#795548] rounded-full"></div>
                                             </div>
                                           ) : (
                                             <div className="w-4 h-4 border-2 border-orange-600 flex items-center justify-center rounded-sm flex-shrink-0">
@@ -1703,11 +1829,43 @@ export default function RestaurantDetails() {
             })}
           </div>
         )}
+
+        {restaurant?.menuSections && Array.isArray(restaurant.menuSections) && restaurant.menuSections.length > 0 && !hasVisibleMenuItems && (
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-8 lg:px-10 xl:px-12 py-16 text-center">
+            <div className="mx-auto max-w-md rounded-3xl border border-gray-200 bg-gray-50 px-6 py-10">
+              <h3 className="text-lg font-bold text-gray-900">No matching dishes found</h3>
+              <p className="mt-2 text-sm text-gray-600">
+                Try a different dish name or clear the current filters.
+              </p>
+              <div className="mt-4 flex items-center justify-center gap-3">
+                {searchQuery.trim() && (
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setSearchQuery("")
+                      setShowSearch(false)
+                    }}
+                  >
+                    Clear search
+                  </Button>
+                )}
+                {categoryFromUrl.trim() && (
+                  <Button
+                    variant="outline"
+                    onClick={() => navigate(`/user/restaurants/${slug}`)}
+                  >
+                    View full menu
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Menu Button - Sticky at page bottom right (z-40 so View cart floats above it) */}
       {!showFilterSheet && !showMenuSheet && !showMenuOptionsSheet && (
-        <div className="sticky dark:bg-[#1a1a1a] bottom-4 flex justify-end px-4 z-40 mt-auto">
+        <div className={`sticky dark:bg-[#1a1a1a] ${hasCartItems ? "bottom-32" : "bottom-4"} flex justify-end px-4 z-40 mt-auto transition-[bottom] duration-300 ease-in-out`}>
           <Button
             className="bg-gray-800 hover:bg-gray-900 text-white flex items-center gap-2 shadow-lg px-6 py-2.5 rounded-lg"
             size="lg"
@@ -1887,9 +2045,9 @@ export default function RestaurantDetails() {
                       </div>
                     </div>
 
-                    {/* Veg/Non-veg preference */}
+                    {/* Veg/Non-veg/Egg preference */}
                     <div className="space-y-2">
-                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Veg/Non-veg preference:</h3>
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Veg/Non-veg/Egg preference:</h3>
                       <div className="flex gap-2">
                         <button
                           onClick={() =>
@@ -1921,6 +2079,23 @@ export default function RestaurantDetails() {
                           >
                             <div className="h-4 w-4 rounded-full bg-amber-700 dark:bg-amber-600" />
                             <span className="font-medium">Non-veg</span>
+                          </button>
+                        )}
+                        {!vegMode && (
+                          <button
+                            onClick={() =>
+                              setFilters((prev) => ({
+                                ...prev,
+                                vegNonVeg: prev.vegNonVeg === "egg" ? null : "egg",
+                              }))
+                            }
+                            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border-2 transition-all flex-1 ${filters.vegNonVeg === "egg"
+                              ? "border-[#795548] dark:border-amber-500 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400"
+                              : "border-gray-200 dark:border-gray-700 bg-white dark:bg-[#2a2a2a] text-gray-700 dark:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600"
+                              }`}
+                          >
+                            <div className="h-4 w-4 rounded-full bg-[#795548] dark:bg-amber-500" />
+                            <span className="font-medium">Egg</span>
                           </button>
                         )}
                       </div>

@@ -6,7 +6,7 @@ import { adminAPI } from "@/lib/api"
 import { toast } from "sonner"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
-export default function Customers({ isHub = false }) {
+export default function Customers() {
   const [searchQuery, setSearchQuery] = useState("")
   const [customers, setCustomers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -20,7 +20,7 @@ export default function Customers({ isHub = false }) {
     joiningDate: "",
     status: "",
     sortBy: "",
-    chooseFirst: "",
+    orderAmount: "",
   })
 
   const filteredCustomers = useMemo(() => {
@@ -39,12 +39,14 @@ export default function Customers({ isHub = false }) {
     // Filter by order date (if customer has order date field, otherwise skip)
     // Note: customersDummy doesn't have orderDate, so this is a placeholder for future implementation
 
-    // Filter by joining date
+    // Filter by joining date (apply only when both dates are valid)
     if (filters.joiningDate) {
       result = result.filter(customer => {
-        // Parse joining date from format "17 Oct 2021"
         const customerDate = new Date(customer.joiningDate)
         const filterDate = new Date(filters.joiningDate)
+        if (Number.isNaN(customerDate.getTime()) || Number.isNaN(filterDate.getTime())) {
+          return true
+        }
         return customerDate.toDateString() === filterDate.toDateString()
       })
     }
@@ -71,9 +73,12 @@ export default function Customers({ isHub = false }) {
       }
     }
 
-    // Limit results if "Choose First" is set
-    if (filters.chooseFirst && parseInt(filters.chooseFirst) > 0) {
-      result = result.slice(0, parseInt(filters.chooseFirst))
+    // Filter by minimum total order amount
+    if (filters.orderAmount !== "") {
+      const minAmount = Number(filters.orderAmount)
+      if (!Number.isNaN(minAmount) && minAmount >= 0) {
+        result = result.filter(customer => Number(customer.totalOrderAmount || 0) >= minAmount)
+      }
     }
 
     return result
@@ -275,9 +280,10 @@ export default function Customers({ isHub = false }) {
               </label>
               <input
                 type="number"
-                value={filters.chooseFirst}
-                onChange={(e) => handleFilterChange("chooseFirst", e.target.value)}
+                value={filters.orderAmount}
+                onChange={(e) => handleFilterChange("orderAmount", e.target.value)}
                 placeholder="Ex: 100"
+                min="0"
                 className="w-full px-4 py-2.5 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
               />
             </div>
@@ -300,7 +306,7 @@ export default function Customers({ isHub = false }) {
                     joiningDate: "",
                     status: "",
                     sortBy: "",
-                    chooseFirst: "",
+                    orderAmount: "",
                   })
                 }}
                 className="px-6 py-2.5 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 transition-all"
@@ -422,26 +428,18 @@ export default function Customers({ isHub = false }) {
                         <span className="text-sm text-slate-700">{customer.joiningDate}</span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        {isHub ? (
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            customer.status ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
-                          }`}>
-                            {customer.status ? "Active" : "Inactive"}
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => handleToggleStatus(customer.id || customer.sl)}
-                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                              customer.status ? "bg-blue-600" : "bg-slate-300"
+                        <button
+                          onClick={() => handleToggleStatus(customer.id || customer.sl)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                            customer.status ? "bg-blue-600" : "bg-slate-300"
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              customer.status ? "translate-x-6" : "translate-x-1"
                             }`}
-                          >
-                            <span
-                              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                                customer.status ? "translate-x-6" : "translate-x-1"
-                              }`}
-                            />
-                          </button>
-                        )}
+                          />
+                        </button>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-center">
                         <button 

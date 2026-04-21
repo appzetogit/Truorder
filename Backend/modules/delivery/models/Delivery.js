@@ -205,15 +205,6 @@ const deliverySchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
-    referralCodeId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "ReferralCode",
-      default: null,
-    },
-    referralCounted: {
-      type: Boolean,
-      default: false,
-    },
     trulifeAffiliateRegistered: {
       type: Boolean,
       default: false,
@@ -306,10 +297,6 @@ const deliverySchema = new mongoose.Schema(
       type: String,
       default: null,
     },
-    fcmTokenWindows: {
-      type: String,
-      default: null,
-    },
   },
   {
     timestamps: true,
@@ -317,6 +304,8 @@ const deliverySchema = new mongoose.Schema(
 );
 
 // Indexes
+deliverySchema.index({ phone: 1 }, { unique: true });
+deliverySchema.index({ deliveryId: 1 }, { unique: true, sparse: true });
 deliverySchema.index({ "availability.currentLocation": "2dsphere" });
 deliverySchema.index({ status: 1 });
 deliverySchema.index({ isActive: 1 });

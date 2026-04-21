@@ -21,7 +21,8 @@ const orderChatSchema = new mongoose.Schema({
   orderId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    required: true
+    required: true,
+    index: true
   },
   userId: {
     type: mongoose.Schema.Types.ObjectId,

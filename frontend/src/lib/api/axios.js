@@ -5,6 +5,7 @@ import {
   getRoleFromToken,
   getModuleToken,
   clearModuleAuth,
+  decodeToken,
 } from "../utils/auth.js";
 
 // Network error tracking to prevent spam
@@ -16,6 +17,105 @@ const networkErrorState = {
   COOLDOWN_PERIOD: 30000, // 30 seconds cooldown for console errors
   TOAST_COOLDOWN_PERIOD: 60000, // 60 seconds cooldown for toast notifications
 };
+
+function isAdminAuthRoute(path) {
+  return (
+    path === "/admin/login" ||
+    path === "/admin/signup" ||
+    path === "/admin/forgot-password"
+  );
+}
+
+function isHubAuthRoute(path) {
+  return path === "/hub/login";
+}
+
+function isRestaurantAuthRoute(path) {
+  return (
+    path === "/restaurant/login" ||
+    path === "/restaurant/signup" ||
+    path === "/restaurant/signup-email" ||
+    path === "/restaurant/forgot-password" ||
+    path === "/restaurant/otp" ||
+    path === "/restaurant/welcome" ||
+    path === "/restaurant/auth/sign-in" ||
+    path === "/restaurant/auth/google-callback" ||
+    path.startsWith("/restaurant/auth/")
+  );
+}
+
+function isDeliveryAuthRoute(path) {
+  return (
+    path === "/delivery/sign-in" ||
+    path === "/delivery/signup" ||
+    path === "/delivery/otp" ||
+    path === "/delivery/welcome" ||
+    path.startsWith("/delivery/signup/") ||
+    path === "/delivery/terms" ||
+    path === "/delivery/privacy"
+  );
+}
+
+function isAnyAuthRoute(path) {
+  return (
+    isAdminAuthRoute(path) ||
+    isHubAuthRoute(path) ||
+    isRestaurantAuthRoute(path) ||
+    isDeliveryAuthRoute(path) ||
+    path.startsWith("/user/auth/")
+  );
+}
+
+function getCurrentModuleToken(path) {
+  if (path.startsWith("/admin")) return localStorage.getItem("admin_accessToken");
+  if (path.startsWith("/hub")) return localStorage.getItem("hub_accessToken");
+  if (path.startsWith("/delivery")) return localStorage.getItem("delivery_accessToken");
+  if (path.startsWith("/restaurant") && !path.startsWith("/restaurants")) {
+    return localStorage.getItem("restaurant_accessToken");
+  }
+  return getModuleToken("user") || localStorage.getItem("accessToken");
+}
+
+function shouldSuppressGlobalErrorToast(error) {
+  const currentPath = window.location.pathname || "";
+  const status = error?.response?.status;
+  const requestUrl = String(error?.config?.url || "").toLowerCase();
+  const message = String(
+    error?.response?.data?.message ||
+      error?.response?.data?.error ||
+      error?.message ||
+      "",
+  ).toLowerCase();
+
+  // Suppress noisy auth/background errors on restaurant module while account is pending/restricted.
+  if (currentPath.startsWith("/restaurant")) {
+    if (
+      message.includes("user not found") ||
+      message.includes("restaurant not found") ||
+      message.includes("restaurant account is under verification") ||
+      message.includes("inactive")
+    ) {
+      return true;
+    }
+
+    if (
+      (status === 401 || status === 403 || status === 404) &&
+      (requestUrl.includes("/restaurant/") || requestUrl.includes("/auth/me"))
+    ) {
+      return true;
+    }
+  }
+
+  if (
+    isAnyAuthRoute(currentPath) &&
+    status === 401 &&
+    (requestUrl.includes("/refresh-token") || requestUrl.includes("/user/location"))
+  ) {
+    return true;
+  }
+
+  return false;
+}
 
 // Validate API base URL on import
 if (import.meta.env.DEV) {
@@ -61,7 +161,7 @@ function getTokenForCurrentRoute() {
   if (path.startsWith("/admin")) {
     return localStorage.getItem("admin_accessToken");
   } else if (path.startsWith("/hub")) {
-    return getModuleToken("hub");
+    return localStorage.getItem("hub_accessToken");
   } else if (
     path.startsWith("/restaurant") &&
     !path.startsWith("/restaurants") &&
@@ -87,6 +187,17 @@ function getTokenForCurrentRoute() {
 
   // Fallback to legacy token for backward compatibility
   return localStorage.getItem("accessToken");
+}
+
+function tokenMatchesModule(token, module) {
+  const decoded = decodeToken(token);
+  if (!decoded) return false;
+
+  if (module === "hub") {
+    return decoded.role === "admin" && decoded.hubRole === "hub_manager";
+  }
+
+  return decoded.role === module;
 }
 
 /**
@@ -153,12 +264,13 @@ apiClient.interceptors.request.use(
           requestUrl.match(/\/restaurant\/[^/]+\/offers/)));
 
     const isAuthenticatedRoute =
-      (((path.startsWith("/admin") && !path.startsWith("/admin/login")) ||
-        path.startsWith("/hub")) ||
+      ((path.startsWith("/admin") && !isAdminAuthRoute(path)) ||
+        (path.startsWith("/hub") && !isHubAuthRoute(path)) ||
         (path.startsWith("/restaurant") &&
           !path.startsWith("/restaurants") &&
+          !isRestaurantAuthRoute(path) &&
           !isPublicRestaurantRoute) ||
-        path.startsWith("/delivery") ||
+        (path.startsWith("/delivery") && !isDeliveryAuthRoute(path)) ||
         path.startsWith("/user") ||
         path.startsWith("/usermain") ||
         path.startsWith("/orders")) &&
@@ -295,10 +407,16 @@ apiClient.interceptors.response.use(
       const currentPath = window.location.pathname;
       let tokenKey = "accessToken"; // fallback
       let expectedRole = "user";
+      let expectedModule = "user";
 
       if (currentPath.startsWith("/admin")) {
         tokenKey = "admin_accessToken";
         expectedRole = "admin";
+        expectedModule = "admin";
+      } else if (currentPath.startsWith("/hub")) {
+        tokenKey = "hub_accessToken";
+        expectedRole = "admin";
+        expectedModule = "hub";
       } else if (
         currentPath.startsWith("/restaurant") &&
         !currentPath.startsWith("/restaurants")
@@ -306,9 +424,11 @@ apiClient.interceptors.response.use(
         // /restaurant/* is for restaurant module, /restaurants/* is for user module viewing restaurants
         tokenKey = "restaurant_accessToken";
         expectedRole = "restaurant";
+        expectedModule = "restaurant";
       } else if (currentPath.startsWith("/delivery")) {
         tokenKey = "delivery_accessToken";
         expectedRole = "delivery";
+        expectedModule = "delivery";
       } else if (
         currentPath.startsWith("/user") ||
         currentPath.startsWith("/usermain") ||
@@ -318,13 +438,14 @@ apiClient.interceptors.response.use(
         // User module includes /restaurants/* and /usermain/* paths
         tokenKey = "user_accessToken";
         expectedRole = "user";
+        expectedModule = "user";
       }
 
       const token = response.data.accessToken;
       const role = getRoleFromToken(token);
 
       // Only store the token if the role matches the current module
-      if (!role || role !== expectedRole) {
+      if (!role || role !== expectedRole || !tokenMatchesModule(token, expectedModule)) {
         clearModuleAuth(tokenKey.replace("_accessToken", ""));
       } else if (tokenKey === "user_accessToken") {
         const currentUserToken = getModuleToken("user");
@@ -345,16 +466,37 @@ apiClient.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    // If error is 401 and we haven't tried to refresh yet
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    const failedRequestUrl = String(originalRequest?.url || "");
+    const isAuthFlowRequest =
+      failedRequestUrl.includes("/auth/login") ||
+      failedRequestUrl.includes("/auth/signup") ||
+      failedRequestUrl.includes("/auth/forgot-password") ||
+      failedRequestUrl.includes("/auth/send-otp") ||
+      failedRequestUrl.includes("/auth/verify-otp") ||
+      failedRequestUrl.includes("/auth/refresh-token");
+
+    // If error is 401 and we haven't tried refresh yet (skip auth flow endpoints)
+    if (
+      error.response?.status === 401 &&
+      !originalRequest._retry &&
+      !isAuthFlowRequest &&
+      !isAnyAuthRoute(window.location.pathname || "")
+    ) {
+      const currentPath = window.location.pathname || "";
+      const moduleToken = getCurrentModuleToken(currentPath);
+      if (!moduleToken || moduleToken === "null" || moduleToken === "undefined") {
+        return Promise.reject(error);
+      }
+
       originalRequest._retry = true;
 
       try {
         // Determine which module's refresh endpoint to use based on current route
-        const currentPath = window.location.pathname;
         let refreshEndpoint = "/auth/refresh-token"; // default to user auth
 
         if (currentPath.startsWith("/admin")) {
+          refreshEndpoint = "/admin/auth/refresh-token";
+        } else if (currentPath.startsWith("/hub")) {
           refreshEndpoint = "/admin/auth/refresh-token";
         } else if (
           currentPath.startsWith("/restaurant") &&
@@ -383,10 +525,16 @@ apiClient.interceptors.response.use(
           const currentPath = window.location.pathname;
           let tokenKey = "accessToken"; // fallback
           let expectedRole = "user";
+          let expectedModule = "user";
 
           if (currentPath.startsWith("/admin")) {
             tokenKey = "admin_accessToken";
             expectedRole = "admin";
+            expectedModule = "admin";
+          } else if (currentPath.startsWith("/hub")) {
+            tokenKey = "hub_accessToken";
+            expectedRole = "admin";
+            expectedModule = "hub";
           } else if (
             currentPath.startsWith("/restaurant") &&
             !currentPath.startsWith("/restaurants")
@@ -394,9 +542,11 @@ apiClient.interceptors.response.use(
             // /restaurant/* is for restaurant module, /restaurants/* is for user module viewing restaurants
             tokenKey = "restaurant_accessToken";
             expectedRole = "restaurant";
+            expectedModule = "restaurant";
           } else if (currentPath.startsWith("/delivery")) {
             tokenKey = "delivery_accessToken";
             expectedRole = "delivery";
+            expectedModule = "delivery";
           } else if (
             currentPath.startsWith("/user") ||
             currentPath === "/" ||
@@ -405,12 +555,17 @@ apiClient.interceptors.response.use(
             // User module includes /restaurants/* paths
             tokenKey = "user_accessToken";
             expectedRole = "user";
+            expectedModule = "user";
           }
 
           const role = getRoleFromToken(accessToken);
 
           // Only store token if role matches expected module; otherwise treat as invalid for this module
-          if (!role || role !== expectedRole) {
+          if (
+            !role ||
+            role !== expectedRole ||
+            !tokenMatchesModule(accessToken, expectedModule)
+          ) {
             clearModuleAuth(tokenKey.replace("_accessToken", ""));
             throw new Error("Role mismatch on refreshed token");
           }
@@ -475,7 +630,16 @@ apiClient.interceptors.response.use(
             localStorage.removeItem("admin_accessToken");
             localStorage.removeItem("admin_authenticated");
             localStorage.removeItem("admin_user");
-            window.location.href = "/admin/login";
+            if (!isAdminAuthRoute(currentPath)) {
+              window.location.href = "/admin/login";
+            }
+          } else if (currentPath.startsWith("/hub")) {
+            localStorage.removeItem("hub_accessToken");
+            localStorage.removeItem("hub_authenticated");
+            localStorage.removeItem("hub_user");
+            if (!isHubAuthRoute(currentPath)) {
+              window.location.href = "/hub/login";
+            }
           } else if (
             currentPath.startsWith("/restaurant") &&
             !currentPath.startsWith("/restaurants")
@@ -484,12 +648,17 @@ apiClient.interceptors.response.use(
             localStorage.removeItem("restaurant_accessToken");
             localStorage.removeItem("restaurant_authenticated");
             localStorage.removeItem("restaurant_user");
-            window.location.href = "/restaurant/login";
+            if (!isRestaurantAuthRoute(currentPath)) {
+              window.location.href = "/restaurant/login";
+            }
           } else if (currentPath.startsWith("/delivery")) {
             localStorage.removeItem("delivery_accessToken");
             localStorage.removeItem("delivery_authenticated");
             localStorage.removeItem("delivery_user");
-            window.location.href = "/delivery/sign-in";
+            // Avoid hard-reload loops when already on delivery auth screens.
+            if (!isDeliveryAuthRoute(currentPath)) {
+              window.location.href = "/delivery/sign-in";
+            }
           } else {
             // User module: clear both storages
             clearModuleAuth("user");
@@ -662,6 +831,10 @@ apiClient.interceptors.response.use(
           // These are expected to fail if restaurant doesn't exist in DB
         }
       }
+      return Promise.reject(error);
+    }
+
+    if (shouldSuppressGlobalErrorToast(error)) {
       return Promise.reject(error);
     }
 

@@ -1,6 +1,7 @@
 import Order from "../models/Order.js";
 import OrderReview from "../models/OrderReview.js";
 import Payment from "../../payment/models/Payment.js";
+import crypto from "crypto";
 import {
   createOrder as createRazorpayOrder,
   verifyPayment,
@@ -12,14 +13,26 @@ import winston from "winston";
 import { calculateOrderPricing } from "../services/orderCalculationService.js";
 import { getRazorpayCredentials } from "../../../shared/utils/envService.js";
 import { notifyRestaurantNewOrder } from "../services/restaurantNotificationService.js";
+import {
+  RESTAURANT_NOTIFICATION_EVENTS,
+  sendNotificationToRestaurant,
+} from "../../restaurant/services/restaurantNotificationService.js";
 import { calculateOrderSettlement } from "../services/orderSettlementService.js";
 import { holdEscrow } from "../services/escrowWalletService.js";
 import { processCancellationRefund } from "../services/cancellationRefundService.js";
 import etaCalculationService from "../services/etaCalculationService.js";
 import etaWebSocketService from "../services/etaWebSocketService.js";
 import OrderEvent from "../models/OrderEvent.js";
+import { removeActiveOrder } from "../../../services/firebaseRealtimeService.js";
 import UserWallet from "../../user/models/UserWallet.js";
-import { sendPushToEntity } from "../../../shared/services/fcmPushService.js";
+import {
+  notifyUserOrderEvent,
+  USER_NOTIFICATION_EVENTS,
+} from "../../user/services/userNotificationService.js";
+import {
+  DELIVERY_NOTIFICATION_EVENTS,
+  notifyDeliveryOrderEvent,
+} from "../../delivery/services/deliveryNotificationService.js";
 
 const logger = winston.createLogger({
   level: "info",
@@ -30,6 +43,45 @@ const logger = winston.createLogger({
     }),
   ],
 });
+
+function isPointInZone(lat, lng, zoneCoordinates = []) {
+  if (!zoneCoordinates || zoneCoordinates.length < 3) return false;
+
+  let inside = false;
+  for (let i = 0, j = zoneCoordinates.length - 1; i < zoneCoordinates.length; j = i++) {
+    const coordI = zoneCoordinates[i];
+    const coordJ = zoneCoordinates[j];
+    const xi = typeof coordI === "object" ? coordI.latitude || coordI.lat : null;
+    const yi = typeof coordI === "object" ? coordI.longitude || coordI.lng : null;
+    const xj = typeof coordJ === "object" ? coordJ.latitude || coordJ.lat : null;
+    const yj = typeof coordJ === "object" ? coordJ.longitude || coordJ.lng : null;
+
+    if (xi === null || yi === null || xj === null || yj === null) continue;
+
+    const intersect =
+      yi > lng !== yj > lng && lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
+}
+
+async function resolveRestaurantZone(restaurant) {
+  const restaurantLat =
+    restaurant?.location?.latitude || restaurant?.location?.coordinates?.[1];
+  const restaurantLng =
+    restaurant?.location?.longitude || restaurant?.location?.coordinates?.[0];
+
+  if (!restaurantLat || !restaurantLng) {
+    return null;
+  }
+
+  const activeZones = await Zone.find({ isActive: true }).lean();
+  return (
+    activeZones.find((zone) => isPointInZone(restaurantLat, restaurantLng, zone.coordinates || [])) ||
+    null
+  );
+}
 
 // Helper to process settlement and escrow for confirmed orders
 const confirmOrderSettlement = async (order, userId) => {
@@ -51,6 +103,185 @@ const confirmOrderSettlement = async (order, userId) => {
     // We don't throw here to avoid failing the main flow if settlement info fails,
     // although it's critical, we can attempt to recalculate later if needed.
   }
+};
+
+const payableOrderVisibilityQuery = {
+  $or: [
+    { "payment.method": { $in: ["cash", "cod"] } },
+    { "payment.status": { $in: ["completed", "refunded"] } },
+  ],
+};
+
+const restaurantContactSelect =
+  "name slug profileImage address location phone mobile ownerPhone primaryContactNumber contactNumber";
+
+const getRestaurantContactNumber = (restaurant) => {
+  if (!restaurant || typeof restaurant !== "object") return "";
+
+  return (
+    restaurant.phone ||
+    restaurant.mobile ||
+    restaurant.contactNumber ||
+    restaurant.primaryContactNumber ||
+    restaurant.ownerPhone ||
+    ""
+  );
+};
+
+const attachRestaurantContact = (order) => {
+  if (!order) return order;
+
+  return {
+    ...order,
+    restaurantPhone: getRestaurantContactNumber(order.restaurantId || order.restaurant),
+  };
+};
+
+const ACTIVE_OTP_ORDER_STATUSES = new Set([
+  "confirmed",
+  "preparing",
+  "ready",
+  "out_for_delivery",
+]);
+
+const PREPAID_PAYMENT_METHODS = new Set(["razorpay", "wallet", "upi", "card"]);
+const DELIVERY_OTP_LENGTH = 4;
+const DELIVERY_OTP_EXPIRY_MS = 6 * 60 * 60 * 1000;
+
+const isPrepaidPaidOrder = (order) => {
+  const paymentMethod = String(order?.payment?.method || order?.paymentMethod || "")
+    .trim()
+    .toLowerCase();
+  const paymentStatus = String(order?.payment?.status || order?.paymentStatus || "")
+    .trim()
+    .toLowerCase();
+
+  return PREPAID_PAYMENT_METHODS.has(paymentMethod) && [
+    "completed",
+    "paid",
+  ].includes(paymentStatus);
+};
+
+const generateDeliveryOtp = () =>
+  String(Math.floor(10 ** (DELIVERY_OTP_LENGTH - 1) + Math.random() * 9 * 10 ** (DELIVERY_OTP_LENGTH - 1)));
+
+const hashDeliveryOtp = (otp) =>
+  crypto
+    .createHash("sha256")
+    .update(`${otp}:${process.env.DELIVERY_OTP_SECRET || "delivery-otp-secret"}`)
+    .digest("hex");
+
+const shouldRefreshDeliveryOtp = (deliveryVerification = {}) => {
+  if (!deliveryVerification.isRequired) return true;
+  if (!deliveryVerification.otp || !deliveryVerification.otpHash) return true;
+  if (deliveryVerification.verified) return false;
+
+  const expiresAt = deliveryVerification.expiresAt
+    ? new Date(deliveryVerification.expiresAt)
+    : null;
+
+  return !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now();
+};
+
+const ensureDeliveryOtpForPrepaidOrder = (order) => {
+  if (!isPrepaidPaidOrder(order)) return false;
+  if (!shouldRefreshDeliveryOtp(order?.deliveryVerification || {})) return false;
+
+  const now = new Date();
+  const otp = generateDeliveryOtp();
+
+  order.deliveryVerification = {
+    isRequired: true,
+    otp,
+    otpHash: hashDeliveryOtp(otp),
+    createdAt: now,
+    expiresAt: new Date(now.getTime() + DELIVERY_OTP_EXPIRY_MS),
+    verified: false,
+    verifiedAt: null,
+    verifiedBy: null,
+    attempts: 0,
+    lastSentAt: now,
+    lockedUntil: null,
+  };
+
+  return true;
+};
+
+const isDeliveryOtpVisibleToUser = (order) => {
+  if (!order?.deliveryVerification?.isRequired) return false;
+  if (!order?.deliveryVerification?.otp) return false;
+  if (order?.deliveryVerification?.verified) return false;
+  if (!ACTIVE_OTP_ORDER_STATUSES.has(String(order?.status || "").toLowerCase())) return false;
+
+  const expiresAt = order?.deliveryVerification?.expiresAt
+    ? new Date(order.deliveryVerification.expiresAt)
+    : null;
+  if (expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) {
+    return false;
+  }
+
+  return isPrepaidPaidOrder(order);
+};
+
+const sanitizeOrderForUser = (order) => {
+  if (!order) return order;
+
+  const deliveryVerification = order.deliveryVerification || null;
+  const otpVisible = isDeliveryOtpVisibleToUser(order);
+
+  return {
+    ...attachRestaurantContact(order),
+    deliveryVerification: deliveryVerification
+      ? {
+          isRequired: Boolean(deliveryVerification.isRequired && isPrepaidPaidOrder(order)),
+          otp: otpVisible ? deliveryVerification.otp : "",
+          createdAt: otpVisible ? deliveryVerification.createdAt : null,
+          expiresAt: otpVisible ? deliveryVerification.expiresAt : null,
+          verified: Boolean(deliveryVerification.verified),
+          verifiedAt: deliveryVerification.verifiedAt || null,
+          lastSentAt: otpVisible ? deliveryVerification.lastSentAt || null : null,
+        }
+      : null,
+  };
+};
+
+const buildOrderReviewSnapshot = (reviewDoc) => {
+  if (!reviewDoc) return null;
+
+  return {
+    rating: reviewDoc.rating,
+    comment: reviewDoc.reviewText || "",
+    submittedAt: reviewDoc.createdAt,
+    reviewedBy: reviewDoc.userId,
+  };
+};
+
+const attachSubmittedReviews = async (orders = [], userId) => {
+  if (!orders.length || !userId) return orders;
+
+  const orderIds = orders.map((order) => order?._id).filter(Boolean);
+  if (!orderIds.length) return orders;
+
+  const reviews = await OrderReview.find({
+    orderId: { $in: orderIds },
+    userId,
+  }).lean();
+
+  const reviewsByOrderId = new Map(
+    reviews.map((review) => [String(review.orderId), review]),
+  );
+
+  return orders.map((order) => {
+    const canonicalReview = reviewsByOrderId.get(String(order._id));
+    const existingReview = order.review?.rating ? order.review : null;
+    const review = existingReview || buildOrderReviewSnapshot(canonicalReview);
+    const rating = order.rating || review?.rating || null;
+
+    return {
+      ...order,
+      ...(review ? { review, rating, hasReview: true } : {}),
+    };
+  });
 };
 
 /**
@@ -535,6 +766,7 @@ export const createOrder = async (req, res) => {
           status: true,
           timestamp: new Date(),
         };
+        ensureDeliveryOtpForPrepaidOrder(order);
 
         // Save order
         await order.save();
@@ -571,6 +803,18 @@ export const createOrder = async (req, res) => {
 
         // Calculate order settlement and hold escrow
         await confirmOrderSettlement(order, userId);
+
+        notifyUserOrderEvent(
+          order,
+          USER_NOTIFICATION_EVENTS.ORDER_PLACED,
+          { paymentMethod: "wallet" },
+          "orderController.createOrder.wallet",
+        ).catch((notifyError) => {
+          logger.warn("Failed to create wallet order placed user notification", {
+            orderId: order.orderId,
+            error: notifyError.message,
+          });
+        });
 
         // Notify restaurant
         try {
@@ -666,6 +910,18 @@ export const createOrder = async (req, res) => {
 
       // Calculate order settlement and hold escrow for COD payment
       await confirmOrderSettlement(order, userId);
+
+      notifyUserOrderEvent(
+        order,
+        USER_NOTIFICATION_EVENTS.ORDER_PLACED,
+        { paymentMethod: "cash" },
+        "orderController.createOrder.cash",
+      ).catch((notifyError) => {
+        logger.warn("Failed to create COD order placed user notification", {
+          orderId: order.orderId,
+          error: notifyError.message,
+        });
+      });
 
       // Notify restaurant about new COD order via Socket.IO (non-blocking)
       try {
@@ -902,10 +1158,23 @@ export const verifyOrderPayment = async (req, res) => {
     order.payment.transactionId = razorpayPaymentId;
     order.status = "confirmed";
     order.tracking.confirmed = { status: true, timestamp: new Date() };
+    ensureDeliveryOtpForPrepaidOrder(order);
     await order.save();
 
     // Calculate order settlement and hold escrow
     await confirmOrderSettlement(order, userId);
+
+    notifyUserOrderEvent(
+      order,
+      USER_NOTIFICATION_EVENTS.ORDER_PLACED,
+      { paymentMethod: "razorpay" },
+      "orderController.verifyOrderPayment",
+    ).catch((notifyError) => {
+      logger.warn("Failed to create Razorpay order placed user notification", {
+        orderId: order.orderId,
+        error: notifyError.message,
+      });
+    });
 
     // Notify restaurant about confirmed order (payment verified)
     try {
@@ -1022,6 +1291,77 @@ export const verifyOrderPayment = async (req, res) => {
   }
 };
 
+export const markOrderPaymentFailed = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { orderId, reason } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        message: "Order ID is required",
+      });
+    }
+
+    let order = null;
+    if (mongoose.Types.ObjectId.isValid(orderId)) {
+      order = await Order.findOne({ _id: orderId, userId });
+    }
+    if (!order) {
+      order = await Order.findOne({ orderId, userId });
+    }
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    if (order.payment?.method === "cash" || order.payment?.method === "cod") {
+      return res.status(400).json({
+        success: false,
+        message: "Cash orders cannot be marked as payment failed",
+      });
+    }
+
+    if (order.payment?.status === "completed") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment is already completed",
+      });
+    }
+
+    order.payment.status = "failed";
+    order.status = "pending";
+    order.cancellationReason = reason || "Online payment was not completed";
+    await order.save();
+
+    return res.json({
+      success: true,
+      message: "Order payment marked as failed",
+      data: {
+        order: {
+          id: order._id.toString(),
+          orderId: order.orderId,
+          status: order.status,
+          paymentStatus: order.payment.status,
+        },
+      },
+    });
+  } catch (error) {
+    logger.error(`Error marking order payment failed: ${error.message}`, {
+      error: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update payment status",
+    });
+  }
+};
+
+
 /**
  * Get user orders
  */
@@ -1041,28 +1381,25 @@ export const getUserOrders = async (req, res) => {
     // Build query - MongoDB should handle string/ObjectId conversion automatically
     // But we'll try both formats to be safe
     const mongoose = (await import("mongoose")).default;
-    const query = { userId };
+    let userMatch = { userId };
 
     // If userId is a string that looks like ObjectId, also try ObjectId format
     if (typeof userId === "string" && mongoose.Types.ObjectId.isValid(userId)) {
-      query.$or = [
+      userMatch = {
+        $or: [
         { userId: userId },
         { userId: new mongoose.Types.ObjectId(userId) },
-      ];
-      delete query.userId; // Remove direct userId since we're using $or
+        ],
+      };
     }
+
+    const query = {
+      $and: [userMatch, payableOrderVisibilityQuery],
+    };
 
     // Add status filter if provided
     if (status) {
-      if (query.$or) {
-        // Add status to each $or condition
-        query.$or = query.$or.map((condition) => ({ ...condition, status }));
-      } else {
-        query.status = status;
-      }
-    }
-    if (status) {
-      query.status = status;
+      query.$and.push({ status });
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -1076,10 +1413,7 @@ export const getUserOrders = async (req, res) => {
       .limit(parseInt(limit))
       .skip(skip)
       .select("-__v")
-      .populate(
-        "restaurantId",
-        "name slug profileImage address location phone ownerPhone",
-      )
+      .populate("restaurantId", restaurantContactSelect)
       .populate("userId", "name phone email")
       .lean();
 
@@ -1089,10 +1423,12 @@ export const getUserOrders = async (req, res) => {
       `Found ${orders.length} orders for user ${userId} (total: ${total})`,
     );
 
+    const ordersWithReviews = await attachSubmittedReviews(orders, userId);
+
     res.json({
       success: true,
       data: {
-        orders,
+        orders: ordersWithReviews.map(sanitizeOrderForUser),
         pagination: {
           total,
           page: parseInt(page),
@@ -1128,6 +1464,7 @@ export const getOrderDetails = async (req, res) => {
         _id: id,
         userId,
       })
+        .populate("restaurantId", restaurantContactSelect)
         .populate("deliveryPartnerId", "name email phone")
         .populate("userId", "name fullName phone email")
         .lean();
@@ -1139,6 +1476,7 @@ export const getOrderDetails = async (req, res) => {
         orderId: id,
         userId,
       })
+        .populate("restaurantId", restaurantContactSelect)
         .populate("deliveryPartnerId", "name email phone")
         .populate("userId", "name fullName phone email")
         .lean();
@@ -1156,10 +1494,12 @@ export const getOrderDetails = async (req, res) => {
       orderId: order._id,
     }).lean();
 
+    const [orderWithReview] = await attachSubmittedReviews([order], userId);
+
     res.json({
       success: true,
       data: {
-        order,
+        order: sanitizeOrderForUser(orderWithReview),
         payment,
       },
     });
@@ -1243,7 +1583,39 @@ export const cancelOrder = async (req, res) => {
     order.cancellationReason = reason.trim();
     order.cancelledBy = "user";
     order.cancelledAt = new Date();
+    if (order.deliveryVerification?.isRequired) {
+      order.deliveryVerification = {
+        ...order.deliveryVerification,
+        isRequired: false,
+        otp: "",
+        otpHash: "",
+        verified: false,
+        verifiedAt: null,
+        verifiedBy: null,
+        lockedUntil: null,
+      };
+    }
     await order.save();
+
+    await sendNotificationToRestaurant({
+      restaurantId: order.restaurantId,
+      type: RESTAURANT_NOTIFICATION_EVENTS.ORDER_CANCELLED_BY_USER,
+      orderId: order._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.ORDER_CANCELLED_BY_USER}:${order._id}`,
+      redirectUrl: `/restaurant/orders/${order.orderId}`,
+      metadata: {
+        orderDisplayId: order.orderId,
+        reason: order.cancellationReason,
+      },
+      source: "orderController.cancelOrder",
+    });
+
+    // Clean up Firebase active order entry
+    try {
+      await removeActiveOrder(order.orderId);
+    } catch (fbErr) {
+      console.warn("Firebase removeActiveOrder on cancel failed:", fbErr.message);
+    }
 
     // Calculate refund amount only for online payments (Razorpay) and wallet
     // COD orders don't need refund since payment hasn't been made
@@ -1269,20 +1641,6 @@ export const cancelOrder = async (req, res) => {
       }
     } else if (actualPaymentMethod === "cash") {
       refundMessage = " No refund required as payment was not made.";
-    }
-
-    // Push to restaurant + delivery partner about cancellation
-    if (order.restaurantId) {
-      sendPushToEntity("restaurant", order.restaurantId, {
-        title: "Order Cancelled",
-        body: `Order #${order.orderId} has been cancelled by the customer.`,
-      }).catch(() => {});
-    }
-    if (order.deliveryPartnerId) {
-      sendPushToEntity("delivery", order.deliveryPartnerId, {
-        title: "Order Cancelled",
-        body: `Order #${order.orderId} has been cancelled.`,
-      }).catch(() => {});
     }
 
     res.json({
@@ -1314,7 +1672,7 @@ export const cancelOrder = async (req, res) => {
  */
 export const calculateOrder = async (req, res) => {
   try {
-    const { items, restaurantId, deliveryAddress, couponCode, deliveryFleet } =
+    const { items, restaurantId, deliveryAddress, couponCode, deliveryFleet, zoneId } =
       req.body;
 
     // Validate required fields
@@ -1322,6 +1680,48 @@ export const calculateOrder = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Order must have at least one item",
+      });
+    }
+
+    if (!restaurantId) {
+      return res.status(400).json({
+        success: false,
+        message: "Restaurant ID is required",
+      });
+    }
+
+    const restaurant = await Restaurant.findOne({
+      $or: [
+        { restaurantId },
+        { slug: restaurantId },
+        ...(mongoose.Types.ObjectId.isValid(restaurantId)
+          ? [{ _id: restaurantId }]
+          : []),
+      ],
+      isActive: true,
+    }).lean();
+
+    if (!restaurant) {
+      return res.status(404).json({
+        success: false,
+        message: "Restaurant not found",
+      });
+    }
+
+    const restaurantZone = await resolveRestaurantZone(restaurant);
+    if (!restaurantZone) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "This restaurant is not available in your area. Please choose a restaurant from an active delivery zone.",
+      });
+    }
+
+    if (zoneId && restaurantZone._id.toString() !== String(zoneId)) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "This restaurant is not available in your current zone. Please add items from restaurants in your current area.",
       });
     }
 
@@ -1338,6 +1738,11 @@ export const calculateOrder = async (req, res) => {
       success: true,
       data: {
         pricing,
+        zone: {
+          _id: restaurantZone._id.toString(),
+          name: restaurantZone.name || restaurantZone.zoneName || "Zone",
+          zoneName: restaurantZone.zoneName || restaurantZone.name || "Zone",
+        },
       },
     });
   } catch (error) {
@@ -1416,6 +1821,23 @@ export const updateOrderDeliveryDetails = async (req, res) => {
       order.deliveryInstructions = deliveryInstructions;
 
     await order.save();
+
+    if (order.deliveryPartnerId || order.assignmentInfo?.deliveryPartnerId) {
+      notifyDeliveryOrderEvent({
+        order,
+        deliveryBoyId: order.deliveryPartnerId || order.assignmentInfo.deliveryPartnerId,
+        type: DELIVERY_NOTIFICATION_EVENTS.CUSTOMER_LOCATION_UPDATED,
+        metadata: {
+          deliveryAddress: order.deliveryAddress,
+        },
+        source: "orderController.updateOrderDeliveryDetails",
+      }).catch((notifyError) => {
+        logger.warn("Failed to notify delivery partner about location update", {
+          orderId: order.orderId,
+          error: notifyError.message,
+        });
+      });
+    }
 
     logger.info(`Order delivery details updated for order: ${order.orderId}`, {
       orderId: order.orderId,
@@ -1511,24 +1933,26 @@ export const submitOrderReview = async (req, res) => {
       });
     }
 
+    const alreadyReviewed =
+      Boolean(order.review?.rating) ||
+      Boolean(await OrderReview.exists({ orderId: order._id, userId }));
+
+    if (alreadyReviewed) {
+      return res.status(400).json({
+        success: false,
+        message: "You have already rated this order",
+      });
+    }
+
     const trimmedComment = comment ? comment.trim() : "";
 
-    // Upsert canonical review document (one per order per user)
-    const reviewDoc = await OrderReview.findOneAndUpdate(
-      { orderId: order._id, userId },
-      {
-        $set: {
-          restaurantId: restaurantObjectId,
-          rating: numericRating,
-          reviewText: trimmedComment,
-        },
-      },
-      {
-        new: true,
-        upsert: true,
-        runValidators: true,
-      },
-    );
+    const reviewDoc = await OrderReview.create({
+      orderId: order._id,
+      userId,
+      restaurantId: restaurantObjectId,
+      rating: numericRating,
+      reviewText: trimmedComment,
+    });
 
     // Keep embedded snapshot on Order in sync (for backward compatibility)
     order.review = {
@@ -1539,6 +1963,20 @@ export const submitOrderReview = async (req, res) => {
     };
 
     await order.save();
+
+    await sendNotificationToRestaurant({
+      restaurantId: restaurantObjectId,
+      type: RESTAURANT_NOTIFICATION_EVENTS.NEW_REVIEW_RECEIVED,
+      orderId: order._id,
+      reviewId: reviewDoc._id,
+      eventKey: `${RESTAURANT_NOTIFICATION_EVENTS.NEW_REVIEW_RECEIVED}:${reviewDoc._id}`,
+      redirectUrl: "/restaurant/reviews",
+      metadata: {
+        orderDisplayId: order.orderId,
+        rating: numericRating,
+      },
+      source: "orderController.submitOrderReview",
+    });
 
     logger.info(
       `✅ Review submitted for order ${order.orderId} by user ${userId}`,
@@ -1558,6 +1996,13 @@ export const submitOrderReview = async (req, res) => {
       },
     });
   } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "You have already rated this order",
+      });
+    }
+
     logger.error(`Error submitting order review: ${error.message}`, {
       error: error.message,
       stack: error.stack,

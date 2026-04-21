@@ -26,14 +26,15 @@ import authRoutes from "./modules/auth/index.js";
 import userRoutes from "./modules/user/index.js";
 import restaurantRoutes from "./modules/restaurant/index.js";
 import deliveryRoutes from "./modules/delivery/index.js";
+import referralRoutes from "./modules/referral/routes/referralRoutes.js";
 import orderRoutes from "./modules/order/index.js";
+import cartRoutes from "./modules/cart/index.js";
 import paymentRoutes from "./modules/payment/index.js";
 import menuRoutes from "./modules/menu/index.js";
 import campaignRoutes from "./modules/campaign/index.js";
 import notificationRoutes from "./modules/notification/index.js";
 import analyticsRoutes from "./modules/analytics/index.js";
 import adminRoutes from "./modules/admin/index.js";
-import referralRoutes from "./modules/referral/index.js";
 import categoryPublicRoutes from "./modules/admin/routes/categoryPublicRoutes.js";
 import feeSettingsPublicRoutes from "./modules/admin/routes/feeSettingsPublicRoutes.js";
 import envPublicRoutes from "./modules/admin/routes/envPublicRoutes.js";
@@ -101,46 +102,32 @@ if (missingEnvVars.length > 0) {
   process.exit(1);
 }
 
-// Initialize Firebase Realtime Database BEFORE creating Express app, routes, or Socket.IO
-// This ensures getDb() can be used safely in any module (controllers, services, sockets).
-try {
-  const firebaseDb = initializeFirebaseRealtime();
-  if (!firebaseDb) {
-    console.warn(
-      "⚠️ Firebase Realtime Database initialization returned null. " +
-        "Live tracking features depending on Firebase will be disabled.",
-    );
-  }
-} catch (err) {
-  console.error(
-    "❌ Firebase Realtime Database initialization threw an error:",
-    err.message,
-  );
-}
+// Firebase Realtime init moved to connectDB().then() - requires DB for env vars
 
 // Initialize Express app
 const app = express();
 const httpServer = createServer(app);
 
+const configuredCorsOrigins = (process.env.CORS_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 // Initialize Socket.IO with proper CORS configuration
 const allowedSocketOrigins = [
-  process.env.CORS_ORIGIN,
-  "https://truorder.in",
-  "http://truorder.in",
-  "https://api.truorder.in",
-  "http://api.truorder.in",
+  ...configuredCorsOrigins,
   "https://tastizo.com",
   "http://tastizo.com",
   "https://www.tastizo.com",
   "http://www.tastizo.com",
+  "https://foods.tastizo.com",
+  "http://foods.tastizo.com",
   "https://foozeto.tastizo.com",
   "http://foozeto.tastizo.com",
   "http://localhost:5173",
   "http://localhost:3000",
-  "http://localhost:5174",
   "http://127.0.0.1:5173",
   "http://127.0.0.1:3000",
-  "http://127.0.0.1:5174",
 ].filter(Boolean); // Remove undefined values
 
 const io = new Server(httpServer, {
@@ -298,19 +285,37 @@ app.set("io", io);
 // Connect to databases
 import { initializeCloudinary } from "./config/cloudinary.js";
 
-// Connect to databases
-connectDB().then(() => {
+// Connect to databases, then Firebase, then start server (order matters)
+connectDB().then(async () => {
+  // Initialize Firebase Realtime (loads credentials from DB env vars)
+  try {
+    const firebaseDb = await initializeFirebaseRealtime();
+    if (firebaseDb) {
+      console.log("✅ Firebase Realtime Database initialized");
+    } else {
+      console.warn(
+        "⚠️ Firebase Realtime Database initialization returned null. " +
+          "Add FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY in Admin → Environment Variables.",
+      );
+    }
+  } catch (err) {
+    console.error(
+      "❌ Firebase Realtime Database initialization threw an error:",
+      err.message,
+    );
+  }
+
   // Initialize Cloudinary after DB connection
   initializeCloudinary().catch((err) =>
     console.error("Failed to initialize Cloudinary:", err),
   );
 
-  initializeFirebaseRealtime().catch((err) =>
-    console.error(
-      "Firebase Realtime Database initialization failed after DB connection:",
-      err.message,
-    ),
-  );
+  // Start server ONLY after DB + Firebase are ready (prevents "Firebase not initialized" errors)
+  const PORT = process.env.PORT || 5000;
+  httpServer.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    setTimeout(() => initializeScheduledTasks(), 5000);
+  });
 });
 
 // Redis connection is optional - only connects if REDIS_ENABLED=true
@@ -324,10 +329,6 @@ app.use(helmet());
 // CORS configuration - allow multiple origins
 const allowedOrigins = [
   process.env.CORS_ORIGIN,
-  "https://truorder.in",
-  "http://truorder.in",
-  "https://api.truorder.in",
-  "http://api.truorder.in",
   "https://tastizo.com",
   "http://tastizo.com",
   "https://www.tastizo.com",
@@ -396,6 +397,8 @@ app.get("/health", (req, res) => {
 
 // API routes
 app.use("/api", authRoutes);
+app.use("/api", cartRoutes);
+app.use("/api/referral", referralRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/restaurant", restaurantRoutes);
 app.use("/api/delivery", deliveryRoutes);
@@ -406,7 +409,6 @@ app.use("/api/campaign", campaignRoutes);
 app.use("/api/notification", notificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/admin", adminRoutes);
-app.use("/api", referralRoutes);
 app.use("/api", categoryPublicRoutes);
 app.use("/api", feeSettingsPublicRoutes);
 app.use("/api/env", envPublicRoutes);
@@ -503,6 +505,39 @@ io.on("connection", (socket) => {
         `location-receive-${data.orderId}`,
         locationData,
       );
+
+      import("./modules/user/services/userNotificationService.js")
+        .then(({ maybeNotifyUserDeliveryNearby }) =>
+          maybeNotifyUserDeliveryNearby({
+            orderId: data.orderId,
+            deliveryLat: data.lat,
+            deliveryLng: data.lng,
+            source: "server.update-location",
+          }),
+        )
+        .catch((error) => {
+          console.warn(
+            "User nearby notification check failed:",
+            error?.message || error,
+          );
+        });
+
+      import("./modules/delivery/services/deliveryNotificationService.js")
+        .then(({ maybeNotifyDeliveryNearCustomer }) =>
+          maybeNotifyDeliveryNearCustomer({
+            orderId: data.orderId,
+            deliveryLat: data.lat,
+            deliveryLng: data.lng,
+            deliveryBoyId: data.deliveryPartnerId || data.deliveryBoyId,
+            source: "server.update-location",
+          }),
+        )
+        .catch((error) => {
+          console.warn(
+            "Delivery near-customer notification check failed:",
+            error?.message || error,
+          );
+        });
     } catch (error) {
       console.error("Error handling location update:", error);
     }
@@ -561,6 +596,18 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("join-user", (userId) => {
+    if (userId) {
+      const normalizedUserId = userId?.toString() || userId;
+      socket.join(`user:${normalizedUserId}`);
+      socket.emit("user-room-joined", {
+        userId: normalizedUserId,
+        room: `user:${normalizedUserId}`,
+        socketId: socket.id,
+      });
+    }
+  });
+
   // Handle request for current location
   socket.on("request-current-location", async (orderId) => {
     if (!orderId) return;
@@ -605,23 +652,9 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
   });
-
-  // Handle connection errors
-  socket.on("error", (error) => {
-    console.error("🚴 Delivery socket error:", error);
-  });
 });
 
-// Start server
-const PORT = process.env.PORT || 5000;
-
-httpServer.listen(PORT, () => {
-  // Initialize scheduled tasks after DB connection is established
-  // Wait a bit for DB to connect, then start cron jobs
-  setTimeout(() => {
-    initializeScheduledTasks();
-  }, 5000);
-});
+// Server starts inside connectDB().then() after Firebase init (see above)
 
 // Initialize scheduled tasks
 function initializeScheduledTasks() {
@@ -676,7 +709,28 @@ function initializeScheduledTasks() {
       });
     })
     .catch((error) => {
-      console.error("❌ Failed to initialize auto-reject service:", error);
+      console.error("Failed to initialize auto-reject service:", error);
+    });
+
+  // Initialize assignment services
+  import("./modules/order/services/assignmentCleanupService.js")
+    .then(({ default: assignmentCleanupService }) => {
+      // Start periodic cleanup service
+      assignmentCleanupService.startPeriodicCleanup();
+      console.log("Assignment cleanup service started");
+    })
+    .catch((error) => {
+      console.error("Failed to initialize assignment cleanup service:", error);
+    });
+
+  import("./modules/order/services/orderAssignmentTriggerService.js")
+    .then(({ default: orderAssignmentTriggerService }) => {
+      // Start periodic assignment checker
+      orderAssignmentTriggerService.startPeriodicAssignmentChecker();
+      console.log("Order assignment trigger service started");
+    })
+    .catch((error) => {
+      console.error("Failed to initialize order assignment trigger service:", error);
     });
 }
 

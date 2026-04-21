@@ -1,4 +1,5 @@
 import express from "express";
+import hubRoutes from "./hubRoutes.js";
 import {
   getAllWithdrawalRequests,
   approveWithdrawalRequest,
@@ -31,6 +32,10 @@ import {
   updateRestaurantDiningSettings,
   updateRestaurantDiningCommission,
   getAllOffers,
+  createAdminOffer,
+  updateAdminOffer,
+  deleteAdminOffer,
+  getAllFoods,
   getRestaurantAnalytics,
   getCustomerWalletReport,
 } from "../controllers/adminController.js";
@@ -38,6 +43,11 @@ import {
   getBusinessSettings,
   updateBusinessSettings,
 } from "../controllers/businessSettingsController.js";
+import {
+  getCurrentHubProfile,
+  updateCurrentHubProfile,
+  changeCurrentHubPassword,
+} from "../controllers/hubController.js";
 import {
   getCategories,
   getCategoryById,
@@ -156,7 +166,10 @@ import {
   getEntityAuditLogs,
   getCommissionChangeLogs,
 } from "../controllers/auditLogController.js";
-import { sendPushNotificationAdmin } from "../controllers/pushNotificationController.js";
+import {
+  sendPushNotificationAdmin,
+  getPushNotificationsAdmin,
+} from "../controllers/pushNotificationController.js";
 import { getAbout, updateAbout } from "../controllers/aboutController.js";
 import {
   getTerms,
@@ -233,9 +246,7 @@ import {
 } from "../controllers/diningCouponController.js";
 import { getDiningEarnings } from "../controllers/diningEarningsController.js";
 import zoneRoutes from "./zoneRoutes.js";
-import hubRoutes from "./hubRoutes.js";
-import referralCodeRoutes from "./referralCodeRoutes.js";
-import { authenticateAdmin } from "../middleware/adminAuth.js";
+import { authenticateAdmin, applyHubZoneFilter } from "../middleware/adminAuth.js";
 import { uploadMiddleware } from "../../../shared/utils/cloudinaryService.js";
 
 const router = express.Router();
@@ -243,6 +254,7 @@ const router = express.Router();
 // Debug: Log route file loading
 // All admin routes require admin authentication
 router.use(authenticateAdmin);
+router.use(applyHubZoneFilter);
 
 // Debug middleware - log ALL requests to help debug routing
 router.use((req, res, next) => {
@@ -367,6 +379,7 @@ router.patch("/earning-addon-history/:id/cancel", cancelEarningAddonHistory);
 
 // Push Notification
 router.post("/push-notification", sendPushNotificationAdmin);
+router.get("/push-notifications", getPushNotificationsAdmin);
 
 // Environment Variables Management
 router.get("/env-variables", getEnvVariables);
@@ -419,29 +432,20 @@ router.put("/restaurant-complaints/:id/status", updateComplaintStatus);
 router.put("/restaurant-complaints/:id/notes", updateInternalNotes);
 
 // Food Approval Management
+router.get("/foods", getAllFoods);
 router.get("/food-approvals", getPendingFoodApprovals);
 router.post("/food-approvals/:id/approve", approveFoodItem);
 router.post("/food-approvals/:id/reject", rejectFoodItem);
 
 // Offers Management
 router.get("/offers", getAllOffers);
+router.post("/offers", createAdminOffer);
+router.put("/offers/:id", updateAdminOffer);
+router.delete("/offers/:id", deleteAdminOffer);
 
 // Zone Management
 router.use("/zones", zoneRoutes);
-
-// Hub Management (Super Admin only)
 router.use("/hubs", hubRoutes);
-
-// Referral Code Management
-router.use("/referral", referralCodeRoutes);
-
-// Hub self-profile (Hub Manager)
-import {
-  getCurrentHubProfile,
-  updateCurrentHubProfile,
-  changeCurrentHubPassword,
-} from "../controllers/hubController.js";
-
 router.get("/hub/me", getCurrentHubProfile);
 router.put("/hub/me", updateCurrentHubProfile);
 router.post("/hub/me/change-password", changeCurrentHubPassword);

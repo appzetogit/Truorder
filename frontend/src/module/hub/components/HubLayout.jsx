@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Menu } from "lucide-react";
 import { Outlet } from "react-router-dom";
 import HubSidebar from "./HubSidebar";
 
@@ -7,12 +8,12 @@ export default function HubLayout() {
 
   return (
     <div className="min-h-screen bg-neutral-200 flex">
-      {sidebarOpen && (
+      {sidebarOpen ? (
         <div
           className="fixed inset-0 bg-gray-900/50 z-40 lg:hidden"
           onClick={() => setSidebarOpen(false)}
         />
-      )}
+      ) : null}
 
       <HubSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
@@ -22,13 +23,12 @@ export default function HubLayout() {
             className="lg:hidden text-neutral-100"
             onClick={() => setSidebarOpen(true)}
           >
-            ☰
+            <Menu className="w-5 h-5" />
           </button>
-          <h1 className="text-sm font-semibold tracking-wide">
-            Hub Panel
-          </h1>
+          <h1 className="text-sm font-semibold tracking-wide">Hub Panel</h1>
           <div />
         </header>
+
         <main className="flex-1 bg-neutral-100 overflow-x-hidden">
           <Outlet />
         </main>
@@ -36,4 +36,3 @@ export default function HubLayout() {
     </div>
   );
 }
-

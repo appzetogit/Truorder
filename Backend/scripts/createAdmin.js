@@ -22,12 +22,12 @@ const connectDB = async () => {
 
 const createAdmin = async () => {
   try {
-    // Admin details (override with ADMIN_EMAIL / ADMIN_PASSWORD in .env)
+    // Admin details
     const adminData = {
-      name: "TruOrder Admin",
-      email: process.env.ADMIN_EMAIL || "truorder@gmail.com",
-      phone: process.env.ADMIN_PHONE || "0000000000",
-      password: process.env.ADMIN_PASSWORD || "truorder123",
+      name: "Tastizo Admin",
+      email: process.env.ADMIN_EMAIL || "tastizoteam@gmail.com",
+      phone: "7610416911",
+      password: process.env.ADMIN_PASSWORD || "Abhi@4321",
       role: "admin",
       isActive: true,
       phoneVerified: false,
@@ -39,18 +39,15 @@ const createAdmin = async () => {
     });
 
     if (existingAdmin) {
-      console.log(
-        `ℹ️ Admin already exists: ${adminData.email} — skipping create.`,
-      );
       process.exit(0);
     }
 
     // Create new admin (password will be hashed by pre-save hook)
     const admin = await Admin.create(adminData);
 
+    // Remove password from response
     const adminResponse = admin.toObject();
     delete adminResponse.password;
-    console.log("✅ TruOrder admin created:", adminData.email);
     process.exit(0);
   } catch (error) {
     console.error("❌ Error creating admin:", error.message);

@@ -1,118 +1,114 @@
-import { useState, useEffect } from "react"
-import { useNavigate, useLocation } from "react-router-dom"
-import { ArrowLeft, Loader2, CheckCircle2 } from "lucide-react"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
-import { restaurantAPI, referralAPI } from "@/lib/api"
-import { setAuthData as setRestaurantAuthData } from "@/lib/utils/auth"
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { referralAPI, restaurantAPI } from "@/lib/api";
+import { setAuthData as setRestaurantAuthData } from "@/lib/utils/auth";
 
 export default function RestaurantReferralCode() {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const [referralCode, setReferralCode] = useState("")
-  const [isVerifying, setIsVerifying] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState("")
-  const [tempToken, setTempToken] = useState(null)
-  const [sponsorName, setSponsorName] = useState(null)
-  const [verified, setVerified] = useState(false)
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [referralCode, setReferralCode] = useState("");
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [tempToken, setTempToken] = useState(null);
+  const [sponsorName, setSponsorName] = useState(null);
+  const [verified, setVerified] = useState(false);
 
   useEffect(() => {
-    const token = location.state?.tempToken
+    const token = location.state?.tempToken;
     if (!token) {
-      navigate("/restaurant/login", { replace: true })
-      return
+      navigate("/restaurant/login", { replace: true });
+      return;
     }
-    setTempToken(token)
-  }, [location.state, navigate])
+    setTempToken(token);
+  }, [location.state, navigate]);
 
   const handleVerify = async () => {
-    const code = referralCode.trim()
+    const code = referralCode.trim();
     if (!code) {
-      setError("Please enter your referral code")
-      return
+      setError("Please enter your referral code");
+      return;
     }
 
-    setIsVerifying(true)
-    setError("")
-    setSponsorName(null)
-    setVerified(false)
+    setIsVerifying(true);
+    setError("");
+    setSponsorName(null);
+    setVerified(false);
 
     try {
-      const response = await referralAPI.verify(code, "restaurant")
-      const data = response?.data?.data || {}
+      const response = await referralAPI.verify(code, "restaurant");
+      const data = response?.data?.data || {};
 
       if (data.valid) {
-        setSponsorName(data.sponsorName || "Verified Sponsor")
-        setVerified(true)
+        setSponsorName(data.sponsorName || "Verified Sponsor");
+        setVerified(true);
       } else {
-        setError(data.message || "Invalid Referral Code")
+        setError(data.message || "Invalid Referral Code");
       }
     } catch (err) {
-      const message =
+      setError(
         err?.response?.data?.message ||
-        err?.message ||
-        "Unable to verify referral code. Please try again."
-      setError(message)
+          err?.message ||
+          "Unable to verify referral code. Please try again.",
+      );
     } finally {
-      setIsVerifying(false)
+      setIsVerifying(false);
     }
-  }
+  };
 
   const handleSubmit = async (e) => {
-    e?.preventDefault()
+    e?.preventDefault();
     if (!verified) {
-      handleVerify()
-      return
+      await handleVerify();
+      return;
     }
 
-    const code = referralCode.trim()
     if (!tempToken) {
-      setError("Session expired. Please start again.")
-      return
+      setError("Session expired. Please start again.");
+      return;
     }
 
-    setIsSubmitting(true)
-    setError("")
+    setIsSubmitting(true);
+    setError("");
 
     try {
       const response = await restaurantAPI.completeRegistrationWithReferral(
         tempToken,
-        code
-      )
-      const data = response?.data?.data || {}
-
-      const accessToken = data.accessToken
-      const restaurant = data.restaurant
+        referralCode.trim(),
+      );
+      const data = response?.data?.data || {};
+      const accessToken = data.accessToken;
+      const restaurant = data.restaurant;
 
       if (!accessToken || !restaurant) {
-        throw new Error("Invalid response from server")
+        throw new Error("Invalid response from server");
       }
 
-      sessionStorage.removeItem("restaurantAuthData")
-
-      setRestaurantAuthData("restaurant", accessToken, restaurant)
-      window.dispatchEvent(new Event("restaurantAuthChanged"))
-
-      navigate("/restaurant/onboarding", { replace: true })
+      sessionStorage.removeItem("restaurantAuthData");
+      setRestaurantAuthData("restaurant", accessToken, restaurant);
+      window.dispatchEvent(new Event("restaurantAuthChanged"));
+      navigate("/restaurant/onboarding", { replace: true });
     } catch (err) {
-      const message =
+      setError(
         err?.response?.data?.message ||
-        err?.response?.data?.error ||
-        err?.message ||
-        "Invalid referral code. Please try again."
-      setError(message)
-      setVerified(false)
-      setSponsorName(null)
+          err?.response?.data?.error ||
+          err?.message ||
+          "Invalid referral code. Please try again.",
+      );
+      setVerified(false);
+      setSponsorName(null);
     } finally {
-      setIsSubmitting(false)
+      setIsSubmitting(false);
     }
-  }
+  };
 
-  const isLoading = isVerifying || isSubmitting
+  const isLoading = isVerifying || isSubmitting;
 
   if (!tempToken) {
-    return null
+    return null;
   }
 
   return (
@@ -132,12 +128,9 @@ export default function RestaurantReferralCode() {
         <div className="max-w-md mx-auto w-full space-y-6 py-8">
           <p className="text-base text-gray-700 text-center">
             A valid referral code is required to register as a Restaurant Partner.
-            Please enter the code provided to you.
           </p>
 
-          {error && (
-            <p className="text-sm text-red-500 text-center">{error}</p>
-          )}
+          {error && <p className="text-sm text-red-500 text-center">{error}</p>}
 
           {verified && sponsorName && (
             <div className="flex items-center gap-3 p-4 bg-green-50 border border-green-200 rounded-xl">
@@ -158,11 +151,11 @@ export default function RestaurantReferralCode() {
                 type="text"
                 value={referralCode}
                 onChange={(e) => {
-                  setReferralCode(e.target.value.toUpperCase())
-                  setError("")
+                  setReferralCode(e.target.value.toUpperCase());
+                  setError("");
                   if (verified) {
-                    setVerified(false)
-                    setSponsorName(null)
+                    setVerified(false);
+                    setSponsorName(null);
                   }
                 }}
                 placeholder="Enter referral code"
@@ -179,11 +172,7 @@ export default function RestaurantReferralCode() {
                 disabled={isLoading || !referralCode.trim()}
                 className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white font-semibold"
               >
-                {isVerifying ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  "Verify Code"
-                )}
+                {isVerifying ? <Loader2 className="h-5 w-5 animate-spin" /> : "Verify Code"}
               </Button>
             ) : (
               <Button
@@ -201,16 +190,6 @@ export default function RestaurantReferralCode() {
           </form>
         </div>
       </div>
-
-      <div className="pt-4 px-6 text-center pb-8">
-        <button
-          type="button"
-          onClick={() => navigate("/restaurant/login")}
-          className="text-sm text-blue-600 hover:underline"
-        >
-          Go back to login
-        </button>
-      </div>
     </div>
-  )
+  );
 }

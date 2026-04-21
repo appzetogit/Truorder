@@ -1,16 +1,17 @@
-import { Link } from "react-router-dom"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import { X, ChevronRight } from "lucide-react"
 import { useCart } from "../context/CartContext"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { isModuleAuthenticated } from "@/lib/utils/auth"
 
 export default function StickyCartCard() {
-  const { cart, getCartCount } = useCart()
+  const { cart, getCartCount, isCartReady } = useCart()
   const [isVisible, setIsVisible] = useState(true)
   const [bottomPosition, setBottomPosition] = useState("bottom-[70px]") // Fixed above bottom navigation
   const cartCount = getCartCount()
-  const isUserAuthenticated = isModuleAuthenticated("user")
+  const navigate = useNavigate()
+  const location = useLocation()
 
   // Set fixed position above bottom navigation (no scroll-based movement)
   useEffect(() => {
@@ -82,14 +83,23 @@ export default function StickyCartCard() {
     },
   }
 
-  // Don't render if cart is empty or user is not logged in
-  if (!isUserAuthenticated || cartCount === 0) return null
+  // Don't render if cart is empty or cart is still validating ownership.
+  if (!isCartReady || cartCount === 0) return null
+
+  const handleViewCart = () => {
+    if (!isModuleAuthenticated("user")) {
+      navigate("/user/auth/sign-in", { state: { from: location.pathname } })
+      return
+    }
+
+    navigate("/user/cart")
+  }
 
   return (
     <AnimatePresence>
       {isVisible && (
         <motion.div
-          className={`fixed ${bottomPosition} md:bottom-6 left-0 right-0 md:left-auto md:right-6 z-50 px-4 md:px-0 pb-4 md:pb-0 pointer-events-none`}
+          className={`fixed ${bottomPosition} md:bottom-6 left-0 right-0 md:left-auto md:right-6 z-50 px-4 md:px-0 pb-2 pointer-events-none`}
           initial="initial"
           animate="animate"
           exit="exit"
@@ -119,15 +129,16 @@ export default function StickyCartCard() {
                 </Link>
 
                 {/* View Cart Button */}
-                <Link 
-                  to="/user/cart"
+                <button
+                  type="button"
+                  onClick={handleViewCart}
                   className="flex-shrink-0 bg-green-600 dark:bg-green-700 hover:bg-green-700 text-white px-4 py-2.5 md:px-5 md:py-3 rounded-lg font-semibold transition-colors"
                 >
                   <div className="text-center">
                     <div className="text-xs md:text-sm opacity-90">View Cart</div>
-                    <div className="text-xs md:text-sm font-bold">{cartCount} {cartCount === 1 ? 'item' : 'items'}</div>
+                    <div className="text-xs md:text-sm font-bold">{cartCount} {cartCount === 1 ? "item" : "items"}</div>
                   </div>
-                </Link>
+                </button>
 
                 {/* Close Button */}
                 <motion.button

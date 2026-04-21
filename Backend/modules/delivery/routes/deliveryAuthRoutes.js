@@ -2,12 +2,12 @@ import express from "express";
 import {
   sendOTP,
   verifyOTP,
-  completeRegistrationWithReferral,
   refreshToken,
   logout,
   getCurrentDelivery,
   registerFcmToken,
   removeFcmToken,
+  completeRegistrationWithReferral,
 } from "../controllers/deliveryAuthController.js";
 import { authenticate } from "../middleware/deliveryAuth.js";
 import { validate } from "../../../shared/middleware/validate.js";
@@ -45,26 +45,36 @@ const completeRegistrationSchema = Joi.object({
   referralCode: Joi.string().trim().required(),
 });
 
-const fcmTokenSchema = Joi.object({
-  platform: Joi.string().valid("web", "android", "ios", "app", "mobile", "windows").required(),
+const fcmRegisterSchema = Joi.object({
+  platform: Joi.string().valid("web", "app", "android", "ios").required(),
   fcmToken: Joi.string().optional(),
   token: Joi.string().optional(),
+  deviceType: Joi.string().valid("android", "ios").optional(),
+  appType: Joi.string().valid("android", "ios").optional(),
+  os: Joi.string().valid("android", "ios").optional(),
 }).or("fcmToken", "token");
 
-const fcmTokenDeleteSchema = Joi.object({
-  platform: Joi.string().valid("web", "android", "ios", "app", "mobile", "windows").required(),
+const fcmDeleteSchema = Joi.object({
+  platform: Joi.string().valid("web", "app", "android", "ios").required(),
+  deviceType: Joi.string().valid("android", "ios").optional(),
+  appType: Joi.string().valid("android", "ios").optional(),
+  os: Joi.string().valid("android", "ios").optional(),
 });
 
 // Public routes
 router.post("/send-otp", validate(sendOTPSchema), sendOTP);
 router.post("/verify-otp", validate(verifyOTPSchema), verifyOTP);
-router.post("/complete-registration-with-referral", validate(completeRegistrationSchema), completeRegistrationWithReferral);
+router.post(
+  "/complete-registration-with-referral",
+  validate(completeRegistrationSchema),
+  completeRegistrationWithReferral,
+);
 router.post("/refresh-token", refreshToken);
 
 // Protected routes (require authentication)
 router.post("/logout", authenticate, logout);
 router.get("/me", authenticate, getCurrentDelivery);
-router.post("/fcm-token", authenticate, validate(fcmTokenSchema), registerFcmToken);
-router.delete("/fcm-token", authenticate, validate(fcmTokenDeleteSchema), removeFcmToken);
+router.post("/fcm-token", authenticate, validate(fcmRegisterSchema), registerFcmToken);
+router.delete("/fcm-token", authenticate, validate(fcmDeleteSchema), removeFcmToken);
 
 export default router;

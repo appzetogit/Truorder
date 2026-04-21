@@ -20,6 +20,11 @@ import { toast } from "sonner"
 import { jsPDF } from "jspdf"
 import autoTable from "jspdf-autotable"
 import { getCompanyNameAsync } from "@/lib/utils/businessSettings"
+import {
+  RESTAURANT_CONTACT_UNAVAILABLE_MESSAGE,
+  normalizeTelPhone,
+  resolveRestaurantPhone,
+} from "./restaurantContact"
 
 export default function UserOrderDetails() {
   const navigate = useNavigate()
@@ -50,6 +55,11 @@ export default function UserOrderDetails() {
         }
 
         setOrder(orderData)
+        if (orderData.hasReview || orderData.review?.rating || orderData.rating) {
+          setHasRated(true)
+          setRating(orderData.review?.rating || orderData.rating || null)
+          setFeedbackText(orderData.review?.comment || orderData.review?.reviewText || "")
+        }
 
         // If restaurantId is just a string (not populated), fetch restaurant details separately
         const restaurantId = orderData.restaurantId
@@ -215,23 +225,24 @@ export default function UserOrderDetails() {
     (pricing.originalItemTotal || 0) -
     (pricing.subtotal || 0)
 
-  // Restaurant phone (multiple fallbacks) - use fetched restaurant data first
-  const rawRestaurantPhone =
-    restaurantObj.primaryContactNumber ||
-    restaurantObj.phone ||
-    restaurantObj.contactNumber ||
-    (typeof order.restaurantId === "object" && (order.restaurantId?.primaryContactNumber || order.restaurantId?.phone)) ||
-    order.restaurantPhone ||
-    ""
-  const restaurantPhone = rawRestaurantPhone.replace(/\s/g, "").trim()
+  // Restaurant phone belongs to this order's restaurant only.
+  const restaurantPhone = resolveRestaurantPhone(order, restaurant)
 
   const handleCallRestaurant = () => {
-    if (!restaurantPhone) {
-      toast.error("Restaurant phone number not available")
+    const telPhone = normalizeTelPhone(restaurantPhone)
+    if (!telPhone) {
+      console.warn("Restaurant contact number unavailable for order", {
+        orderId: order.orderId || order._id || orderId,
+        restaurantId:
+          typeof order.restaurantId === "string"
+            ? order.restaurantId
+            : order.restaurantId?._id || order.restaurantId?.id,
+        hasRestaurantPhone: Boolean(restaurantPhone),
+      })
+      toast.error(RESTAURANT_CONTACT_UNAVAILABLE_MESSAGE)
       return
     }
-    const digits = restaurantPhone.replace(/\D/g, "").slice(-10)
-    window.location.href = `tel:${digits}`
+    window.location.href = `tel:${telPhone}`
   }
 
   const handleSubmitRating = async () => {
@@ -249,6 +260,16 @@ export default function UserOrderDetails() {
         comment: feedbackText?.trim() || "",
       })
 
+      setOrder((prev) =>
+        prev
+          ? {
+            ...prev,
+            review: { rating, comment: feedbackText?.trim() || "" },
+            rating,
+            hasReview: true,
+          }
+          : prev,
+      )
       setHasRated(true)
       try {
         if (typeof window !== "undefined" && window.localStorage) {
@@ -263,7 +284,7 @@ export default function UserOrderDetails() {
       console.error("Error submitting order rating from details page:", error)
       const message = error?.response?.data?.message
 
-      if (error?.response?.status === 400 && message === "You have already rated this order") {
+      if ([400, 409].includes(error?.response?.status) && String(message || "").toLowerCase().includes("already")) {
         setHasRated(true)
         try {
           if (typeof window !== "undefined" && window.localStorage) {

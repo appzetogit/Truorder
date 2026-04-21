@@ -1,6 +1,5 @@
 import Admin from '../models/Admin.js';
-import Hub from '../models/Hub.js';
-import HubZone from '../models/HubZone.js';
+import Hub from "../models/Hub.js";
 import jwtService from '../../auth/services/jwtService.js';
 import otpService from '../../auth/services/otpService.js';
 import { successResponse, errorResponse } from '../../../shared/utils/response.js';
@@ -100,7 +99,6 @@ export const adminSignup = asyncHandler(async (req, res) => {
 /**
  * Admin Login
  * POST /api/admin/auth/login
- * Checks Admin first, then Hub (Hub Manager) if not found
  */
 export const adminLogin = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
@@ -109,31 +107,34 @@ export const adminLogin = asyncHandler(async (req, res) => {
     return errorResponse(res, 400, 'Email and password are required');
   }
 
-  // Try Admin first
-  const admin = await Admin.findOne({ email: email.toLowerCase() }).select('+password');
+  const normalizedEmail = email.toLowerCase();
+
+  const admin = await Admin.findOne({ email: normalizedEmail }).select('+password');
 
   if (admin) {
     if (!admin.isActive) {
       return errorResponse(res, 401, 'Admin account is inactive. Please contact super admin.');
     }
+
     const isPasswordValid = await admin.comparePassword(password);
     if (!isPasswordValid) {
       return errorResponse(res, 401, 'Invalid email or password');
     }
+
     await admin.updateLastLogin();
 
     const tokens = jwtService.generateTokens({
       userId: admin._id.toString(),
       role: 'admin',
       email: admin.email,
-      adminRole: admin.role,
+      adminRole: admin.role
     });
 
     res.cookie('refreshToken', tokens.refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
     const adminResponse = admin.toObject();
@@ -143,55 +144,47 @@ export const adminLogin = asyncHandler(async (req, res) => {
 
     return successResponse(res, 200, 'Login successful', {
       accessToken: tokens.accessToken,
-      admin: adminResponse,
+      admin: adminResponse
     });
   }
 
-  // Try Hub Manager
-  const hub = await Hub.findOne({ email: email.toLowerCase() }).select('+password');
+  const hub = await Hub.findOne({ email: normalizedEmail }).select("+password");
+
   if (!hub) {
-    return errorResponse(res, 401, 'Invalid email or password');
-  }
-  if (hub.status !== 'active') {
-    return errorResponse(res, 401, 'Hub account is inactive. Please contact super admin.');
-  }
-  const isHubPasswordValid = await hub.comparePassword(password);
-  if (!isHubPasswordValid) {
-    return errorResponse(res, 401, 'Invalid email or password');
+    return errorResponse(res, 401, "Invalid email or password");
   }
 
-  const hubZones = await HubZone.find({ hubId: hub._id }).select('zoneId').lean();
-  const assignedZoneIds = hubZones.map((hz) => hz.zoneId.toString());
+  if (hub.status !== "active") {
+    return errorResponse(res, 401, "Hub account is inactive. Please contact super admin.");
+  }
+
+  const isHubPasswordValid = await hub.comparePassword(password);
+  if (!isHubPasswordValid) {
+    return errorResponse(res, 401, "Invalid email or password");
+  }
 
   const tokens = jwtService.generateTokens({
     userId: hub._id.toString(),
-    role: 'admin',
-    hubRole: 'hub_manager',
+    role: "admin",
     email: hub.email,
-    assignedZoneIds,
+    hubRole: "hub_manager",
   });
 
-  res.cookie('refreshToken', tokens.refreshToken, {
+  res.cookie("refreshToken", tokens.refreshToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
   const hubResponse = hub.toObject();
   delete hubResponse.password;
 
-  logger.info(`Hub Manager logged in: ${hub._id}`, { email: hub.email });
+  logger.info(`Hub manager logged in: ${hub._id}`, { email: hub.email });
 
-  return successResponse(res, 200, 'Login successful', {
+  return successResponse(res, 200, "Login successful", {
     accessToken: tokens.accessToken,
-    admin: {
-      ...hubResponse,
-      role: 'hub_manager',
-      hubName: hub.hubName,
-      managerName: hub.managerName,
-      assignedZoneIds,
-    },
+    admin: hubResponse,
   });
 });
 
@@ -286,39 +279,26 @@ export const adminSignupWithOTP = asyncHandler(async (req, res) => {
 });
 
 /**
- * Get Current Admin or Hub
+ * Get Current Admin
  * GET /api/admin/auth/me
  */
 export const getCurrentAdmin = asyncHandler(async (req, res) => {
   try {
-    // Hub Manager
-    if (req.isHubManager || req.user?.role === 'hub_manager') {
+    if (req.isHubManager) {
       const hub = await Hub.findById(req.user._id || req.user.userId)
-        .select('-password')
+        .select("-password")
         .lean();
+
       if (!hub) {
-        return errorResponse(res, 404, 'Hub not found');
+        return errorResponse(res, 404, "Hub not found");
       }
-      const hubZones = await HubZone.find({ hubId: hub._id })
-        .populate('zoneId', 'name zoneName serviceLocation')
-        .lean();
-      const assignedZones = hubZones.map((hz) => ({
-        _id: hz.zoneId._id,
-        name: hz.zoneId?.name || hz.zoneId?.zoneName || hz.zoneId?.serviceLocation,
-      }));
-      return successResponse(res, 200, 'Hub retrieved successfully', {
-        admin: {
-          ...hub,
-          role: 'hub_manager',
-          hubName: hub.hubName,
-          managerName: hub.managerName,
-          assignedZoneIds: assignedZones.map((z) => z._id.toString()),
-          assignedZones,
-        },
+
+      return successResponse(res, 200, "Hub manager retrieved successfully", {
+        admin: hub,
       });
     }
 
-    // Regular Admin
+    // req.user should be set by admin authentication middleware
     const admin = await Admin.findById(req.user._id || req.user.userId)
       .select('-password')
       .lean();
@@ -328,7 +308,7 @@ export const getCurrentAdmin = asyncHandler(async (req, res) => {
     }
 
     return successResponse(res, 200, 'Admin retrieved successfully', {
-      admin,
+      admin
     });
   } catch (error) {
     logger.error(`Error fetching current admin: ${error.message}`);
@@ -352,5 +332,59 @@ export const adminLogout = asyncHandler(async (req, res) => {
   logger.info(`Admin logged out: ${req.user?._id || req.user?.userId}`);
 
   return successResponse(res, 200, 'Logout successful');
+});
+
+export const refreshAdminToken = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies?.refreshToken;
+
+  if (!refreshToken) {
+    return errorResponse(res, 401, "Refresh token not found");
+  }
+
+  try {
+    const decoded = jwtService.verifyRefreshToken(refreshToken);
+
+    if (decoded.role !== "admin") {
+      return errorResponse(res, 403, "Access denied. Admin access required.");
+    }
+
+    if (decoded.hubRole === "hub_manager") {
+      const hub = await Hub.findById(decoded.userId).select("-password");
+
+      if (!hub || hub.status !== "active") {
+        return errorResponse(res, 401, "Hub not found or inactive");
+      }
+
+      const accessToken = jwtService.generateAccessToken({
+        userId: hub._id.toString(),
+        role: "admin",
+        email: hub.email,
+        hubRole: "hub_manager",
+      });
+
+      return successResponse(res, 200, "Token refreshed successfully", {
+        accessToken,
+      });
+    }
+
+    const admin = await Admin.findById(decoded.userId).select("-password");
+
+    if (!admin || !admin.isActive) {
+      return errorResponse(res, 401, "Admin not found or inactive");
+    }
+
+    const accessToken = jwtService.generateAccessToken({
+      userId: admin._id.toString(),
+      role: "admin",
+      email: admin.email,
+      adminRole: admin.role,
+    });
+
+    return successResponse(res, 200, "Token refreshed successfully", {
+      accessToken,
+    });
+  } catch (error) {
+    return errorResponse(res, 401, error.message || "Invalid refresh token");
+  }
 });
 

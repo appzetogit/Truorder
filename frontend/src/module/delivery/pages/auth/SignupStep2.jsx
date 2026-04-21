@@ -113,7 +113,7 @@ export default function SignupStep2() {
 
       if (response?.data?.success) {
         toast.success("Signup completed successfully!")
-        localStorage.removeItem("delivery_needsSignup")
+        // Redirect to delivery home page
         setTimeout(() => {
           navigate("/delivery", { replace: true })
         }, 1000)
@@ -251,7 +251,7 @@ export default function SignupStep2() {
       {/* Header */}
       <div className="bg-white px-4 py-3 flex items-center gap-4 border-b border-gray-200">
         <button
-          onClick={() => navigate("/delivery/signup/details", { replace: true })}
+          onClick={() => navigate(-1)}
           className="p-2 hover:bg-gray-100 rounded-full transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />

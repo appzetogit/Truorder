@@ -1,6 +1,10 @@
 import Order from '../models/Order.js';
 import { notifyRestaurantOrderUpdate } from './restaurantNotificationService.js';
 import { calculateCancellationRefund } from './cancellationRefundService.js';
+import {
+  notifyUserOrderEvent,
+  USER_NOTIFICATION_EVENTS,
+} from "../../user/services/userNotificationService.js";
 
 /**
  * Automatically reject orders that haven't been accepted within the accept time limit
@@ -16,7 +20,11 @@ export async function processAutoRejectOrders() {
     // Find all orders with status 'pending' or 'confirmed' that haven't been accepted yet
     // These are orders waiting for restaurant to accept
     const validPendingOrders = await Order.find({
-      status: { $in: ['pending', 'confirmed'] }
+      status: { $in: ['pending', 'confirmed'] },
+      $or: [
+        { 'payment.method': { $in: ['cash', 'cod'] } },
+        { 'payment.status': { $in: ['completed', 'refunded'] } },
+      ],
     }).lean();
 
     if (validPendingOrders.length === 0) {
@@ -58,6 +66,14 @@ export async function processAutoRejectOrders() {
             elapsedSeconds: Math.floor(elapsedMs / 1000)
           });
           processedCount++;
+          notifyUserOrderEvent(
+            currentOrder,
+            USER_NOTIFICATION_EVENTS.ORDER_REJECTED,
+            { automatic: true, reason: currentOrder.cancellationReason },
+            "autoRejectService.processAutoRejectOrders",
+          ).catch((notifyError) => {
+            console.error(`Error creating auto-reject user notification for order ${currentOrder.orderId}:`, notifyError);
+          });
           // Calculate refund amount but don't process automatically
           // Admin will process refund manually via refund button
           try {

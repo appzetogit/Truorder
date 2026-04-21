@@ -19,6 +19,7 @@ export const useDeliveryNotifications = () => {
   const [orderReady, setOrderReady] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [deliveryPartnerId, setDeliveryPartnerId] = useState(null);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // Step 3: All callbacks before effects (unconditional)
   // Track user interaction for autoplay policy
@@ -122,6 +123,23 @@ export const useDeliveryNotifications = () => {
       }
     };
   }, []); // Note: This runs once on mount. To update dynamically, we'd need to listen to storage events
+
+  const refreshUnreadCount = useCallback(async () => {
+    try {
+      const response = await deliveryAPI.getUnreadNotificationCount();
+      const count = response?.data?.data?.unreadCount ?? response?.data?.unreadCount ?? 0;
+      setUnreadCount(Number(count) || 0);
+    } catch (error) {
+      console.warn('Failed to fetch delivery unread notification count:', error?.message || error);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshUnreadCount();
+    const handleRefresh = () => refreshUnreadCount();
+    window.addEventListener('deliveryNotificationsUpdated', handleRefresh);
+    return () => window.removeEventListener('deliveryNotificationsUpdated', handleRefresh);
+  }, [refreshUnreadCount]);
 
   // Fetch delivery partner ID
   useEffect(() => {
@@ -338,6 +356,37 @@ export const useDeliveryNotifications = () => {
       }
     });
 
+    socketRef.current.on('order_accepted', (payload) => {
+      const current = newOrderRef.current;
+      if (!current) return;
+
+      const acceptedBy = payload.acceptedBy?.toString?.() || String(payload.acceptedBy || '');
+      const currentDeliveryId = deliveryPartnerId?.toString?.() || String(deliveryPartnerId || '');
+      if (acceptedBy && currentDeliveryId && acceptedBy === currentDeliveryId) {
+        return;
+      }
+
+      const currentIds = [
+        current.orderId,
+        current.orderMongoId,
+        current.mongoId,
+        current._id
+      ].filter(Boolean).map(String);
+      const acceptedIds = [
+        payload.orderId,
+        payload.mongoId,
+        payload.orderMongoId,
+        payload._id
+      ].filter(Boolean).map(String);
+
+      if (acceptedIds.some(id => currentIds.includes(id))) {
+        setNewOrder(null);
+        window.dispatchEvent(new CustomEvent('deliveryOrderAcceptedByOther', {
+          detail: payload
+        }));
+      }
+    });
+
     socketRef.current.on('play_notification_sound', (data) => {
       console.log('🔔 Sound notification:', data);
       playNotificationSound();
@@ -346,6 +395,16 @@ export const useDeliveryNotifications = () => {
     socketRef.current.on('order_ready', (orderData) => {
       console.log('✅ Order ready notification received via socket:', orderData);
       setOrderReady(orderData);
+      playNotificationSound();
+    });
+
+    socketRef.current.on('delivery_notification', (notification) => {
+      console.log('🔔 Delivery notification received:', notification);
+      setUnreadCount((count) => count + (notification?.isRead ? 0 : 1));
+      window.dispatchEvent(new CustomEvent('deliveryNotificationReceived', {
+        detail: notification,
+      }));
+      window.dispatchEvent(new CustomEvent('deliveryNotificationsUpdated'));
       playNotificationSound();
     });
 
@@ -377,6 +436,8 @@ export const useDeliveryNotifications = () => {
     orderReady,
     clearOrderReady,
     isConnected,
+    unreadCount,
+    refreshUnreadCount,
     playNotificationSound
   };
 };

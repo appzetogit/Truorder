@@ -19,7 +19,7 @@ const menuItemSchema = new mongoose.Schema({
   stock: { type: mongoose.Schema.Types.Mixed, default: 'Unlimited' },
   discount: { type: mongoose.Schema.Types.Mixed, default: null }, // Can be number, string, or null
   originalPrice: { type: Number, default: null },
-  foodType: { type: String, enum: ['Veg', 'Non-Veg'], default: 'Non-Veg' },
+  foodType: { type: String, enum: ['Veg', 'Non-Veg', 'Egg'], default: 'Non-Veg' },
   availabilityTimeStart: { type: String, default: '12:01 AM' },
   availabilityTimeEnd: { type: String, default: '11:57 PM' },
   description: { type: String, default: '' },
@@ -96,6 +96,7 @@ const menuSchema = new mongoose.Schema({
     ref: 'Restaurant',
     required: true,
     unique: true,
+    index: true,
   },
   sections: { type: [menuSectionSchema], default: [] },
   addons: { type: [addonSchema], default: [] }, // Add-ons array
@@ -105,6 +106,7 @@ const menuSchema = new mongoose.Schema({
 });
 
 // Index for faster queries
-menuSchema.index({ isActive: 1 });
+menuSchema.index({ restaurant: 1, isActive: 1 });
 
 export default mongoose.model('Menu', menuSchema);
+

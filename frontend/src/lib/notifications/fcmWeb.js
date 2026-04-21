@@ -1,10 +1,10 @@
-import { getMessaging, getToken, onMessage, isSupported } from "firebase/messaging";
+import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 import { ensureFirebaseInitialized, getFirebaseVapidKey } from "@/lib/firebase";
-import { authAPI, restaurantAPI, deliveryAPI } from "@/lib/api";
-import { toast } from "sonner";
+import { authAPI, deliveryAPI, restaurantAPI } from "@/lib/api";
 
 const FCM_SW_PATH = "/firebase-messaging-sw.js";
 const FCM_SW_SCOPE = "/firebase-cloud-messaging-push-scope/";
+let foregroundHandlerInitialized = false;
 
 // Internal helper to get a browser FCM token (shared by user + restaurant)
 async function getBrowserFcmToken() {
@@ -67,6 +67,45 @@ async function getBrowserFcmToken() {
   return token;
 }
 
+export async function initializePushNotifications() {
+  try {
+    const app = await ensureFirebaseInitialized();
+    if (!app) return;
+
+    const supported = await isSupported();
+    if (!supported) return;
+
+    const messaging = getMessaging(app);
+    if (foregroundHandlerInitialized) return;
+
+    onMessage(messaging, (payload) => {
+      if (typeof Notification === "undefined") return;
+      if (Notification.permission !== "granted") return;
+
+      const title = payload.notification?.title || payload.data?.title || "Tastizo";
+      const body = payload.notification?.body || payload.data?.body || "";
+      const icon = payload.notification?.icon || payload.data?.icon || "/favicon.ico";
+      const tag = payload.data?.tag || payload.data?.orderId || title;
+
+      try {
+        new Notification(title, {
+          body,
+          icon,
+          tag,
+          data: payload.data || {},
+        });
+      } catch (error) {
+        console.warn("[FCM] Foreground notification failed:", error?.message || error);
+      }
+    });
+
+    foregroundHandlerInitialized = true;
+    console.log("[FCM] Foreground notification handler initialized");
+  } catch (error) {
+    console.warn("[FCM] Failed to initialize push notifications:", error?.message || error);
+  }
+}
+
 export async function registerFcmTokenForLoggedInUser() {
   try {
     const token = await getBrowserFcmToken();
@@ -119,6 +158,30 @@ export async function registerFcmTokenForRestaurant() {
   }
 }
 
+export async function registerFcmTokenForDelivery() {
+  try {
+    const token = await getBrowserFcmToken();
+    if (!token) return;
+
+    console.log(
+      "[FCM][Delivery] Token to send:",
+      token.substring(0, 30) + "...",
+    );
+    const res = await deliveryAPI.registerFcmToken("web", token);
+    const saved =
+      res?.data?.data?.fcmTokenWeb ?? res?.data?.data?.fcmtokenWeb;
+    console.log(
+      "[FCM][Delivery] Backend saved fcmTokenWeb:",
+      saved ? saved.substring(0, 30) + "..." : "null",
+    );
+  } catch (error) {
+    console.error(
+      "[FCM][Delivery] Error during web FCM registration:",
+      error?.message || error,
+    );
+  }
+}
+
 export async function removeFcmTokenForLoggedInUser() {
   try {
     await authAPI.removeFcmToken("web");
@@ -135,23 +198,6 @@ export async function removeFcmTokenForRestaurant() {
   }
 }
 
-export async function registerFcmTokenForDelivery() {
-  try {
-    const token = await getBrowserFcmToken();
-    if (!token) return;
-
-    console.log("[FCM][Delivery] Token to send:", token.substring(0, 30) + "...");
-    const res = await deliveryAPI.registerFcmToken("web", token);
-    const saved = res?.data?.data?.fcmTokenWeb ?? res?.data?.data?.fcmtokenWeb;
-    console.log(
-      "[FCM][Delivery] Backend saved fcmTokenWeb:",
-      saved ? saved.substring(0, 30) + "..." : "null",
-    );
-  } catch (error) {
-    console.error("[FCM][Delivery] Error during web FCM registration:", error?.message || error);
-  }
-}
-
 export async function removeFcmTokenForDelivery() {
   try {
     await deliveryAPI.removeFcmToken("web");
@@ -159,81 +205,3 @@ export async function removeFcmTokenForDelivery() {
     console.error("[FCM][Delivery] Error removing FCM token for web:", error);
   }
 }
-
-let foregroundUnsubscribe = null;
-let foregroundInitialized = false;
-
-/**
- * Listen for FCM messages while the app tab is in the foreground.
- * Shows an in-app toast via sonner. Call once per layout mount.
- * Returns an unsubscribe function.
- */
-export async function setupForegroundNotifications() {
-  try {
-    if (foregroundInitialized && foregroundUnsubscribe) return foregroundUnsubscribe;
-
-    const app = await ensureFirebaseInitialized();
-    if (!app) return () => {};
-
-    const supported = await isSupported();
-    if (!supported) return () => {};
-
-    const messaging = getMessaging(app);
-    foregroundUnsubscribe = onMessage(messaging, (payload) => {
-      console.log("[FCM] Foreground message received:", payload);
-      const title = payload?.notification?.title || payload?.data?.title || "TruOrder";
-      const body = payload?.notification?.body || payload?.data?.body || "";
-      const icon = payload?.notification?.icon || payload?.data?.icon || "/favicon.ico";
-      const tag = payload?.data?.tag || payload?.data?.orderId || title;
-
-      // Cross-tab dedupe to avoid duplicate OS notifications.
-      const debounceKey = `fcm_notif_shown_${tag}`;
-      const lastShown = localStorage.getItem(debounceKey);
-      if (!lastShown || Date.now() - parseInt(lastShown, 10) >= 5000) {
-        localStorage.setItem(debounceKey, Date.now().toString());
-        try {
-          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-            new Notification(title, {
-              body,
-              icon,
-              tag,
-              data: payload?.data || {},
-            });
-          }
-        } catch {
-          // Ignore browser notification failures.
-        }
-      }
-
-      toast.success(title, {
-        description: body,
-        duration: 6000,
-        position: "top-right",
-        style: {
-          background: "#1a1a2e",
-          color: "#ffffff",
-          border: "1px solid #FF6B35",
-          borderRadius: "12px",
-          padding: "16px",
-          boxShadow: "0 8px 32px rgba(255, 107, 53, 0.25)",
-        },
-      });
-    });
-    foregroundInitialized = true;
-
-    return foregroundUnsubscribe;
-  } catch (err) {
-    console.warn("[FCM] Could not set up foreground handler:", err?.message || err);
-    return () => {};
-  }
-}
-
-// App-level initializer (bakalacart-style): set up SW + single foreground listener.
-export async function initializePushNotifications() {
-  try {
-    await setupForegroundNotifications();
-  } catch {
-    // Non-critical: do not block app startup.
-  }
-}
-

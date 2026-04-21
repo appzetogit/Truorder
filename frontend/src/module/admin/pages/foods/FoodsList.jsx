@@ -1,7 +1,34 @@
 import { useState, useMemo, useEffect } from "react"
 import { Search, Trash2, Loader2 } from "lucide-react"
-import { adminAPI, restaurantAPI } from "@/lib/api"
+import { adminAPI } from "@/lib/api"
 import { toast } from "sonner"
+
+function FoodImage({ src, name }) {
+  const [showImage, setShowImage] = useState(Boolean(src))
+
+  useEffect(() => {
+    setShowImage(Boolean(src))
+  }, [src])
+
+  const initial = (name || "F").trim().charAt(0).toUpperCase()
+
+  return (
+    <div className="w-10 h-10 rounded-full overflow-hidden bg-slate-100 flex items-center justify-center">
+      {showImage ? (
+        <img
+          src={src}
+          alt={name}
+          className="w-full h-full object-cover"
+          loading="lazy"
+          decoding="async"
+          onError={() => setShowImage(false)}
+        />
+      ) : (
+        <span className="text-slate-400 text-xs font-semibold">{initial}</span>
+      )}
+    </div>
+  )
+}
 
 export default function FoodsList() {
   const [searchQuery, setSearchQuery] = useState("")
@@ -14,89 +41,15 @@ export default function FoodsList() {
     const fetchAllFoods = async () => {
       try {
         setLoading(true)
-        
-        // First, fetch all restaurants
-        const restaurantsResponse = await adminAPI.getRestaurants({ limit: 1000 })
-        const restaurants = restaurantsResponse?.data?.data?.restaurants || 
-                          restaurantsResponse?.data?.restaurants || 
-                          []
-        
-        if (restaurants.length === 0) {
-          setFoods([])
-          setLoading(false)
-          return
-        }
-
-        // Fetch menu for each restaurant and extract all food items
-        const allFoods = []
-        
-        for (const restaurant of restaurants) {
-          try {
-            const restaurantId = restaurant._id || restaurant.id
-            const menuResponse = await restaurantAPI.getMenuByRestaurantId(restaurantId)
-            const menu = menuResponse?.data?.data?.menu || menuResponse?.data?.menu
-            
-            if (menu && menu.sections) {
-              // Extract items from sections and subsections
-              menu.sections.forEach((section) => {
-                // Items directly in section
-                if (section.items && Array.isArray(section.items)) {
-                  section.items.forEach((item) => {
-                    allFoods.push({
-                      id: item.id || `${restaurantId}-${section.id}-${item.name}`,
-                      _id: item._id,
-                      name: item.name || "Unnamed Item",
-                      image: item.image || item.images?.[0] || "https://via.placeholder.com/40",
-                      priority: "Normal", // Default priority
-                      status: item.isAvailable !== false && item.approvalStatus !== 'rejected',
-                      restaurantId: restaurantId,
-                      restaurantName: restaurant.name || "Unknown Restaurant",
-                      sectionName: section.name || "Unknown Section",
-                      price: item.price || 0,
-                      foodType: item.foodType || "Non-Veg",
-                      approvalStatus: item.approvalStatus || 'pending',
-                      originalItem: item // Keep original item data
-                    })
-                  })
-                }
-                
-                // Items in subsections
-                if (section.subsections && Array.isArray(section.subsections)) {
-                  section.subsections.forEach((subsection) => {
-                    if (subsection.items && Array.isArray(subsection.items)) {
-                      subsection.items.forEach((item) => {
-                        allFoods.push({
-                          id: item.id || `${restaurantId}-${section.id}-${subsection.id}-${item.name}`,
-                          _id: item._id,
-                          name: item.name || "Unnamed Item",
-                          image: item.image || item.images?.[0] || "https://via.placeholder.com/40",
-                          priority: "Normal", // Default priority
-                          status: item.isAvailable !== false && item.approvalStatus !== 'rejected',
-                          restaurantId: restaurantId,
-                          restaurantName: restaurant.name || "Unknown Restaurant",
-                          sectionName: section.name || "Unknown Section",
-                          subsectionName: subsection.name || "Unknown Subsection",
-                          price: item.price || 0,
-                          foodType: item.foodType || "Non-Veg",
-                          approvalStatus: item.approvalStatus || 'pending',
-                          originalItem: item // Keep original item data
-                        })
-                      })
-                    }
-                  })
-                }
-              })
-            }
-          } catch (error) {
-            // Silently skip restaurants that don't have menus or have errors
-            console.warn(`Failed to fetch menu for restaurant ${restaurant._id || restaurant.id}:`, error.message)
-          }
-        }
-        
-        setFoods(allFoods)
+        const response = await adminAPI.getFoods()
+        const list =
+          response?.data?.data?.foods ||
+          response?.data?.foods ||
+          []
+        setFoods(Array.isArray(list) ? list : [])
       } catch (error) {
         console.error("Error fetching foods:", error)
-        toast.error("Failed to load foods from restaurants")
+        toast.error("Failed to load foods")
         setFoods([])
       } finally {
         setLoading(false)
@@ -236,6 +189,12 @@ export default function FoodsList() {
                 <th className="px-6 py-4 text-left text-[10px] font-bold text-slate-700 uppercase tracking-wider">
                   Title
                 </th>
+                <th className="px-6 py-4 text-left text-[10px] font-bold text-slate-700 uppercase tracking-wider">
+                  Price
+                </th>
+                <th className="px-6 py-4 text-center text-[10px] font-bold text-slate-700 uppercase tracking-wider">
+                  Status
+                </th>
                 <th className="px-6 py-4 text-center text-[10px] font-bold text-slate-700 uppercase tracking-wider">
                   Action
                 </th>
@@ -244,7 +203,7 @@ export default function FoodsList() {
             <tbody className="bg-white divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-20 text-center">
+                  <td colSpan={6} className="px-6 py-20 text-center">
                     <div className="flex flex-col items-center justify-center">
                       <Loader2 className="w-8 h-8 animate-spin text-blue-600 mb-2" />
                       <p className="text-sm text-slate-500">Loading foods from restaurants...</p>
@@ -253,7 +212,7 @@ export default function FoodsList() {
                 </tr>
               ) : filteredFoods.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-20 text-center">
+                  <td colSpan={6} className="px-6 py-20 text-center">
                     <div className="flex flex-col items-center justify-center">
                       <p className="text-lg font-semibold text-slate-700 mb-1">No Data Found</p>
                       <p className="text-sm text-slate-500">No food items match your search</p>
@@ -270,16 +229,7 @@ export default function FoodsList() {
                       <span className="text-sm font-medium text-slate-700">{index + 1}</span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="w-10 h-10 rounded-full overflow-hidden bg-slate-100 flex items-center justify-center">
-                        <img
-                          src={food.image}
-                          alt={food.name}
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            e.target.src = "https://via.placeholder.com/40"
-                          }}
-                        />
-                      </div>
+                      <FoodImage src={food.image} name={food.name} />
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex flex-col">
@@ -290,7 +240,27 @@ export default function FoodsList() {
                             {food.restaurantName}
                           </span>
                         )}
+                        {food.description && (
+                          <span className="text-xs text-slate-500 mt-0.5">
+                            {food.description}
+                          </span>
+                        )}
                       </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className="text-sm font-medium text-slate-900">
+                        ₹{Number(food.price || 0).toFixed(2)}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${food.approvalStatus === 'approved'
+                        ? 'bg-green-100 text-green-700'
+                        : food.approvalStatus === 'rejected'
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-yellow-100 text-yellow-700'
+                        }`}>
+                        {food.approvalStatus || 'pending'}
+                      </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">
                       <button

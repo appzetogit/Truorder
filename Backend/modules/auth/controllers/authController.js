@@ -338,24 +338,27 @@ export const verifyOTP = asyncHandler(async (req, res) => {
  */
 export const registerFcmToken = asyncHandler(async (req, res) => {
   const userId = req.user?._id;
-  const { platform, fcmToken, token } = req.body;
-  const normalizedPlatform = (platform === "app" || platform === "mobile") ? "android" : platform;
-  const normalizedToken = fcmToken || token;
+  const {
+    platform,
+    fcmToken,
+    token,
+    deviceType,
+    appType,
+    os,
+  } = req.body;
+  const resolvedToken = fcmToken || token;
+  const resolvedDeviceType = (deviceType || appType || os || "android").toLowerCase();
 
-  if (!normalizedPlatform || !normalizedToken) {
-    return errorResponse(
-      res,
-      400,
-      "platform and fcmToken/token are required",
-    );
+  if (!platform || !resolvedToken) {
+    return errorResponse(res, 400, "platform and token are required");
   }
 
-  const validPlatforms = ["web", "android", "ios", "windows"];
-  if (!validPlatforms.includes(normalizedPlatform)) {
+  const validPlatforms = ["web", "app", "android", "ios"];
+  if (!validPlatforms.includes(platform)) {
     return errorResponse(
       res,
       400,
-      "Invalid platform. Allowed values: web, android, ios, app, mobile, windows",
+      "Invalid platform. Allowed values: web, app, android, ios",
     );
   }
 
@@ -365,14 +368,18 @@ export const registerFcmToken = asyncHandler(async (req, res) => {
   }
 
   // Update specific platform token
-  if (normalizedPlatform === "web") {
-    user.fcmTokenWeb = normalizedToken;
-  } else if (normalizedPlatform === "android") {
-    user.fcmTokenAndroid = normalizedToken;
-  } else if (normalizedPlatform === "ios") {
-    user.fcmTokenIos = normalizedToken;
-  } else if (normalizedPlatform === "windows") {
-    user.fcmTokenWindows = normalizedToken;
+  if (platform === "web") {
+    user.fcmTokenWeb = resolvedToken;
+  } else if (platform === "android") {
+    user.fcmTokenAndroid = resolvedToken;
+  } else if (platform === "ios") {
+    user.fcmTokenIos = resolvedToken;
+  } else if (platform === "app") {
+    if (resolvedDeviceType === "ios") {
+      user.fcmTokenIos = resolvedToken;
+    } else {
+      user.fcmTokenAndroid = resolvedToken;
+    }
   }
 
   await user.save();
@@ -380,7 +387,6 @@ export const registerFcmToken = asyncHandler(async (req, res) => {
     fcmTokenWeb: user.fcmTokenWeb,
     fcmTokenAndroid: user.fcmTokenAndroid,
     fcmTokenIos: user.fcmTokenIos,
-    fcmTokenWindows: user.fcmTokenWindows,
   });
 });
 
@@ -391,19 +397,19 @@ export const registerFcmToken = asyncHandler(async (req, res) => {
  */
 export const removeFcmToken = asyncHandler(async (req, res) => {
   const userId = req.user?._id;
-  const { platform } = req.body;
-  const normalizedPlatform = (platform === "app" || platform === "mobile") ? "android" : platform;
+  const { platform, deviceType, appType, os } = req.body;
+  const resolvedDeviceType = (deviceType || appType || os || "android").toLowerCase();
 
-  if (!normalizedPlatform) {
+  if (!platform) {
     return errorResponse(res, 400, "platform is required");
   }
 
-  const validPlatforms = ["web", "android", "ios", "windows"];
-  if (!validPlatforms.includes(normalizedPlatform)) {
+  const validPlatforms = ["web", "app", "android", "ios"];
+  if (!validPlatforms.includes(platform)) {
     return errorResponse(
       res,
       400,
-      "Invalid platform. Allowed values: web, android, ios, app, mobile, windows",
+      "Invalid platform. Allowed values: web, app, android, ios",
     );
   }
 
@@ -412,14 +418,18 @@ export const removeFcmToken = asyncHandler(async (req, res) => {
     return errorResponse(res, 404, "User not found");
   }
 
-  if (normalizedPlatform === "web") {
+  if (platform === "web") {
     user.fcmTokenWeb = null;
-  } else if (normalizedPlatform === "android") {
+  } else if (platform === "android") {
     user.fcmTokenAndroid = null;
-  } else if (normalizedPlatform === "ios") {
+  } else if (platform === "ios") {
     user.fcmTokenIos = null;
-  } else if (normalizedPlatform === "windows") {
-    user.fcmTokenWindows = null;
+  } else if (platform === "app") {
+    if (resolvedDeviceType === "ios") {
+      user.fcmTokenIos = null;
+    } else {
+      user.fcmTokenAndroid = null;
+    }
   }
 
   await user.save();

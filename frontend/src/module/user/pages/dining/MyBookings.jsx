@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { motion, AnimatePresence } from "framer-motion"
 import { initRazorpayPayment } from "@/lib/utils/razorpay"
 import { getCompanyNameAsync } from "@/lib/utils/businessSettings"
+import { shareWithFallback } from "@/lib/utils/shareBridge"
 
 function BookingDetailsModal({ booking, onClose, onBookingUpdate }) {
     const [shared, setShared] = useState(false)
@@ -27,15 +28,11 @@ function BookingDetailsModal({ booking, onClose, onBookingUpdate }) {
 
     const handleShare = async () => {
         const text = `Table booked at ${booking?.restaurant?.name} – ${formattedDate} at ${booking?.timeSlot}, ${booking?.guests} guests. ID: ${booking?.bookingId || booking?._id}`
-        try {
-            if (navigator.share) {
-                await navigator.share({ title: 'Booking details', text })
-            } else {
-                await navigator.clipboard.writeText(text)
-                setShared(true)
-                setTimeout(() => setShared(false), 2000)
-            }
-        } catch (e) { /* ignore */ }
+        const result = await shareWithFallback({ title: "Booking details", text })
+        if (result.method === "copy") {
+            setShared(true)
+            setTimeout(() => setShared(false), 2000)
+        }
     }
 
     return (
@@ -76,7 +73,7 @@ function BookingDetailsModal({ booking, onClose, onBookingUpdate }) {
                             className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors shrink-0"
                             aria-label="Share"
                         >
-                            {shared ? <span className="text-xs text-[#1FCAD3] font-medium">Copied</span> : <Share2 className="w-4 h-4" />}
+                            {shared ? <span className="text-xs text-[#2B9C64] font-medium">Copied</span> : <Share2 className="w-4 h-4" />}
                         </button>
                     </div>
 
@@ -382,7 +379,7 @@ export default function MyBookings() {
                 <button onClick={() => navigate("/profile")}>
                     <ArrowLeft className="w-6 h-6 text-gray-700 cursor-pointer" />
                 </button>
-                <h1 className="ml-4 text-xl font-semibold text-gray-800">My Table Bookings</h1>
+                <h1 className="ml-4 pt-4 text-xl font-semibold text-gray-800">My Table Bookings</h1>
             </div>
 
             <div className="p-4 space-y-4">
